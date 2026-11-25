@@ -1,9 +1,12 @@
 import { estimatePositionExitUsdt } from "@payoff/mock-maker";
 import {
+  MIN_CLOSE_LEAD_TIME_SEC,
+  SETTLEMENT_DELAY_SEC,
   computeExpiryPayoffUsdt,
   computeTokenId,
   symbolToAssetId,
   type PositionView,
+  type UnderlyingSymbol,
 } from "@payoff/shared";
 import type { PayoffDatabase, StoredTicket } from "../db/database.js";
 import type {
@@ -40,6 +43,17 @@ export class PositionsService {
 
     const result: PositionView[] = [];
     const seenKeys = new Set<string>();
+    const pausedCache = new Map<string, boolean>();
+    const checkExpiryPaused = async (
+      underlying: UnderlyingSymbol,
+      expiry: number
+    ): Promise<boolean> => {
+      const k = `${underlying}:${expiry}`;
+      if (pausedCache.has(k)) return pausedCache.get(k)!;
+      const paused = await this.chain.isExpiryPausedOnChain(underlying, expiry);
+      pausedCache.set(k, paused);
+      return paused;
+    };
 
     // 1. Authoritative active / settled-claimable UP & DOWN positions directly from PayoffSpreadVault
     if (onChainActive !== null) {
@@ -48,7 +62,13 @@ export class PositionsService {
         seenKeys.add(key);
         const dbRow = dbByKey.get(key);
         result.push(
-          await this.buildPositionFromOnChain(addrLower, oc, dbRow, effNow)
+          await this.buildPositionFromOnChain(
+            addrLower,
+            oc,
+            dbRow,
+            effNow,
+            checkExpiryPaused
+          )
         );
       }
     }
@@ -66,7 +86,7 @@ export class PositionsService {
         continue;
       }
 
-      result.push(await this.buildPositionFromDb(t, effNow));
+      result.push(await this.buildPositionFromDb(t, effNow, checkExpiryPaused));
     }
 
     result.sort((a, b) => b.createdAt - a.createdAt);
@@ -77,7 +97,11 @@ export class PositionsService {
     takerLower: string,
     oc: OnChainActivePosition,
     dbRow: StoredTicket | undefined,
-    effNow: number
+    effNow: number,
+    checkExpiryPaused: (
+      underlying: UnderlyingSymbol,
+      expiry: number
+    ) => Promise<boolean>
   ): Promise<PositionView> {
     const snap = this.marketData.getSnapshot(oc.underlying);
     const dbSettlement = await this.db.getSettlement(oc.underlying, oc.expiry);
@@ -85,6 +109,20 @@ export class PositionsService {
     const settlementPrice = oc.settled
       ? oc.settlementPrice
       : dbSettlement?.settlementPrice;
+
+    const inTwapWindow =
+      !settled &&
+      effNow < oc.expiry &&
+      oc.expiry - effNow <= MIN_CLOSE_LEAD_TIME_SEC;
+    const awaitingSettlement = !settled && effNow >= oc.expiry;
+    const expiryPaused =
+      inTwapWindow || awaitingSettlement
+        ? await checkExpiryPaused(oc.underlying, oc.expiry)
+        : false;
+    const canPermissionlessSettle =
+      awaitingSettlement &&
+      !expiryPaused &&
+      effNow >= oc.expiry + SETTLEMENT_DELAY_SEC;
 
     const hoursRemaining = Math.max(0.25, (oc.expiry - effNow) / 3600);
     const book =
@@ -124,7 +162,7 @@ export class PositionsService {
     const status = settled ? "SETTLED_CLAIMABLE" : "ACTIVE";
 
     let indicativeExitUsdt = 0;
-    if (status === "ACTIVE" && oc.balanceUsdt > 0) {
+    if (status === "ACTIVE" && !awaitingSettlement && oc.balanceUsdt > 0) {
       const est = estimatePositionExitUsdt({
         book,
         isCall: oc.isUp,
@@ -199,6 +237,10 @@ export class PositionsService {
       unrealizedPnlPct: Number(unrealizedPnlPct.toFixed(1)),
       settlementPrice,
       claimableUsdt: Number(claimableUsdt.toFixed(2)),
+      inTwapWindow,
+      awaitingSettlement,
+      expiryPaused,
+      canPermissionlessSettle,
       openTxHash: dbRow?.openTxHash ?? "",
       createdAt: dbRow?.createdAt ?? effNow,
     };
@@ -206,11 +248,31 @@ export class PositionsService {
 
   private async buildPositionFromDb(
     t: StoredTicket,
-    effNow: number
+    effNow: number,
+    checkExpiryPaused: (
+      underlying: UnderlyingSymbol,
+      expiry: number
+    ) => Promise<boolean>
   ): Promise<PositionView> {
     const isUp = Boolean(t.isUp);
     const snap = this.marketData.getSnapshot(t.underlying);
     const settlement = await this.db.getSettlement(t.underlying, t.expiry);
+    const settled = Boolean(settlement) || t.status === "SETTLED_CLAIMABLE" || t.status === "SETTLED_CLAIMED";
+    const inTwapWindow =
+      !settled &&
+      t.status === "ACTIVE" &&
+      effNow < t.expiry &&
+      t.expiry - effNow <= MIN_CLOSE_LEAD_TIME_SEC;
+    const awaitingSettlement =
+      !settled && t.status === "ACTIVE" && effNow >= t.expiry;
+    const expiryPaused =
+      inTwapWindow || awaitingSettlement
+        ? await checkExpiryPaused(t.underlying, t.expiry)
+        : false;
+    const canPermissionlessSettle =
+      awaitingSettlement &&
+      !expiryPaused &&
+      effNow >= t.expiry + SETTLEMENT_DELAY_SEC;
 
     const hoursRemaining = Math.max(0.25, (t.expiry - effNow) / 3600);
     const book =
@@ -234,7 +296,7 @@ export class PositionsService {
     );
 
     let indicativeExitUsdt = 0;
-    if (t.status === "ACTIVE" && t.remainingBalance > 0) {
+    if (t.status === "ACTIVE" && !awaitingSettlement && t.remainingBalance > 0) {
       const est = estimatePositionExitUsdt({
         book,
         isCall: isUp,
@@ -309,6 +371,10 @@ export class PositionsService {
       unrealizedPnlPct: Number(unrealizedPnlPct.toFixed(1)),
       settlementPrice: settlement?.settlementPrice,
       claimableUsdt: Number(claimableUsdt.toFixed(2)),
+      inTwapWindow,
+      awaitingSettlement,
+      expiryPaused,
+      canPermissionlessSettle,
       openTxHash: t.openTxHash,
       createdAt: t.createdAt,
     };

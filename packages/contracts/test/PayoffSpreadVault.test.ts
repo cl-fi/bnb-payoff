@@ -15,7 +15,7 @@ import {
 import {
   FEED_ID_BTC,
   FEED_ID_ETH,
-  settleExpiryWithCustomAtlasProof,
+  settleExpiryWithCustomAtlasTwap,
 } from "./helpers/atlasProof";
 
 function nextUtcAtOffset(nowSec: number, daysAhead: number, offsetSec: number): number {
@@ -318,26 +318,18 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
 
     // 2. AtlasPullSettlementOracle guards: expiry == 0 & unauthorized signer rejected
     await expect(
-      settleExpiryWithCustomAtlasProof({
-        oracle,
-        caller: stranger,
-        signerPrivateKey: atlasSigner.privateKey,
-        assetId: ASSET_BTC_ID,
-        feedId: FEED_ID_BTC,
-        expiry: 0,
-        price8: 62000_00000000n,
-      })
+      oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC_ID, 0, [])
     ).to.be.revertedWithCustomError(oracle, "InvalidExpiry");
 
     const rogueSigner = ethers.Wallet.createRandom();
     await expect(
-      settleExpiryWithCustomAtlasProof({
+      settleExpiryWithCustomAtlasTwap({
         oracle,
         caller: stranger,
         signerPrivateKey: rogueSigner.privateKey,
         assetId: ASSET_BTC_ID,
         feedId: FEED_ID_BTC,
-        expiry: now - 10,
+        expiry: now - 120,
         price8: 62000_00000000n,
       })
     ).to.be.revertedWithCustomError(oracle, "UnauthorizedSigner");
@@ -700,7 +692,7 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
     await usdt.connect(admin).setFrozen(mm1.address, true);
 
     await expect(
-      settleExpiryWithCustomAtlasProof({
+      settleExpiryWithCustomAtlasTwap({
         oracle,
         caller: keeper,
         signerPrivateKey: atlasSigner.privateKey,
@@ -711,8 +703,8 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
       })
     ).to.be.revertedWithCustomError(oracle, "ExpiryNotReached");
 
-    await time.increaseTo(expiry + 10);
-    await settleExpiryWithCustomAtlasProof({
+    await time.increaseTo(expiry + 65);
+    await settleExpiryWithCustomAtlasTwap({
       oracle,
       caller: keeper,
       signerPrivateKey: atlasSigner.privateKey,
@@ -721,7 +713,7 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
       expiry,
       price8: 101_00000000n,
     });
-    await settleExpiryWithCustomAtlasProof({
+    await settleExpiryWithCustomAtlasTwap({
       oracle,
       caller: keeper,
       signerPrivateKey: atlasSigner.privateKey,
@@ -732,7 +724,7 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
     });
 
     await expect(
-      settleExpiryWithCustomAtlasProof({
+      settleExpiryWithCustomAtlasTwap({
         oracle,
         caller: keeper,
         signerPrivateKey: atlasSigner.privateKey,
@@ -895,8 +887,8 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
     await newOracle.connect(admin).setAssetFeedId(ASSET_NVDA, FEED_NVDA);
     await vault.connect(admin).setSettlementOracle(await newOracle.getAddress());
 
-    await time.increaseTo(nvdaExpiry + 10);
-    await settleExpiryWithCustomAtlasProof({
+    await time.increaseTo(nvdaExpiry + 65);
+    await settleExpiryWithCustomAtlasTwap({
       oracle: newOracle,
       caller: keeper,
       signerPrivateKey: atlasSigner.privateKey,
@@ -1028,8 +1020,9 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
     expect(await vault.getUserActiveTokenCount(taker.address)).to.equal(1n);
     expect(await vault.getUserActiveTokenCount(stranger.address)).to.equal(1n);
 
-    // Close window elapsed (< 5 min before expiry)
-    await time.increaseTo(expiry - 120);
+    // Close window elapsed (< 30 min before expiry, aligned with 30m TWAP observation window)
+    expect(await vault.MIN_CLOSE_LEAD_TIME()).to.equal(1800n);
+    await time.increaseTo(expiry - 1500);
     const lateClose = {
       taker: taker.address,
       maker: mm1.address,
@@ -1049,8 +1042,8 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
     ).to.be.revertedWithCustomError(vault, "CloseWindowElapsed");
 
     // Worthless OTM expiry cleanup
-    await time.increaseTo(expiry + 10);
-    await settleExpiryWithCustomAtlasProof({
+    await time.increaseTo(expiry + 65);
+    await settleExpiryWithCustomAtlasTwap({
       oracle,
       caller: keeper,
       signerPrivateKey: atlasSigner.privateKey,
@@ -1059,7 +1052,7 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
       expiry,
       price8: 60000_00000000n,
     });
-    await settleExpiryWithCustomAtlasProof({
+    await settleExpiryWithCustomAtlasTwap({
       oracle,
       caller: keeper,
       signerPrivateKey: atlasSigner.privateKey,
@@ -1224,8 +1217,8 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
       ethers.parseUnits("10", 6)
     );
 
-    await time.increaseTo(expiry + 10);
-    await settleExpiryWithCustomAtlasProof({
+    await time.increaseTo(expiry + 65);
+    await settleExpiryWithCustomAtlasTwap({
       oracle,
       caller: keeper,
       signerPrivateKey: atlasSigner.privateKey,
@@ -1363,8 +1356,8 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
     await vault.connect(alice).fillCloseQuote(c2, await mm2.signTypedData(domain, CLOSE_TYPES, c2));
     await assertStrictInvariants(true);
 
-    await time.increaseTo(expiry + 10);
-    await settleExpiryWithCustomAtlasProof({
+    await time.increaseTo(expiry + 65);
+    await settleExpiryWithCustomAtlasTwap({
       oracle,
       caller: keeper,
       signerPrivateKey: atlasSigner.privateKey,

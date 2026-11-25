@@ -230,15 +230,11 @@ export class MarketDataService {
 
   private deriveEffectiveIv(
     underlying: UnderlyingSymbol,
-    telemetry?: AtlasFeedTelemetry
+    _telemetry?: AtlasFeedTelemetry
   ): number {
-    const baseIv = DEFAULT_IV[underlying];
-    if (!telemetry?.priceVolatility || telemetry.priceVolatility <= 0) {
-      return baseIv;
-    }
-    // Elevate IV floor smoothly during Atlas-detected short-term volatility spikes
-    const volBoost = Math.min(0.35, Math.max(0, (telemetry.priceVolatility - 0.005) * 8));
-    return Number((baseIv + volBoost).toFixed(4));
+    // Keep baseline IV clean here; Atlas `priceVolatility` & `ConsensusScore` IV floor
+    // boosts are applied solely inside `@payoff/mock-maker` (`ShelfEngine`) to avoid double-counting.
+    return DEFAULT_IV[underlying];
   }
 
   start() {

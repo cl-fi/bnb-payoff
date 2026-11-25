@@ -21,6 +21,7 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
   });
 
   let marketDataRef: MarketDataService | undefined;
+  let chainRef: ChainService | undefined;
 
   const atlasOracle = new AtlasOracleService({
     apiKey: config.atlasApiKey,
@@ -31,10 +32,12 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
     pollIntervalMs: config.pollIntervalMs,
     onTelemetryUpdate: (telemetry) => {
       marketDataRef?.handleAtlasTelemetryUpdate(telemetry);
+      void chainRef?.recordTwapHealthTick(telemetry);
     },
   });
 
   const chain = new ChainService(config, db, atlasOracle);
+  chainRef = chain;
   const marketData = new MarketDataService(atlasOracle, {
     enableLiveAtlas: config.enableLiveAtlas,
     enableBinanceKlines: config.enableBinanceKlines,

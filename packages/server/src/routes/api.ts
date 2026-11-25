@@ -3,12 +3,21 @@ import {
   ConsensusCircuitBreakerError,
   type ShelfEngine,
 } from "@payoff/mock-maker";
-import type {
-  CandleBar,
-  Direction,
-  ExpiryTenor,
-  TierKind,
-  UnderlyingSymbol,
+import {
+  MIN_CLOSE_LEAD_TIME_SEC,
+  SETTLEMENT_DELAY_SEC,
+  SETTLEMENT_EXACT_MATCH_GRACE_SEC,
+  SETTLEMENT_FALLBACK_TOLERANCE_SEC,
+  SETTLEMENT_HEALTH_MIN_AVG_SCORE,
+  SETTLEMENT_TWAP_INTERVAL_SEC,
+  SETTLEMENT_TWAP_SAMPLE_COUNT,
+  SETTLEMENT_UTC_HOUR,
+  symbolToAssetId,
+  type CandleBar,
+  type Direction,
+  type ExpiryTenor,
+  type TierKind,
+  type UnderlyingSymbol,
 } from "@payoff/shared";
 import type { ServerConfig } from "../config.js";
 import type { PayoffDatabase } from "../db/database.js";
@@ -42,6 +51,11 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       ]);
     const btc = svc.marketData.getSnapshot("BTC");
     const eth = svc.marketData.getSnapshot("ETH");
+    const activeExpiry = svc.chain.getActiveTwapWindowExpiry(effectiveNow);
+    const [btcTwapHealth, ethTwapHealth] = await Promise.all([
+      svc.chain.getTwapWindowHealth("BTC", activeExpiry, { checkOnChain: false }),
+      svc.chain.getTwapWindowHealth("ETH", activeExpiry, { checkOnChain: false }),
+    ]);
     return {
       ok: true,
       chainId: svc.config.chainId,
@@ -66,13 +80,33 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       },
       atlasTelemetry: svc.atlasOracle.getAllTelemetry(),
       settlementCircuitBreaker: svc.chain.getSettlementCircuitBreaker(),
+      twapConfig: {
+        sampleCount: SETTLEMENT_TWAP_SAMPLE_COUNT,
+        sampleIntervalSec: SETTLEMENT_TWAP_INTERVAL_SEC,
+        settlementDelaySec: SETTLEMENT_DELAY_SEC,
+        exactMatchGraceSec: SETTLEMENT_EXACT_MATCH_GRACE_SEC,
+        fallbackToleranceSec: SETTLEMENT_FALLBACK_TOLERANCE_SEC,
+        healthMinAvgScore: SETTLEMENT_HEALTH_MIN_AVG_SCORE,
+        minCloseLeadTimeSec: MIN_CLOSE_LEAD_TIME_SEC,
+      },
+      twapWindowHealth: {
+        BTC: btcTwapHealth,
+        ETH: ethTwapHealth,
+      },
       vaultHealth,
     };
   });
 
   app.get("/api/oracle/consensus", async () => {
-    const settlementOracleAddress =
-      await svc.chain.getSettlementOracleContract();
+    const [settlementOracleAddress, effectiveNow] = await Promise.all([
+      svc.chain.getSettlementOracleContract(),
+      svc.chain.getEffectiveNow(),
+    ]);
+    const activeExpiry = svc.chain.getActiveTwapWindowExpiry(effectiveNow);
+    const [btcTwapHealth, ethTwapHealth] = await Promise.all([
+      svc.chain.getTwapWindowHealth("BTC", activeExpiry, { checkOnChain: true }),
+      svc.chain.getTwapWindowHealth("ETH", activeExpiry, { checkOnChain: true }),
+    ]);
     return {
       oracle: "ATLAS_PULL_ORACLE",
       signerAddress: svc.atlasOracle.getAuthorizedSigner(),
@@ -80,9 +114,172 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       feeds: svc.atlasOracle.getFeedsConfig(),
       telemetry: svc.atlasOracle.getAllTelemetry(),
       circuitBreaker: svc.chain.getSettlementCircuitBreaker(),
+      twapConfig: {
+        sampleCount: SETTLEMENT_TWAP_SAMPLE_COUNT,
+        sampleIntervalSec: SETTLEMENT_TWAP_INTERVAL_SEC,
+        settlementDelaySec: SETTLEMENT_DELAY_SEC,
+        exactMatchGraceSec: SETTLEMENT_EXACT_MATCH_GRACE_SEC,
+        fallbackToleranceSec: SETTLEMENT_FALLBACK_TOLERANCE_SEC,
+        healthMinAvgScore: SETTLEMENT_HEALTH_MIN_AVG_SCORE,
+        minCloseLeadTimeSec: MIN_CLOSE_LEAD_TIME_SEC,
+      },
+      twapWindowHealth: {
+        BTC: btcTwapHealth,
+        ETH: ethTwapHealth,
+      },
       wsConnected: svc.atlasOracle.isWsConnected(),
       updatedAtMs: Date.now(),
     };
+  });
+
+  /**
+   * On-demand permissionless 30m TWAP proof bundle for direct user wallet settlement.
+   * Validates expiry & checks on-chain state BEFORE fetching cached/singleflight Atlas proofs.
+   */
+  app.get<{
+    Querystring: {
+      underlying?: string;
+      expiry?: string;
+    };
+  }>("/api/oracle/settlement-proof", async (req, reply) => {
+    const underlying = (
+      req.query.underlying || "BTC"
+    ).toUpperCase() as UnderlyingSymbol;
+    if (underlying !== "BTC" && underlying !== "ETH") {
+      return reply
+        .code(400)
+        .send({ error: "Only BTC and ETH underlyings are supported" });
+    }
+    const expiry = Number(req.query.expiry);
+    if (!Number.isInteger(expiry) || expiry <= 0) {
+      return reply
+        .code(400)
+        .send({ error: "Valid unix timestamp query param `expiry` is required" });
+    }
+
+    const effNow = await svc.chain.getEffectiveNow();
+    if (expiry > effNow) {
+      return reply
+        .code(400)
+        .send({ error: "Expiry has not been reached yet" });
+    }
+    const offset = SETTLEMENT_UTC_HOUR * 3600;
+    const isStandard08Utc =
+      expiry >= offset && (expiry - offset) % 86400 === 0;
+    const maxHistoryAgeSec = 180 * 86400;
+    if (!isStandard08Utc && !svc.config.isLocalDev) {
+      return reply
+        .code(400)
+        .send({ error: "Expiry must be aligned to standard 08:00 UTC schedule" });
+    }
+    if (effNow - expiry > maxHistoryAgeSec) {
+      return reply
+        .code(400)
+        .send({ error: "Expiry exceeds Atlas 180-day signed historical retention" });
+    }
+
+    const [oracleAddress, onChainSettlement, health] = await Promise.all([
+      svc.chain.getSettlementOracleContract(),
+      svc.chain.readOnChainSettlement(underlying, expiry),
+      svc.chain.getTwapWindowHealth(underlying, expiry, { checkOnChain: true }),
+    ]);
+
+    if (onChainSettlement?.settled) {
+      return {
+        status: "ALREADY_SETTLED" as const,
+        underlying,
+        expiry,
+        oracleAddress,
+        assetId: symbolToAssetId(underlying),
+        settlement: onChainSettlement,
+        health,
+      };
+    }
+
+    if (health.onChainPaused || health.status === "DISPUTED_LOW_HEALTH") {
+      return {
+        status: "DISPUTED_PAUSED" as const,
+        underlying,
+        expiry,
+        oracleAddress,
+        assetId: symbolToAssetId(underlying),
+        health,
+        reason:
+          "Expiry is frozen due to low 30m Atlas ConsensusScore (< 0.40); awaiting admin emergency settlement",
+      };
+    }
+
+    const availableAt = expiry + SETTLEMENT_DELAY_SEC;
+    if (effNow < availableAt) {
+      return {
+        status: "WAITING_DELAY" as const,
+        underlying,
+        expiry,
+        availableAt,
+        oracleAddress,
+        assetId: symbolToAssetId(underlying),
+        health,
+      };
+    }
+
+    // Guard upstream Atlas API quota: only fetch 30 proofs for recent expiries (<= 7d)
+    // or expiries that have an active ticket/series on this deployment.
+    const maxPublicProofAgeSec = 7 * 86400;
+    if (!svc.config.isLocalDev && effNow - expiry > maxPublicProofAgeSec) {
+      const [dbTickets, onChainSeries] = await Promise.all([
+        svc.db.getAllTickets(),
+        svc.chain.getAllSeriesOnChain(),
+      ]);
+      const hasKnownMarket =
+        dbTickets.some(
+          (t) => t.underlying === underlying && t.expiry === expiry
+        ) ||
+        Boolean(
+          onChainSeries?.some(
+            (s) => s.underlying === underlying && s.expiry === expiry
+          )
+        );
+      if (!hasKnownMarket) {
+        return reply.code(400).send({
+          error:
+            "Expiry is outside the 7-day public proof window and has no active market on this vault",
+        });
+      }
+    }
+
+    try {
+      const twap = await svc.atlasOracle.fetchSignedTwapProofs(
+        underlying,
+        expiry,
+        { nowSec: effNow }
+      );
+      if (!twap) {
+        return reply.code(503).send({
+          error: "Signed Atlas 30m TWAP proofs are temporarily unavailable",
+        });
+      }
+      return {
+        status: "READY" as const,
+        underlying,
+        expiry,
+        oracleAddress,
+        assetId: symbolToAssetId(underlying),
+        feedId: twap.feedId,
+        feedIdHex: twap.feedIdHex,
+        sampleCount: twap.sampleCount,
+        twapPriceUsd: twap.twapPriceUsd,
+        windowStartTimestamp: twap.windowStartTimestamp,
+        windowEndTimestamp: twap.windowEndTimestamp,
+        maxAbsTimestampDiffSec: twap.maxAbsTimestampDiffSec,
+        proofs: twap.proofs,
+        health,
+      };
+    } catch (err: any) {
+      return reply.code(503).send({
+        error:
+          err?.message || "Failed to assemble signed Atlas 30m TWAP proofs",
+      });
+    }
   });
 
   app.get<{
@@ -140,8 +337,9 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
 
     const records = recordedOnChain.map((r) => ({
       underlying: r.underlying,
-      feedId: r.feedId ?? feedCfg.feedId,
-      feedIdHex: (r.feedIdHex ?? feedCfg.feedIdHex) as `0x${string}`,
+      feedId: r.feedId ?? (r.isManualOverride ? null : feedCfg.feedId),
+      feedIdHex: (r.feedIdHex ??
+        (r.isManualOverride ? null : feedCfg.feedIdHex)) as `0x${string}` | null,
       expiry: r.expiry,
       expiryIso: new Date(r.expiry * 1000).toISOString(),
       priceUsd: r.settlementPrice,
@@ -150,6 +348,9 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       submitter: r.submitter,
       txHash: r.txHash,
       source: r.source,
+      sampleCount: r.sampleCount,
+      isManualOverride: r.isManualOverride,
+      overrideReason: r.overrideReason,
     }));
 
     return {
@@ -337,6 +538,14 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       });
       return res;
     } catch (err: any) {
+      if (err instanceof ConsensusCircuitBreakerError) {
+        return reply.code(503).send({
+          error: err.message,
+          circuitBreaker: true,
+          consensusStatus: err.consensusStatus,
+          consensusScore: err.consensusScore,
+        });
+      }
       return reply
         .code(400)
         .send({ error: err?.message || "Close RFQ failed" });

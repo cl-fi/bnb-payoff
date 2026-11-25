@@ -6,10 +6,41 @@ export type TierKind = "CONSERVATIVE" | "STANDARD" | "BREAKOUT" | "CUSTOM";
 export type VenueName = "MOCK_MAKER";
 export type DataSourceStatus = "LIVE_ATLAS" | "SYNTHETIC_FALLBACK";
 export type SettlementSource =
+  | "ATLAS_TWAP_30M"
+  | "ADMIN_EMERGENCY_SETTLED"
   | "ATLAS_PULL_HISTORY"
   | "ATLAS_PULL_LATEST"
   | "ONCHAIN_SYNCED"
   | "DEV_SIMULATED";
+
+export interface TwapSampleObservation {
+  underlying: UnderlyingSymbol;
+  expiry: number;
+  sampleTs: number;
+  priceUsd: number;
+  avgConsensusScore: number;
+  minConsensusScore: number;
+  consensusStatus: AtlasConsensusStatus;
+  tickCount: number;
+  observedAt: number;
+}
+
+export interface TwapWindowHealthSummary {
+  underlying: UnderlyingSymbol;
+  expiry: number;
+  expiryIso: string;
+  sampleCountTarget: number;
+  observedMinutes: number;
+  avgConsensusScore: number | null;
+  minConsensusScore: number | null;
+  indicativeTwapUsd: number | null;
+  threshold: number;
+  healthy: boolean;
+  mathematicallyIrrecoverable: boolean;
+  status: "HEALTHY" | "DISPUTED_LOW_HEALTH" | "INSUFFICIENT_DATA";
+  onChainPaused: boolean;
+  onChainSettled: boolean;
+}
 
 export type AtlasConsensusStatus =
   | "HEALTHY"
@@ -310,6 +341,10 @@ export interface PositionView {
   unrealizedPnlPct: number;
   settlementPrice?: number;
   claimableUsdt: number;
+  inTwapWindow?: boolean;
+  awaitingSettlement?: boolean;
+  expiryPaused?: boolean;
+  canPermissionlessSettle?: boolean;
   openTxHash: string;
   createdAt: number;
 }

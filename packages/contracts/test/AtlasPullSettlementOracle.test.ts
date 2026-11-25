@@ -7,7 +7,9 @@ import {
   FEED_ID_BTC,
   FEED_ID_ETH,
   buildSignedAtlasProof,
-  encodeSettleWithAtlasProofCalldata,
+  buildSignedAtlasTwapProofs,
+  buildTwapSampleTimestamps,
+  encodeVerifyAtlasFeedProofCalldata,
   encodeVerifyLatestAtlasPriceCalldata,
 } from "./helpers/atlasProof";
 
@@ -51,18 +53,20 @@ const PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE = {
   },
 };
 
-describe("AtlasPullSettlementOracle & MockUSDT", function () {
+describe("AtlasPullSettlementOracle (30m TWAP & Dispute Controls) & MockUSDT", function () {
   async function deployWithCustomSigner() {
-    const [admin, stranger, newAdmin] = await ethers.getSigners();
+    const [admin, pauser, stranger, newAdmin] = await ethers.getSigners();
     const customSigner = ethers.Wallet.createRandom();
     const rogueSigner = ethers.Wallet.createRandom();
 
     const Oracle = await ethers.getContractFactory("AtlasPullSettlementOracle");
     const oracle = await Oracle.deploy(admin.address, customSigner.address);
+    await oracle.connect(admin).setPauser(pauser.address);
     const oracleAddr = await oracle.getAddress();
 
     return {
       admin,
+      pauser,
       stranger,
       newAdmin,
       customSigner,
@@ -73,33 +77,64 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
   }
 
   describe("Production Atlas Official Signer Verification (0x59eD...DC600)", function () {
-    it("verifies and settles real production Atlas /v1/price/history 08:00 UTC BTC proof against official signer", async function () {
+    it("verifies real production Atlas /v1/price/history & multi-feed payloads via verifyAtlasFeedProof and 1-sample TWAP mode", async function () {
       const [admin, stranger] = await ethers.getSigners();
       const Oracle = await ethers.getContractFactory("AtlasPullSettlementOracle");
       const oracle = await Oracle.deploy(admin.address, ATLAS_OFFICIAL_SIGNER);
       const oracleAddr = await oracle.getAddress();
 
-      // Ensure EVM clock is past the fixture expiry (deterministic across past & future clocks)
       const latest = await time.latest();
-      if (latest < PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp + 10) {
-        await time.increaseTo(PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp + 10);
+      if (latest < PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp + 120) {
+        await time.increaseTo(PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp + 120);
       }
 
-      const extraData = ethers.concat([
+      // 1. Direct eth_call verification of official BTC historical fixture via verifyAtlasFeedProof
+      const historyExtraData = ethers.concat([
         PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.payload,
         PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.signature,
         PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.magicMarker,
       ]);
-
-      const calldata = encodeSettleWithAtlasProofCalldata(
-        oracle.interface,
-        ASSET_BTC,
-        PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp,
-        extraData
+      const rawHist = await ethers.provider.call({
+        to: oracleAddr,
+        data: encodeVerifyAtlasFeedProofCalldata(oracle.interface, FEED_ID_BTC, historyExtraData),
+      });
+      const [histPrice18, histTs] = oracle.interface.decodeFunctionResult(
+        "verifyAtlasFeedProof",
+        rawHist
       );
+      expect(histPrice18).to.equal(PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.expectedPrice18);
+      expect(histTs).to.equal(BigInt(PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp));
 
-      // Permissionless: any stranger can submit the valid Atlas proof
-      await expect(stranger.sendTransaction({ to: oracleAddr, data: calldata }))
+      // 2. Verify multi-feed official payload decodes both BTC (#626) and ETH (#632)
+      const multiExtraData = ethers.concat([
+        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.payload,
+        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.signature,
+        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.magicMarker,
+      ]);
+      for (const [feedId, exp] of [
+        [FEED_ID_BTC, PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.btc.expectedPrice18],
+        [FEED_ID_ETH, PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.eth.expectedPrice18],
+      ] as const) {
+        const raw = await ethers.provider.call({
+          to: oracleAddr,
+          data: encodeVerifyAtlasFeedProofCalldata(oracle.interface, feedId, multiExtraData),
+        });
+        const [p18, ts] = oracle.interface.decodeFunctionResult("verifyAtlasFeedProof", raw);
+        expect(p18).to.equal(exp);
+        expect(ts).to.equal(BigInt(PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp));
+      }
+
+      // 3. Single-sample TWAP config mode settles official historical fixture permissionlessly
+      await oracle.connect(admin).setTwapConfig(1, 60, 60, 900, 10);
+      await expect(
+        oracle
+          .connect(stranger)
+          .settleWithAtlasTwap(
+            ASSET_BTC,
+            PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp,
+            [historyExtraData]
+          )
+      )
         .to.emit(oracle, "ExpirySettled")
         .withArgs(
           ASSET_BTC,
@@ -107,7 +142,9 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
           PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.expectedPrice8,
           stranger.address,
           FEED_ID_BTC,
-          PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp
+          PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp,
+          PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp,
+          1
         );
 
       const [price, settled] = await oracle.getSettlementPrice(
@@ -116,363 +153,321 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
       );
       expect(settled).to.equal(true);
       expect(price).to.equal(PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.expectedPrice8);
-
-      const st = await oracle.getSettlement(
-        ASSET_BTC,
-        PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp
-      );
-      expect(st.settled).to.equal(true);
-      expect(st.price).to.equal(PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.expectedPrice8);
-      expect(st.settledAt).to.be.greaterThan(0n);
-
-      const [metaFeedId, metaOracleTs, metaSubmitter] = await oracle.getSettlementMeta(
-        ASSET_BTC,
-        PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp
-      );
-      expect(metaFeedId).to.equal(FEED_ID_BTC);
-      expect(metaOracleTs).to.equal(BigInt(PRODUCTION_ATLAS_HISTORY_BTC_FIXTURE.timestamp));
-      expect(metaSubmitter).to.equal(stranger.address);
-    });
-
-    it("verifies and settles both BTC (#626) and ETH (#632) from a single real multi-feed Atlas signed payload", async function () {
-      const [admin, stranger] = await ethers.getSigners();
-      const Oracle = await ethers.getContractFactory("AtlasPullSettlementOracle");
-      const oracle = await Oracle.deploy(admin.address, ATLAS_OFFICIAL_SIGNER);
-      const oracleAddr = await oracle.getAddress();
-
-      const latest = await time.latest();
-      if (latest < PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp + 10) {
-        await time.increaseTo(PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp + 10);
-      }
-
-      const extraData = ethers.concat([
-        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.payload,
-        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.signature,
-        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.magicMarker,
-      ]);
-
-      // Settle BTC from the 2-feed payload
-      const btcCall = encodeSettleWithAtlasProofCalldata(
-        oracle.interface,
-        ASSET_BTC,
-        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp,
-        extraData
-      );
-      await stranger.sendTransaction({ to: oracleAddr, data: btcCall });
-
-      // Settle ETH from the same 2-feed payload
-      const ethCall = encodeSettleWithAtlasProofCalldata(
-        oracle.interface,
-        ASSET_ETH,
-        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp,
-        extraData
-      );
-      await stranger.sendTransaction({ to: oracleAddr, data: ethCall });
-
-      const [btcPrice, btcSettled] = await oracle.getSettlementPrice(
-        ASSET_BTC,
-        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp
-      );
-      const [ethPrice, ethSettled] = await oracle.getSettlementPrice(
-        ASSET_ETH,
-        PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.timestamp
-      );
-
-      expect(btcSettled).to.equal(true);
-      expect(btcPrice).to.equal(PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.btc.expectedPrice8);
-      expect(ethSettled).to.equal(true);
-      expect(ethPrice).to.equal(PRODUCTION_ATLAS_LATEST_MULTI_FIXTURE.eth.expectedPrice8);
     });
   });
 
-  describe("Expiry-Pinned Settlement Windows & Historical Proofs", function () {
-    it("rejects pre-expiry settlement and timestamps outside [expiry - 60s, expiry + 60s], and accepts historical proofs hours after expiry", async function () {
-      const { stranger, customSigner, oracle, oracleAddr } = await deployWithCustomSigner();
+  describe("Deterministic 30-Point 1-Minute Equal-Weight TWAP Settlement", function () {
+    it("computes exact 30-point equal-weight arithmetic mean, enforces settlementDelay, 0s exact pinning, and +-10s fallback", async function () {
+      const { stranger, customSigner, oracle } = await deployWithCustomSigner();
 
       const now = await time.latest();
       const expiry = now + 3600;
-      const price18 = 65000_12345678n * 10n ** 10n;
+
+      // Verify on-chain deterministic schedule [expiry - 29m .. expiry]
+      const onChainSchedule = await oracle.getTwapSampleTimestamps(expiry);
+      const expectedSchedule = buildTwapSampleTimestamps(expiry, 30, 60);
+      expect(onChainSchedule.length).to.equal(30);
+      expect(onChainSchedule[0]).to.equal(BigInt(expiry - 29 * 60));
+      expect(onChainSchedule[29]).to.equal(BigInt(expiry));
+      expect(onChainSchedule.map((v) => v)).to.deep.equal(expectedSchedule);
+
+      // 30 distinct prices trending across the 30-minute window (pure equal-weight mean, no trimming)
+      const prices18: bigint[] = [];
+      for (let i = 0; i < 30; i++) {
+        // $65,000 + $10 * i + fractional dust to test single-division scaling
+        prices18.push((65_000n + BigInt(i) * 10n) * 10n ** 18n + 3333333333n * BigInt(i + 1));
+      }
+      const { extraDatas, expectedPrice8 } = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_BTC,
+        expiry,
+        prices18,
+      });
 
       // 1. Pre-expiry reverts with ExpiryNotReached
-      const preExpiryProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18, timestamp: now },
-      ]);
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            preExpiryProof.extraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, extraDatas)
       ).to.be.revertedWithCustomError(oracle, "ExpiryNotReached");
 
-      // Advance 2 hours past expiry (simulating delayed historical /v1/price/history settlement)
-      await time.increaseTo(expiry + 7200);
-
-      // 2. Timestamp too early (expiry - 61) reverts with TimestampOutsideExpiryWindow
-      const tooEarlyProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18, timestamp: expiry - 61 },
-      ]);
+      // 2. Inside 60s settlementDelay reverts with SettlementDelayNotElapsed
+      await time.increaseTo(expiry + 30);
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            tooEarlyProof.extraData
-          ),
-        })
-      ).to.be.revertedWithCustomError(oracle, "TimestampOutsideExpiryWindow");
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, extraDatas)
+      ).to.be.revertedWithCustomError(oracle, "SettlementDelayNotElapsed");
 
-      // 3. Timestamp too late (expiry + 61) reverts with TimestampOutsideExpiryWindow
-      const tooLateProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18, timestamp: expiry + 61 },
-      ]);
+      // 3. Past 60s delay, still within 15m exactMatchGracePeriod: 1-second offset MUST revert!
+      await time.increaseTo(expiry + 65);
+      const oneSecOff = Array(30).fill(0);
+      oneSecOff[15] = 1;
+      const offByOneProofs = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_BTC,
+        expiry,
+        prices18,
+        timestampOffsets: oneSecOff,
+      });
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            tooLateProof.extraData
-          ),
-        })
-      ).to.be.revertedWithCustomError(oracle, "TimestampOutsideExpiryWindow");
-
-      // 4. Exact lower boundary (expiry - 60) succeeds even 2 hours after expiry!
-      const exactLowerProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18, timestamp: expiry - 60 },
-      ]);
-      await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            exactLowerProof.extraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, offByOneProofs.extraDatas)
       )
+        .to.be.revertedWithCustomError(oracle, "SampleTimestampMismatch")
+        .withArgs(15, expectedSchedule[15]! + 1n, expectedSchedule[15]!, 0);
+
+      // 4. Exact 30-point submission succeeds permissionlessly in 1 atomic tx
+      const tx = await oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, extraDatas);
+      await expect(tx)
         .to.emit(oracle, "ExpirySettled")
         .withArgs(
           ASSET_BTC,
           expiry,
-          65000_12345678n,
+          expectedPrice8,
           stranger.address,
           FEED_ID_BTC,
-          expiry - 60
+          expectedSchedule[0],
+          expectedSchedule[29],
+          30
         );
 
-      // 5. Exact upper boundary (expiry + 60) succeeds on ETH
-      const exactUpperProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_ETH, price18: 2100_00000000n * 10n ** 10n, timestamp: expiry + 60 },
-      ]);
-      await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_ETH,
-            expiry,
-            exactUpperProof.extraData
-          ),
-        })
-      ).to.emit(oracle, "ExpirySettled");
+      const receipt = await tx.wait();
+      expect(receipt!.gasUsed).to.be.lessThan(450_000n);
 
-      // 6. Duplicate settlement reverts with AlreadySettled
+      const [settledPrice, settled] = await oracle.getSettlementPrice(ASSET_BTC, expiry);
+      expect(settled).to.equal(true);
+      expect(settledPrice).to.equal(expectedPrice8);
+
+      const meta = await oracle.getSettlementMeta(ASSET_BTC, expiry);
+      expect(meta.feedId).to.equal(FEED_ID_BTC);
+      expect(meta.windowStartTimestamp).to.equal(expectedSchedule[0]);
+      expect(meta.windowEndTimestamp).to.equal(expectedSchedule[29]);
+      expect(meta.submitter).to.equal(stranger.address);
+      expect(meta.sampleCount).to.equal(30n);
+      expect(meta.isManualOverride).to.equal(false);
+      expect(meta.overrideReason).to.equal("");
+
+      // 5. Duplicate settlement reverts with AlreadySettled
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            exactLowerProof.extraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, extraDatas)
       ).to.be.revertedWithCustomError(oracle, "AlreadySettled");
+
+      // 6. After 15m exactMatchGracePeriod: +-10s fallback tolerance works on ETH, +-11s reverts
+      await time.increaseTo(expiry + 901);
+      const ethPrices = Array.from({ length: 30 }, (_, i) => (2000n + BigInt(i)) * 10n ** 18n);
+      const tooFarOffsets = Array(30).fill(0);
+      tooFarOffsets[5] = -11;
+      const tooFarEth = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_ETH,
+        expiry,
+        prices18: ethPrices,
+        timestampOffsets: tooFarOffsets,
+      });
+      await expect(
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_ETH, expiry, tooFarEth.extraDatas)
+      )
+        .to.be.revertedWithCustomError(oracle, "SampleTimestampMismatch")
+        .withArgs(5, expectedSchedule[5]! - 11n, expectedSchedule[5]!, 10);
+
+      const fallbackOffsets = Array(30).fill(0);
+      fallbackOffsets[0] = -10;
+      fallbackOffsets[29] = 10;
+      const fallbackEth = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_ETH,
+        expiry,
+        prices18: ethPrices,
+        timestampOffsets: fallbackOffsets,
+      });
+      await expect(
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_ETH, expiry, fallbackEth.extraDatas)
+      ).to.emit(oracle, "ExpirySettled");
     });
 
-    it("rejects zero timestamp and future-drifted timestamps (> block.timestamp + 60s)", async function () {
-      const { stranger, customSigner, oracle, oracleAddr } = await deployWithCustomSigner();
-      const now = await time.latest();
-      const expiry = now - 10;
-
-      // Zero timestamp
-      const zeroTsProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18: 60000n * 10n ** 18n, timestamp: 0 },
-      ]);
-      await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            zeroTsProof.extraData
-          ),
-        })
-      ).to.be.revertedWithCustomError(oracle, "InvalidOracleTimestamp");
-
-      // Future drift > 60s
-      const futureTsProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18: 60000n * 10n ** 18n, timestamp: now + 120 },
-      ]);
-      await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            futureTsProof.extraData
-          ),
-        })
-      ).to.be.revertedWithCustomError(oracle, "InvalidOracleTimestamp");
-    });
-  });
-
-  describe("Cryptographic Integrity, Feed Matching & Circuit Breaker Guards", function () {
-    it("rejects unauthorized signer, tampered payload, wrong feedId, bad marker, missing extraData, and paused circuit breaker", async function () {
-      const { admin, stranger, customSigner, rogueSigner, oracle, oracleAddr } =
+    it("rejects wrong proof count, short proof, zero price sample, rogue signer, tampered payload, wrong feed, and bad marker", async function () {
+      const { admin, stranger, customSigner, rogueSigner, oracle } =
         await deployWithCustomSigner();
 
       const now = await time.latest();
-      const expiry = now - 5;
-      const price18 = 61000n * 10n ** 18n;
+      const expiry = now - 120;
+      const basePrices = Array(30).fill(61_000n * 10n ** 18n);
+      const valid = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_BTC,
+        expiry,
+        prices18: basePrices,
+      });
 
-      // 1. Unauthorized signer
-      const rogueProof = buildSignedAtlasProof(rogueSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18, timestamp: expiry },
-      ]);
+      // Wrong proof count
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            rogueProof.extraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, valid.extraDatas.slice(0, 29))
+      )
+        .to.be.revertedWithCustomError(oracle, "InvalidProofCount")
+        .withArgs(29, 30);
+
+      // Short proof (< 88 bytes)
+      const shortArr = [...valid.extraDatas];
+      shortArr[3] = "0x1234";
+      await expect(
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, shortArr)
+      )
+        .to.be.revertedWithCustomError(oracle, "InvalidProofLength")
+        .withArgs(3, 2);
+
+      // Single zero-price sample inside the 30-point window must revert
+      const zeroPriceArr = [...basePrices];
+      zeroPriceArr[12] = 0n;
+      const zeroProofs = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_BTC,
+        expiry,
+        prices18: zeroPriceArr,
+      });
+      await expect(
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, zeroProofs.extraDatas)
+      ).to.be.revertedWithCustomError(oracle, "InvalidPrice");
+
+      // Rogue signer on proof #7 bubbles up UnauthorizedSigner
+      const rogueArr = [...valid.extraDatas];
+      const rogueSample = buildSignedAtlasProof(rogueSigner.privateKey, [
+        { feedId: FEED_ID_BTC, price18: 61_000n * 10n ** 18n, timestamp: valid.timestamps[7]! },
+      ]);
+      rogueArr[7] = rogueSample.extraData;
+      await expect(
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, rogueArr)
       ).to.be.revertedWithCustomError(oracle, "UnauthorizedSigner");
 
-      // 2. Tampered payload (mutate 1 byte of price after signing -> recovers wrong signer)
-      const validProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_BTC, price18, timestamp: expiry },
-      ]);
-      const tamperedBytes = ethers.getBytes(validProof.payload);
-      tamperedBytes[6] ^= 0xff;
-      const tamperedExtraData = ethers.concat([
-        ethers.hexlify(tamperedBytes),
-        validProof.signature,
-        ATLAS_MAGIC_MARKER,
-      ]);
+      // Tampered payload byte bubbles up UnauthorizedSigner
+      const tamperedArr = [...valid.extraDatas];
+      const bytes = ethers.getBytes(tamperedArr[2]!);
+      bytes[6] ^= 0xff;
+      tamperedArr[2] = ethers.hexlify(bytes);
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            tamperedExtraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, tamperedArr)
       ).to.be.revertedWithCustomError(oracle, "UnauthorizedSigner");
 
-      // 3. Wrong feedId (ETH package submitted when settling BTC)
-      const ethOnlyProof = buildSignedAtlasProof(customSigner.privateKey, [
-        { feedId: FEED_ID_ETH, price18: 2000n * 10n ** 18n, timestamp: expiry },
-      ]);
+      // Wrong feedId on proof #4 bubbles up UnmatchedFeedID
+      const wrongFeedArr = [...valid.extraDatas];
+      wrongFeedArr[4] = buildSignedAtlasProof(customSigner.privateKey, [
+        { feedId: FEED_ID_ETH, price18: 2000n * 10n ** 18n, timestamp: valid.timestamps[4]! },
+      ]).extraData;
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            ethOnlyProof.extraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, wrongFeedArr)
       )
         .to.be.revertedWithCustomError(oracle, "UnmatchedFeedID")
         .withArgs(FEED_ID_BTC);
 
-      // 4. Bad magic marker
-      const badMarkerProof = buildSignedAtlasProof(
+      // Bad magic marker on proof #0 bubbles up InvalidMarker
+      const badMarkerArr = [...valid.extraDatas];
+      badMarkerArr[0] = buildSignedAtlasProof(
         customSigner.privateKey,
-        [{ feedId: FEED_ID_BTC, price18, timestamp: expiry }],
+        [{ feedId: FEED_ID_BTC, price18: 61_000n * 10n ** 18n, timestamp: valid.timestamps[0]! }],
         "0xdead"
-      );
+      ).extraData;
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            badMarkerProof.extraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, badMarkerArr)
       ).to.be.revertedWithCustomError(oracle, "InvalidMarker");
 
-      // 5. Missing trailing extraData
+      // Global pause blocks TWAP settlement
+      await oracle.connect(admin).setSettlementPaused(true);
       await expect(
-        oracle.connect(stranger).settleWithAtlasProof(ASSET_BTC, expiry)
-      ).to.be.revertedWithCustomError(oracle, "InsufficientMetadata");
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, valid.extraDatas)
+      ).to.be.revertedWithCustomError(oracle, "SettlementPaused");
+      await oracle.connect(admin).setSettlementPaused(false);
+    });
+  });
 
-      // 6. Unconfigured asset
-      const unknownAsset = ethers.keccak256(ethers.toUtf8Bytes("SOL"));
-      await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            unknownAsset,
-            expiry,
-            validProof.extraData
-          ),
-        })
-      ).to.be.revertedWithCustomError(oracle, "FeedNotConfigured");
+  describe("Role-Separated Dispute Freeze (pauser) & Guarded Emergency Manual Settlement", function () {
+    it("allows pauser to freeze before expiry, blocks pauser from unpausing/manual settling, and enforces all 4 guardrails on emergencyManualSettle", async function () {
+      const { admin, pauser, stranger, customSigner, oracle } = await deployWithCustomSigner();
 
-      // 7. Emergency circuit breaker pause & resume
+      const now = await time.latest();
+      const expiry = now + 600; // 10 minutes before expiry
+      const manualPrice8 = 64_250_00000000n;
+      const auditReason = "Atlas 30m avg ConsensusScore 0.28 < 0.40; settled via fallback index";
+
+      // 1. Stranger cannot pause
       await expect(
-        oracle.connect(stranger).setSettlementPaused(true)
+        oracle.connect(stranger).pauseExpiry(ASSET_BTC, expiry)
+      ).to.be.revertedWithCustomError(oracle, "Unauthorized");
+
+      // 2. Owner cannot emergency-settle BEFORE expiry or while unpaused
+      await expect(
+        oracle.connect(admin).emergencyManualSettle(ASSET_BTC, expiry, manualPrice8, auditReason)
+      ).to.be.revertedWithCustomError(oracle, "ExpiryNotReached");
+
+      // 3. Pauser freezes disputed expiry BEFORE expiry to prevent front-running
+      await expect(oracle.connect(pauser).pauseExpiry(ASSET_BTC, expiry))
+        .to.emit(oracle, "ExpirySettlementPausedUpdated")
+        .withArgs(ASSET_BTC, expiry, true, pauser.address);
+      expect(await oracle.isExpiryPaused(ASSET_BTC, expiry)).to.equal(true);
+
+      // 4. Pauser CANNOT unpause and CANNOT call emergencyManualSettle
+      await expect(
+        oracle.connect(pauser).unpauseExpiry(ASSET_BTC, expiry)
+      ).to.be.revertedWithCustomError(oracle, "OwnableUnauthorizedAccount");
+      await expect(
+        oracle.connect(pauser).emergencyManualSettle(ASSET_BTC, expiry, manualPrice8, auditReason)
       ).to.be.revertedWithCustomError(oracle, "OwnableUnauthorizedAccount");
 
-      await expect(oracle.connect(admin).setSettlementPaused(true))
-        .to.emit(oracle, "SettlementPausedUpdated")
-        .withArgs(true);
-
+      // 5. Even after expiry + settlementDelay, permissionless TWAP submission is blocked while paused
+      await time.increaseTo(expiry + 120);
+      const { extraDatas } = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_BTC,
+        expiry,
+        prices18: 64_000n * 10n ** 18n,
+      });
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            validProof.extraData
-          ),
-        })
-      ).to.be.revertedWithCustomError(oracle, "SettlementPaused");
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BTC, expiry, extraDatas)
+      ).to.be.revertedWithCustomError(oracle, "ExpirySettlementPaused");
 
-      await oracle.connect(admin).setSettlementPaused(false);
+      // 6. Guardrail checks: empty reason & zero price rejected; unpaused expiry rejected
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BTC,
-            expiry,
-            validProof.extraData
-          ),
-        })
+        oracle.connect(admin).emergencyManualSettle(ASSET_BTC, expiry, manualPrice8, "")
+      ).to.be.revertedWithCustomError(oracle, "InvalidReason");
+      await expect(
+        oracle.connect(admin).emergencyManualSettle(ASSET_BTC, expiry, 0n, auditReason)
+      ).to.be.revertedWithCustomError(oracle, "InvalidPrice");
+      await expect(
+        oracle.connect(admin).emergencyManualSettle(ASSET_ETH, expiry, 2000_00000000n, auditReason)
+      ).to.be.revertedWithCustomError(oracle, "ExpiryNotPaused");
+
+      // 7. Owner executes emergencyManualSettle with public audit reason
+      await expect(
+        oracle.connect(admin).emergencyManualSettle(ASSET_BTC, expiry, manualPrice8, auditReason)
+      )
+        .to.emit(oracle, "EmergencyExpirySettled")
+        .withArgs(ASSET_BTC, expiry, manualPrice8, admin.address, auditReason);
+
+      const [price, settled] = await oracle.getSettlementPrice(ASSET_BTC, expiry);
+      expect(settled).to.equal(true);
+      expect(price).to.equal(manualPrice8);
+      expect(await oracle.isExpiryPaused(ASSET_BTC, expiry)).to.equal(false);
+
+      const meta = await oracle.getSettlementMeta(ASSET_BTC, expiry);
+      expect(meta.isManualOverride).to.equal(true);
+      expect(meta.sampleCount).to.equal(0n);
+      expect(meta.feedId).to.equal("0x00000000");
+      expect(meta.submitter).to.equal(admin.address);
+      expect(meta.overrideReason).to.equal(auditReason);
+
+      // 8. Settled expiry can NEVER be overwritten or re-paused
+      await expect(
+        oracle.connect(pauser).pauseExpiry(ASSET_BTC, expiry)
+      ).to.be.revertedWithCustomError(oracle, "AlreadySettled");
+      await expect(
+        oracle.connect(admin).emergencyManualSettle(ASSET_BTC, expiry, 1_00000000n, "retry")
+      ).to.be.revertedWithCustomError(oracle, "AlreadySettled");
+
+      // 9. Owner can unpause a false-alarm freeze so permissionless TWAP completes normally
+      await oracle.connect(pauser).pauseExpiry(ASSET_ETH, expiry);
+      await oracle.connect(admin).unpauseExpiry(ASSET_ETH, expiry);
+      const ethTwap = buildSignedAtlasTwapProofs({
+        signerPrivateKey: customSigner.privateKey,
+        feedId: FEED_ID_ETH,
+        expiry,
+        prices18: 2050n * 10n ** 18n,
+      });
+      await expect(
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_ETH, expiry, ethTwap.extraDatas)
       ).to.emit(oracle, "ExpirySettled");
     });
   });
@@ -482,7 +477,6 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
       const { customSigner, oracle, oracleAddr } = await deployWithCustomSigner();
       const now = await time.latest();
 
-      // Fresh payload passes
       const btcPrice18 = 62345_67890123n * 10n ** 10n;
       const freshProof = buildSignedAtlasProof(customSigner.privateKey, [
         { feedId: FEED_ID_BTC, price18: btcPrice18, timestamp: now - 15 },
@@ -502,7 +496,6 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
       expect(aggregatedTs).to.equal(BigInt(now - 15));
       expect(feedId).to.equal(FEED_ID_BTC);
 
-      // Stale payload (> 180s old) reverts with StaleAtlasPrice
       const staleProof = buildSignedAtlasProof(customSigner.privateKey, [
         { feedId: FEED_ID_BTC, price18: btcPrice18, timestamp: now - 181 },
       ]);
@@ -516,51 +509,47 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
       ).to.be.revertedWithCustomError(oracle, "StaleAtlasPrice");
     });
 
-    it("supports owner governance controls (signer rotation, custom feeds, window tuning, Ownable2Step)", async function () {
-      const { admin, stranger, newAdmin, rogueSigner, oracle, oracleAddr } =
-        await deployWithCustomSigner();
+    it("enforces TwapConfig invariants and supports signer rotation, custom feeds, and Ownable2Step", async function () {
+      const { admin, stranger, newAdmin, rogueSigner, oracle } = await deployWithCustomSigner();
 
-      // Rotate authorized signer to rogueSigner
+      // Rejects invalid TWAP configs (zero count, window > 30m, overlapping fallback tolerance)
+      await expect(
+        oracle.connect(admin).setTwapConfig(0, 60, 60, 900, 10)
+      ).to.be.revertedWithCustomError(oracle, "InvalidTwapConfig");
+      await expect(
+        oracle.connect(admin).setTwapConfig(31, 61, 60, 900, 10)
+      ).to.be.revertedWithCustomError(oracle, "InvalidTwapConfig");
+      await expect(
+        oracle.connect(admin).setTwapConfig(10, 20, 60, 900, 10) // 2*10 >= 20 overlaps!
+      ).to.be.revertedWithCustomError(oracle, "InvalidTwapConfig");
+
+      // Valid custom TWAP config (6 samples * 5 min = 25m span)
+      await expect(oracle.connect(admin).setTwapConfig(6, 300, 30, 600, 15))
+        .to.emit(oracle, "TwapConfigUpdated")
+        .withArgs(6, 300, 30, 600, 15);
+
       await expect(oracle.connect(admin).setAuthorizedSigner(rogueSigner.address))
         .to.emit(oracle, "AuthorizedSignerUpdated")
         .withArgs(rogueSigner.address);
-      expect(await oracle.authorizedSigner()).to.equal(rogueSigner.address);
 
-      // Register BNB custom feed
       const ASSET_BNB = ethers.keccak256(ethers.toUtf8Bytes("BNB"));
       const FEED_BNB = "0x00000280";
-      await expect(oracle.connect(admin).setAssetFeedId(ASSET_BNB, FEED_BNB))
-        .to.emit(oracle, "AssetFeedIdUpdated")
-        .withArgs(ASSET_BNB, FEED_BNB);
+      await oracle.connect(admin).setAssetFeedId(ASSET_BNB, FEED_BNB);
 
-      // Update settlement windows
-      await expect(oracle.connect(admin).setSettlementWindows(90, 90, 300))
-        .to.emit(oracle, "SettlementWindowsUpdated")
-        .withArgs(90, 90, 300);
-
-      await expect(
-        oracle.connect(admin).setSettlementWindows(4000, 60, 180)
-      ).to.be.revertedWithCustomError(oracle, "InvalidWindow");
-
-      // Settle BNB using newly authorized signer & widened 90s lag
       const now = await time.latest();
-      const expiry = now - 5;
-      const bnbProof = buildSignedAtlasProof(rogueSigner.privateKey, [
-        { feedId: FEED_BNB, price18: 615_50000000n * 10n ** 10n, timestamp: expiry - 85 },
-      ]);
+      const expiry = now - 60;
+      const { extraDatas } = buildSignedAtlasTwapProofs({
+        signerPrivateKey: rogueSigner.privateKey,
+        feedId: FEED_BNB,
+        expiry,
+        prices18: 615_50000000n * 10n ** 10n,
+        count: 6,
+        interval: 300,
+      });
       await expect(
-        stranger.sendTransaction({
-          to: oracleAddr,
-          data: encodeSettleWithAtlasProofCalldata(
-            oracle.interface,
-            ASSET_BNB,
-            expiry,
-            bnbProof.extraData
-          ),
-        })
+        oracle.connect(stranger).settleWithAtlasTwap(ASSET_BNB, expiry, extraDatas)
       ).to.emit(oracle, "ExpirySettled");
 
-      // Ownable2Step ownership transfer
       await oracle.connect(admin).transferOwnership(newAdmin.address);
       await oracle.connect(newAdmin).acceptOwnership();
       expect(await oracle.owner()).to.equal(newAdmin.address);
@@ -577,11 +566,9 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
       expect(await usdt.symbol()).to.equal("tUSDT");
       expect(await usdt.decimals()).to.equal(6n);
 
-      // Default faucet() mints 1,000 tUSDT
       await usdt.connect(user)["faucet()"]();
       expect(await usdt.balanceOf(user.address)).to.equal(ethers.parseUnits("1000", 6));
 
-      // Parameterized faucet(uint256) capped at 100,000 tUSDT
       await usdt.connect(user)["faucet(uint256)"](ethers.parseUnits("100000", 6));
       expect(await usdt.balanceOf(user.address)).to.equal(ethers.parseUnits("101000", 6));
 
@@ -593,13 +580,11 @@ describe("AtlasPullSettlementOracle & MockUSDT", function () {
         usdt.connect(user)["faucet(uint256)"](0n)
       ).to.be.revertedWithCustomError(usdt, "InvalidAmount");
 
-      // Owner mint is uncapped (used for MM 1,000,000 tUSDT margin funding)
       await usdt.connect(admin).mint(recipient.address, ethers.parseUnits("1000000", 6));
       expect(await usdt.balanceOf(recipient.address)).to.equal(
         ethers.parseUnits("1000000", 6)
       );
 
-      // Freeze hook blocks transfers
       await usdt.connect(admin).setFrozen(user.address, true);
       await expect(
         usdt.connect(user).transfer(recipient.address, ethers.parseUnits("10", 6))

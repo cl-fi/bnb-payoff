@@ -50,6 +50,10 @@ function formatVolatility(val: number | null | undefined): string {
   return `${pct.toFixed(2)}%`;
 }
 
+function isValidTxHash(hash?: string | null): hash is `0x${string}` {
+  return Boolean(hash && /^0x[0-9a-fA-F]{64}$/.test(hash));
+}
+
 function statusPillClasses(status: AtlasConsensusStatus): string {
   switch (status) {
     case "HEALTHY":
@@ -340,33 +344,61 @@ export function MetricsLedgerPage() {
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-2.5 text-[11px]">
-                  <span
-                    className={
-                      guard?.settlementSafe === false
-                        ? "font-semibold text-amber-300"
-                        : "text-emerald-400"
-                    }
-                  >
-                    Settlement Keeper:{" "}
-                    {guard?.settlementSafe === false ? "PAUSED" : "ARMED"}
-                  </span>
-                  <span
-                    className={
-                      guard?.quotingSafe === false
-                        ? "font-semibold text-rose-300"
-                        : "text-emerald-400"
-                    }
-                  >
-                    Mock Maker Quoting:{" "}
-                    {guard?.quotingSafe === false ? "HALTED" : "ACTIVE"}
-                  </span>
-                </div>
-                {guard?.reason && (
-                  <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-2.5 py-1.5 text-[11px] text-amber-200">
-                    {guard.reason}
-                  </div>
-                )}
+                {(() => {
+                  const twapHealth =
+                    consensus?.twapWindowHealth?.[sym] ??
+                    health?.twapWindowHealth?.[sym];
+                  const isSettled = Boolean(twapHealth?.onChainSettled);
+                  const isPaused = Boolean(
+                    twapHealth?.onChainPaused && !isSettled
+                  );
+                  const isLowHealthOffChain = Boolean(
+                    !isSettled &&
+                      !isPaused &&
+                      twapHealth?.status === "DISPUTED_LOW_HEALTH"
+                  );
+                  return (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 pt-2.5 text-[11px]">
+                        <span
+                          className={
+                            isPaused
+                              ? "font-semibold text-rose-300"
+                              : isLowHealthOffChain
+                                ? "font-semibold text-amber-300"
+                                : "text-emerald-400"
+                          }
+                        >
+                          30m TWAP Health (&ge;40%):{" "}
+                          {isSettled
+                            ? "SETTLED"
+                            : isPaused
+                              ? "DISPUTED · PAUSED FOR ADMIN"
+                              : isLowHealthOffChain
+                                ? `LOW HEALTH ${formatScorePct(twapHealth?.avgConsensusScore)} (${twapHealth?.observedMinutes}/${twapHealth?.sampleCountTarget}m)`
+                                : twapHealth && twapHealth.observedMinutes > 0
+                                  ? `${formatScorePct(twapHealth.avgConsensusScore)} (${twapHealth.observedMinutes}/${twapHealth.sampleCountTarget}m)`
+                                  : "ARMED (30×1m)"}
+                        </span>
+                        <span
+                          className={
+                            guard?.quotingSafe === false
+                              ? "font-semibold text-rose-300"
+                              : "text-emerald-400"
+                          }
+                        >
+                          Mock Maker Quoting:{" "}
+                          {guard?.quotingSafe === false ? "HALTED" : "ACTIVE"}
+                        </span>
+                      </div>
+                      {guard?.reason && (
+                        <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-2.5 py-1.5 text-[11px] text-amber-200">
+                          {guard.reason}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             );
           })}
@@ -545,9 +577,11 @@ export function MetricsLedgerPage() {
                   >
                     <td className="px-4 py-3 font-semibold">
                       {rec.underlying}{" "}
-                      <span className="font-mono text-[10px] text-slate-400">
-                        #{rec.feedId}
-                      </span>
+                      {rec.feedId && (
+                        <span className="font-mono text-[10px] text-slate-400">
+                          #{rec.feedId}
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {rec.expiryIso.slice(0, 16).replace("T", " ")} UTC
@@ -563,12 +597,29 @@ export function MetricsLedgerPage() {
                       UTC
                     </td>
                     <td className="px-4 py-3">
-                      <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-300">
-                        {rec.source}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span
+                          className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
+                            rec.isManualOverride ||
+                            rec.source === "ADMIN_EMERGENCY_SETTLED"
+                              ? "bg-amber-500/15 text-amber-300"
+                              : "bg-emerald-500/15 text-emerald-300"
+                          }`}
+                        >
+                          {rec.source}
+                          {rec.sampleCount && rec.sampleCount > 0
+                            ? ` (${rec.sampleCount} pts)`
+                            : ""}
+                        </span>
+                      </div>
+                      {rec.overrideReason && (
+                        <div className="mt-1 max-w-xs truncate text-[10px] text-amber-200/80" title={rec.overrideReason}>
+                          Reason: {rec.overrideReason}
+                        </div>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {rec.txHash ? (
+                      {isValidTxHash(rec.txHash) ? (
                         <a
                           href={`${explorerBase}/tx/${rec.txHash}`}
                           target="_blank"

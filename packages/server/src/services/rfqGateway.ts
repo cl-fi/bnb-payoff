@@ -7,6 +7,7 @@ import {
 import {
   MAX_CLOSE_FEE_BPS,
   MAX_OPEN_FEE_BPS,
+  MIN_CLOSE_LEAD_TIME_SEC,
   PAYOFF_VAULT_ABI,
   computeProtocolFee,
   computeTokenId,
@@ -62,6 +63,22 @@ export class RfqGateway {
     return this.nonceCounter;
   }
 
+  /**
+   * Fail-closed guard: when live Atlas feeds are enabled, never sign Open or Close
+   * quotes if the Atlas feed is offline or stale (>60s local age / >90s oracle timestamp).
+   */
+  private assertLiveAtlasFresh(underlying: UnderlyingSymbol) {
+    if (!this.atlasOracle.isLiveModeActive()) return;
+    if (!this.atlasOracle.isLiveDataAvailable(underlying, 60_000)) {
+      const tel = this.atlasOracle.getTelemetry(underlying);
+      throw new ConsensusCircuitBreakerError(
+        tel.consensusStatus,
+        tel.consensusScore,
+        `Atlas live oracle feed for ${underlying} is offline or stale (>60s); RFQ quoting temporarily paused`
+      );
+    }
+  }
+
   async requestOpenRfq(params: {
     taker: `0x${string}`;
     underlying: UnderlyingSymbol;
@@ -93,7 +110,8 @@ export class RfqGateway {
       throw new Error("Stake must be between 1 and 50,000 USDT");
     }
 
-    // Enforce Atlas Enterprise ConsensusScore quoting guard before soliciting quotes
+    // Enforce live Atlas freshness (fail-closed) & Enterprise ConsensusScore quoting guard
+    this.assertLiveAtlasFresh(underlying);
     const atlasTelemetry = this.atlasOracle.getTelemetry(underlying);
     const guard = this.atlasOracle.getConsensusGuard(underlying);
     const risk = this.makerSigner.isOpenQuotingAllowed(atlasTelemetry);
@@ -388,10 +406,13 @@ export class RfqGateway {
       requestedUnits > onChainBal ? onChainBal : requestedUnits;
     const amountUsdt = unitsToUsdt(amountUnits);
 
+    // Fail-closed if live Atlas feed is offline/stale (protects maker margin from stale buybacks)
+    this.assertLiveAtlasFresh(ticket.underlying);
+
     const effNow = await this.chain.getEffectiveNow();
-    if (effNow + 300 >= ticket.expiry) {
+    if (effNow + MIN_CLOSE_LEAD_TIME_SEC >= ticket.expiry) {
       throw new Error(
-        "Less than 5 minutes until expiry; please wait for Atlas Pull Oracle settlement"
+        "Less than 30 minutes until expiry (TWAP settlement observation window active); early close is locked"
       );
     }
     const hoursRemaining = Math.max(0.2, (ticket.expiry - effNow) / 3600);
@@ -503,7 +524,8 @@ export class RfqGateway {
     const winner = sorted[0]!;
     const buybackUnits = winner.buybackUnits;
 
-    const validUntil = effNow + 45;
+    const maxCloseValidUntil = ticket.expiry - MIN_CLOSE_LEAD_TIME_SEC;
+    const validUntil = Math.min(effNow + 45, maxCloseValidUntil);
     const nonce = this.nextNonce();
 
     const signed = await this.makerSigner.signCloseQuote({

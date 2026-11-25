@@ -9,7 +9,8 @@
     "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
     "deploy:bsc": "hardhat run scripts/deploy.ts --network bscTestnet",
     "verify:atlas:bsc": "hardhat run scripts/verify-atlas-onchain.ts --network bscTestnet",
-    "verify:bsc": "hardhat run scripts/verify-contracts.ts --network bscTestnet"
+    "verify:bsc": "hardhat run scripts/verify-contracts.ts --network bscTestnet",
+    "emergency:settle:bsc": "hardhat run scripts/emergency-settle.ts --network bscTestnet"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.1.0",

@@ -3,10 +3,12 @@ import * as path from "path";
 import { DatabaseSync } from "node:sqlite";
 import { Pool } from "pg";
 import type {
+  AtlasConsensusStatus,
   Direction,
   HedgeLedgerEntry,
   SettlementSource,
   TierKind,
+  TwapSampleObservation,
   UnderlyingSymbol,
 } from "@payoff/shared";
 
@@ -21,6 +23,19 @@ export interface StoredSettlement {
   feedIdHex: string | null;
   oracleTimestamp: number | null;
   submitter: string | null;
+  sampleCount: number | null;
+  isManualOverride: boolean;
+  overrideReason: string | null;
+}
+
+export interface UpsertTwapHealthSampleInput {
+  underlying: UnderlyingSymbol;
+  expiry: number;
+  sampleTs: number;
+  priceUsd: number;
+  consensusScore: number;
+  consensusStatus: AtlasConsensusStatus;
+  observedAt: number;
 }
 
 export interface StoredRfqQuote {
@@ -110,6 +125,9 @@ export interface RecordSettlementInput {
   feedIdHex?: string | null;
   oracleTimestamp?: number | null;
   submitter?: string | null;
+  sampleCount?: number | null;
+  isManualOverride?: boolean;
+  overrideReason?: string | null;
 }
 
 export interface UpdateTicketRedeemInput {
@@ -191,6 +209,11 @@ export interface PayoffDatabase {
   getAllHedgeLedger(): Promise<HedgeLedgerEntry[]>;
   getSyncState(key: string): Promise<string | undefined>;
   setSyncState(key: string, value: string): Promise<void>;
+  upsertTwapHealthSample(input: UpsertTwapHealthSampleInput): Promise<void>;
+  getTwapHealthSamples(
+    underlying: UnderlyingSymbol,
+    expiry: number
+  ): Promise<TwapSampleObservation[]>;
 }
 
 // ============================================================================
@@ -306,8 +329,30 @@ export class PostgresDatabase implements PayoffDatabase {
         feed_id_hex TEXT,
         oracle_timestamp BIGINT,
         submitter TEXT,
+        sample_count INTEGER,
+        is_manual_override INTEGER NOT NULL DEFAULT 0,
+        override_reason TEXT,
         PRIMARY KEY (underlying, expiry)
       );
+
+      ALTER TABLE settlements ADD COLUMN IF NOT EXISTS sample_count INTEGER;
+      ALTER TABLE settlements ADD COLUMN IF NOT EXISTS is_manual_override INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE settlements ADD COLUMN IF NOT EXISTS override_reason TEXT;
+
+      CREATE TABLE IF NOT EXISTS twap_health_samples (
+        underlying TEXT NOT NULL,
+        expiry BIGINT NOT NULL,
+        sample_ts BIGINT NOT NULL,
+        price_usd DOUBLE PRECISION NOT NULL,
+        avg_consensus_score DOUBLE PRECISION NOT NULL,
+        min_consensus_score DOUBLE PRECISION NOT NULL,
+        consensus_status TEXT NOT NULL,
+        tick_count INTEGER NOT NULL DEFAULT 1,
+        observed_at BIGINT NOT NULL,
+        PRIMARY KEY (underlying, expiry, sample_ts)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_twap_health_expiry ON twap_health_samples(underlying, expiry);
 
       CREATE TABLE IF NOT EXISTS sync_state (
         key TEXT PRIMARY KEY,
@@ -394,6 +439,12 @@ export class PostgresDatabase implements PayoffDatabase {
           ? Number(r.oracle_timestamp)
           : null,
       submitter: r.submitter ?? null,
+      sampleCount:
+        r.sample_count !== null && r.sample_count !== undefined
+          ? Number(r.sample_count)
+          : null,
+      isManualOverride: Boolean(Number(r.is_manual_override ?? 0)),
+      overrideReason: r.override_reason ?? null,
     };
   }
 
@@ -648,12 +699,25 @@ export class PostgresDatabase implements PayoffDatabase {
       input.submitter !== undefined
         ? input.submitter
         : existing?.submitter ?? null;
+    const resolvedSampleCount =
+      input.sampleCount !== undefined
+        ? input.sampleCount
+        : existing?.sampleCount ?? null;
+    const resolvedIsManualOverride =
+      input.isManualOverride !== undefined
+        ? input.isManualOverride
+        : existing?.isManualOverride ?? false;
+    const resolvedOverrideReason =
+      input.overrideReason !== undefined
+        ? input.overrideReason
+        : existing?.overrideReason ?? null;
 
     await this.pool.query(
       `INSERT INTO settlements (
         underlying, expiry, settlement_price, tx_hash, settled_at,
-        source, feed_id, feed_id_hex, oracle_timestamp, submitter
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        source, feed_id, feed_id_hex, oracle_timestamp, submitter,
+        sample_count, is_manual_override, override_reason
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       ON CONFLICT (underlying, expiry) DO UPDATE SET
         settlement_price = EXCLUDED.settlement_price,
         tx_hash = EXCLUDED.tx_hash,
@@ -662,7 +726,10 @@ export class PostgresDatabase implements PayoffDatabase {
         feed_id = EXCLUDED.feed_id,
         feed_id_hex = EXCLUDED.feed_id_hex,
         oracle_timestamp = EXCLUDED.oracle_timestamp,
-        submitter = EXCLUDED.submitter`,
+        submitter = EXCLUDED.submitter,
+        sample_count = EXCLUDED.sample_count,
+        is_manual_override = EXCLUDED.is_manual_override,
+        override_reason = EXCLUDED.override_reason`,
       [
         input.underlying,
         input.expiry,
@@ -674,6 +741,9 @@ export class PostgresDatabase implements PayoffDatabase {
         resolvedFeedIdHex,
         resolvedOracleTs,
         resolvedSubmitter,
+        resolvedSampleCount,
+        resolvedIsManualOverride ? 1 : 0,
+        resolvedOverrideReason,
       ]
     );
 
@@ -833,6 +903,55 @@ export class PostgresDatabase implements PayoffDatabase {
       [key, value]
     );
   }
+
+  async upsertTwapHealthSample(input: UpsertTwapHealthSampleInput): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO twap_health_samples (
+        underlying, expiry, sample_ts, price_usd,
+        avg_consensus_score, min_consensus_score, consensus_status,
+        tick_count, observed_at
+      ) VALUES ($1,$2,$3,$4,$5,$5,$6,1,$7)
+      ON CONFLICT (underlying, expiry, sample_ts) DO UPDATE SET
+        price_usd = EXCLUDED.price_usd,
+        avg_consensus_score = (
+          twap_health_samples.avg_consensus_score * twap_health_samples.tick_count + EXCLUDED.avg_consensus_score
+        ) / (twap_health_samples.tick_count + 1),
+        min_consensus_score = LEAST(twap_health_samples.min_consensus_score, EXCLUDED.min_consensus_score),
+        consensus_status = EXCLUDED.consensus_status,
+        tick_count = twap_health_samples.tick_count + 1,
+        observed_at = EXCLUDED.observed_at`,
+      [
+        input.underlying,
+        input.expiry,
+        input.sampleTs,
+        input.priceUsd,
+        input.consensusScore,
+        input.consensusStatus,
+        input.observedAt,
+      ]
+    );
+  }
+
+  async getTwapHealthSamples(
+    underlying: UnderlyingSymbol,
+    expiry: number
+  ): Promise<TwapSampleObservation[]> {
+    const res = await this.pool.query(
+      `SELECT * FROM twap_health_samples WHERE underlying = $1 AND expiry = $2 ORDER BY sample_ts ASC`,
+      [underlying, expiry]
+    );
+    return res.rows.map((r) => ({
+      underlying: r.underlying,
+      expiry: Number(r.expiry),
+      sampleTs: Number(r.sample_ts),
+      priceUsd: Number(r.price_usd),
+      avgConsensusScore: Number(r.avg_consensus_score),
+      minConsensusScore: Number(r.min_consensus_score),
+      consensusStatus: r.consensus_status as AtlasConsensusStatus,
+      tickCount: Number(r.tick_count),
+      observedAt: Number(r.observed_at),
+    }));
+  }
 }
 
 // ============================================================================
@@ -949,8 +1068,26 @@ export class SqliteDatabase implements PayoffDatabase {
         feedIdHex TEXT,
         oracleTimestamp INTEGER,
         submitter TEXT,
+        sampleCount INTEGER,
+        isManualOverride INTEGER NOT NULL DEFAULT 0,
+        overrideReason TEXT,
         PRIMARY KEY (underlying, expiry)
       );
+
+      CREATE TABLE IF NOT EXISTS twap_health_samples (
+        underlying TEXT NOT NULL,
+        expiry INTEGER NOT NULL,
+        sampleTs INTEGER NOT NULL,
+        priceUsd REAL NOT NULL,
+        avgConsensusScore REAL NOT NULL,
+        minConsensusScore REAL NOT NULL,
+        consensusStatus TEXT NOT NULL,
+        tickCount INTEGER NOT NULL DEFAULT 1,
+        observedAt INTEGER NOT NULL,
+        PRIMARY KEY (underlying, expiry, sampleTs)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_twap_health_expiry ON twap_health_samples(underlying, expiry);
 
       CREATE TABLE IF NOT EXISTS sync_state (
         key TEXT PRIMARY KEY,
@@ -963,6 +1100,19 @@ export class SqliteDatabase implements PayoffDatabase {
         PRIMARY KEY (txHash, logIndex)
       );
     `);
+
+    // Safe migration for pre-existing local SQLite databases
+    for (const stmt of [
+      `ALTER TABLE settlements ADD COLUMN sampleCount INTEGER`,
+      `ALTER TABLE settlements ADD COLUMN isManualOverride INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE settlements ADD COLUMN overrideReason TEXT`,
+    ]) {
+      try {
+        this.db.exec(stmt);
+      } catch {
+        // column already exists
+      }
+    }
   }
 
   async close(): Promise<void> {
@@ -1213,13 +1363,26 @@ export class SqliteDatabase implements PayoffDatabase {
       input.submitter !== undefined
         ? input.submitter
         : existing?.submitter ?? null;
+    const resolvedSampleCount =
+      input.sampleCount !== undefined
+        ? input.sampleCount
+        : existing?.sampleCount ?? null;
+    const resolvedIsManualOverride =
+      input.isManualOverride !== undefined
+        ? input.isManualOverride
+        : existing?.isManualOverride ?? false;
+    const resolvedOverrideReason =
+      input.overrideReason !== undefined
+        ? input.overrideReason
+        : existing?.overrideReason ?? null;
 
     this.db
       .prepare(
         `INSERT OR REPLACE INTO settlements (
           underlying, expiry, settlementPrice, txHash, settledAt,
-          source, feedId, feedIdHex, oracleTimestamp, submitter
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          source, feedId, feedIdHex, oracleTimestamp, submitter,
+          sampleCount, isManualOverride, overrideReason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.underlying,
@@ -1231,7 +1394,10 @@ export class SqliteDatabase implements PayoffDatabase {
         resolvedFeedId,
         resolvedFeedIdHex,
         resolvedOracleTs,
-        resolvedSubmitter
+        resolvedSubmitter,
+        resolvedSampleCount,
+        resolvedIsManualOverride ? 1 : 0,
+        resolvedOverrideReason
       );
 
     this.db
@@ -1323,15 +1489,40 @@ export class SqliteDatabase implements PayoffDatabase {
       .all() as unknown as StoredTicket[];
   }
 
+  private mapSqliteSettlement(r: any): StoredSettlement {
+    return {
+      underlying: r.underlying,
+      expiry: Number(r.expiry),
+      settlementPrice: Number(r.settlementPrice),
+      txHash: r.txHash,
+      settledAt: Number(r.settledAt),
+      source: r.source,
+      feedId: r.feedId ?? null,
+      feedIdHex: r.feedIdHex ?? null,
+      oracleTimestamp:
+        r.oracleTimestamp !== null && r.oracleTimestamp !== undefined
+          ? Number(r.oracleTimestamp)
+          : null,
+      submitter: r.submitter ?? null,
+      sampleCount:
+        r.sampleCount !== null && r.sampleCount !== undefined
+          ? Number(r.sampleCount)
+          : null,
+      isManualOverride: Boolean(Number(r.isManualOverride ?? 0)),
+      overrideReason: r.overrideReason ?? null,
+    };
+  }
+
   async getSettlement(
     underlying: UnderlyingSymbol,
     expiry: number
   ): Promise<StoredSettlement | undefined> {
-    return this.db
+    const row = this.db
       .prepare(
         `SELECT * FROM settlements WHERE underlying = ? AND expiry = ?`
       )
-      .get(underlying, expiry) as unknown as StoredSettlement | undefined;
+      .get(underlying, expiry);
+    return row ? this.mapSqliteSettlement(row) : undefined;
   }
 
   async getAllSettlements(
@@ -1339,15 +1530,17 @@ export class SqliteDatabase implements PayoffDatabase {
     limit = 50
   ): Promise<StoredSettlement[]> {
     if (underlying) {
-      return this.db
+      const rows = this.db
         .prepare(
           `SELECT * FROM settlements WHERE underlying = ? ORDER BY expiry DESC LIMIT ?`
         )
-        .all(underlying, limit) as unknown as StoredSettlement[];
+        .all(underlying, limit);
+      return rows.map((r) => this.mapSqliteSettlement(r));
     }
-    return this.db
+    const rows = this.db
       .prepare(`SELECT * FROM settlements ORDER BY expiry DESC LIMIT ?`)
-      .all(limit) as unknown as StoredSettlement[];
+      .all(limit);
+    return rows.map((r) => this.mapSqliteSettlement(r));
   }
 
   async getHedgeLedger(limit = 50): Promise<HedgeLedgerEntry[]> {
@@ -1387,6 +1580,87 @@ export class SqliteDatabase implements PayoffDatabase {
         `INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)`
       )
       .run(key, value);
+  }
+
+  async upsertTwapHealthSample(input: UpsertTwapHealthSampleInput): Promise<void> {
+    const existing = this.db
+      .prepare(
+        `SELECT avgConsensusScore, minConsensusScore, tickCount FROM twap_health_samples
+         WHERE underlying = ? AND expiry = ? AND sampleTs = ?`
+      )
+      .get(input.underlying, input.expiry, input.sampleTs) as
+      | { avgConsensusScore: number; minConsensusScore: number; tickCount: number }
+      | undefined;
+
+    if (!existing) {
+      this.db
+        .prepare(
+          `INSERT INTO twap_health_samples (
+            underlying, expiry, sampleTs, priceUsd,
+            avgConsensusScore, minConsensusScore, consensusStatus, tickCount, observedAt
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`
+        )
+        .run(
+          input.underlying,
+          input.expiry,
+          input.sampleTs,
+          input.priceUsd,
+          input.consensusScore,
+          input.consensusScore,
+          input.consensusStatus,
+          input.observedAt
+        );
+    } else {
+      const nextCount = existing.tickCount + 1;
+      const nextAvg =
+        (existing.avgConsensusScore * existing.tickCount + input.consensusScore) /
+        nextCount;
+      const nextMin = Math.min(existing.minConsensusScore, input.consensusScore);
+      this.db
+        .prepare(
+          `UPDATE twap_health_samples SET
+            priceUsd = ?,
+            avgConsensusScore = ?,
+            minConsensusScore = ?,
+            consensusStatus = ?,
+            tickCount = ?,
+            observedAt = ?
+           WHERE underlying = ? AND expiry = ? AND sampleTs = ?`
+        )
+        .run(
+          input.priceUsd,
+          nextAvg,
+          nextMin,
+          input.consensusStatus,
+          nextCount,
+          input.observedAt,
+          input.underlying,
+          input.expiry,
+          input.sampleTs
+        );
+    }
+  }
+
+  async getTwapHealthSamples(
+    underlying: UnderlyingSymbol,
+    expiry: number
+  ): Promise<TwapSampleObservation[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM twap_health_samples WHERE underlying = ? AND expiry = ? ORDER BY sampleTs ASC`
+      )
+      .all(underlying, expiry) as Array<Record<string, any>>;
+    return rows.map((r) => ({
+      underlying: r.underlying as UnderlyingSymbol,
+      expiry: Number(r.expiry),
+      sampleTs: Number(r.sampleTs),
+      priceUsd: Number(r.priceUsd),
+      avgConsensusScore: Number(r.avgConsensusScore),
+      minConsensusScore: Number(r.minConsensusScore),
+      consensusStatus: r.consensusStatus as AtlasConsensusStatus,
+      tickCount: Number(r.tickCount),
+      observedAt: Number(r.observedAt),
+    }));
   }
 }
 

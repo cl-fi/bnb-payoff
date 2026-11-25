@@ -1,10 +1,10 @@
 {
   "network": "bscTestnet",
   "chainId": 97,
-  "usdtAddress": "0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe",
-  "vaultAddress": "0x3f0c3606c216895d58fE33A0f5593D665692b9cd",
-  "lensAddress": "0x5Bfb86858783a8292c41B0f905C05aA8f112bC66",
-  "settlementOracleAddress": "0xB3AcE075249f812064737804a3d4E2195346B54A",
+  "usdtAddress": "0x20845985df410F84c2e30Ba44A19dD564baE9bED",
+  "vaultAddress": "0x5a6AaD747cd5313E31fa663fF719b2a18fF00174",
+  "lensAddress": "0x831532F56ac6aB2B628a7b6cEAb1Eef3a828d60E",
+  "settlementOracleAddress": "0x00ea779192dAd354D25016841e3Ff2Bc8f545114",
   "atlasSignerAddress": "0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600",
   "atlasFeeds": {
     "BTC": {
@@ -18,8 +18,15 @@
       "pair": "ETH/USD"
     }
   },
-  "deploymentBlock": 144779395,
+  "twapConfig": {
+    "sampleCount": 30,
+    "sampleIntervalSec": 60,
+    "settlementDelaySec": 60,
+    "exactMatchGracePeriodSec": 900,
+    "fallbackTimestampToleranceSec": 10
+  },
+  "deploymentBlock": 144840259,
   "protocolOpenFeeBps": 400,
   "protocolCloseFeeBps": 0,
-  "deployedAt": "2026-11-25T11:23:29.788Z"
+  "deployedAt": "2026-11-25T19:00:46.647Z"
 }

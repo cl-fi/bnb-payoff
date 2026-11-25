@@ -32,7 +32,7 @@ async function main() {
   const usdtAddress = await mockUsdt.getAddress();
   console.log("Deployed MockUSDT (tUSDT):", usdtAddress);
 
-  // 2. AtlasPullSettlementOracle (ECDSA Pull Oracle consumer)
+  // 2. AtlasPullSettlementOracle (30m TWAP ECDSA Pull Oracle consumer)
   const atlasSignerAddress =
     process.env.ATLAS_SIGNER_ADDRESS?.trim() || ATLAS_OFFICIAL_SIGNER;
   const Oracle = await ethers.getContractFactory("AtlasPullSettlementOracle");
@@ -41,6 +41,12 @@ async function main() {
   const settlementOracleAddress = await oracle.getAddress();
   console.log("Deployed AtlasPullSettlementOracle:", settlementOracleAddress);
   console.log("Configured Atlas Authorized Signer:", atlasSignerAddress);
+
+  const customPauser = process.env.ORACLE_PAUSER_ADDRESS?.trim();
+  if (customPauser && customPauser.toLowerCase() !== deployer.address.toLowerCase()) {
+    await (await oracle.setPauser(customPauser, txOverrides)).wait();
+    console.log("Configured dedicated Oracle Pauser:", customPauser);
+  }
 
   // 3. PayoffSpreadVault (Core)
   const protocolOpenFeeBps = Number(process.env.PROTOCOL_FEE_BPS || 400);
@@ -159,6 +165,13 @@ async function main() {
     settlementOracleAddress,
     atlasSignerAddress,
     atlasFeeds: ATLAS_FEEDS,
+    twapConfig: {
+      sampleCount: 30,
+      sampleIntervalSec: 60,
+      settlementDelaySec: 60,
+      exactMatchGracePeriodSec: 900,
+      fallbackTimestampToleranceSec: 10,
+    },
     deploymentBlock,
     protocolOpenFeeBps,
     protocolCloseFeeBps,

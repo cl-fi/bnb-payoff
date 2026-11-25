@@ -61,6 +61,8 @@ export interface ServerConfig {
   feeRecipient: `0x${string}`;
   oraclePrivateKey: `0x${string}`;
   oracleAddress: `0x${string}`;
+  pauserPrivateKey: `0x${string}`;
+  pauserAddress: `0x${string}`;
   protocolFeeBps: number;
   closeFeeBps: number;
   databaseUrl?: string;
@@ -157,6 +159,10 @@ export function loadConfig(chainIdOverride?: number): ServerConfig {
     (!isLocalDev ? testnetWalletPk : undefined) ||
     HH_ACC0_PK) as `0x${string}`;
   const oracleAccount = privateKeyToAccount(oraclePrivateKey);
+
+  const pauserPrivateKey = (normalizePk(process.env.PAUSER_PRIVATE_KEY) ||
+    oraclePrivateKey) as `0x${string}`;
+  const pauserAccount = privateKeyToAccount(pauserPrivateKey);
 
   const feeRecipient = (process.env.FEE_RECIPIENT_ADDRESS?.trim() ||
     oracleAccount.address) as `0x${string}`;
@@ -277,6 +283,8 @@ export function loadConfig(chainIdOverride?: number): ServerConfig {
     feeRecipient,
     oraclePrivateKey,
     oracleAddress: oracleAccount.address,
+    pauserPrivateKey,
+    pauserAddress: pauserAccount.address,
     protocolFeeBps: Math.min(
       MAX_OPEN_FEE_BPS,
       Number(

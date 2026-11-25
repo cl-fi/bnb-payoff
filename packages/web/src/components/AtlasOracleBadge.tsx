@@ -116,10 +116,12 @@ export function AtlasOracleBadge({
   const hasOracleContract =
     Boolean(oracleAddress) &&
     oracleAddress !== "0x0000000000000000000000000000000000000000";
-  const explorerTarget = hasOracleContract ? oracleAddress! : effectiveSigner;
   const explorerBase =
     BSC_TESTNET.explorerUrl || "https://testnet.bscscan.com";
-  const explorerHref = `${explorerBase}/address/${explorerTarget}`;
+  const oracleHref = hasOracleContract
+    ? `${explorerBase}/address/${oracleAddress!}`
+    : undefined;
+  const signerHref = `${explorerBase}/address/${effectiveSigner}`;
 
   const scorePctText = formatScorePct(score);
   const scoreRatio =
@@ -184,19 +186,33 @@ export function AtlasOracleBadge({
         </div>
       </div>
 
-      <div className="rounded-lg bg-[#f7f8f9] border border-[#eef0f2] px-2.5 py-2">
+      <div className="rounded-lg bg-[#f7f8f9] border border-[#eef0f2] px-2.5 py-2 space-y-1">
         <div className="text-[#667080]">{t.atlasVerifierLabel}</div>
-        <a
-          href={explorerHref}
-          target="_blank"
-          rel="noreferrer"
-          className="mt-0.5 inline-flex items-center gap-1 font-mono font-semibold text-[#14202a] hover:underline underline-offset-2"
-        >
-          <span>{shortHex(effectiveSigner)}</span>
-          <ExternalLink className="h-2.5 w-2.5 shrink-0 text-[#667080]" aria-hidden="true" />
-        </a>
-        <div className="text-[10px] text-[#667080]">
-          ECDSA · {t.atlasBscTestnet}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {oracleHref && oracleAddress && (
+            <a
+              href={oracleHref}
+              target="_blank"
+              rel="noreferrer"
+              title={`${t.atlasOracleContractLabel}: ${oracleAddress}`}
+              className="inline-flex items-center gap-1 font-mono font-semibold text-[#14202a] hover:underline underline-offset-2"
+            >
+              <span>{shortHex(oracleAddress)}</span>
+              <ExternalLink className="h-2.5 w-2.5 shrink-0 text-[#667080]" aria-hidden="true" />
+            </a>
+          )}
+        </div>
+        <div className="text-[10px] text-[#667080] flex items-center gap-1">
+          <span>Signer:</span>
+          <a
+            href={signerHref}
+            target="_blank"
+            rel="noreferrer"
+            title={`ECDSA Signer: ${effectiveSigner}`}
+            className="font-mono hover:underline underline-offset-2 text-[#3a4552]"
+          >
+            {shortHex(effectiveSigner)}
+          </a>
         </div>
       </div>
     </div>
@@ -282,14 +298,22 @@ export function AtlasOracleBadge({
 
         <div className="flex items-center gap-2 text-[11px]">
           <a
-            href={explorerHref}
+            href={oracleHref || signerHref}
             target="_blank"
             rel="noreferrer"
             className="hidden sm:inline-flex items-center gap-1 rounded-md border border-[#e2e5e8] bg-white px-2 py-0.5 font-mono text-[10px] font-medium text-[#3a4552] hover:border-[#c8ccd1] hover:text-[#14202a] transition"
-            title={`${t.atlasVerifierLabel}: ${effectiveSigner}`}
+            title={
+              hasOracleContract && oracleAddress
+                ? `${t.atlasOracleContractLabel}: ${oracleAddress} | Signer: ${effectiveSigner}`
+                : `${t.atlasVerifierLabel}: ${effectiveSigner}`
+            }
           >
             <ShieldCheck className="h-3 w-3 text-[#0e7c72]" aria-hidden="true" />
-            <span>{shortHex(effectiveSigner)}</span>
+            <span>
+              {hasOracleContract && oracleAddress
+                ? shortHex(oracleAddress)
+                : shortHex(effectiveSigner)}
+            </span>
             <span className="text-[#c8ccd1]">·</span>
             <span className="font-sans">{t.atlasBscTestnet}</span>
           </a>

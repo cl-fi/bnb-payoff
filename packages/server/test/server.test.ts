@@ -193,60 +193,79 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
     expect(verifiedLocal.packages[0]!.timestampSeconds).toBe(1800000000);
   });
 
-  it("enforces Atlas expiry window [expiry - 60, expiry + 60] and latest fallback within 60s", async () => {
+  it("fetches, caches, and cryptographically verifies 30 deterministic 1-min TWAP proofs (0s exact vs +-10s fallback)", async () => {
+    const localPk =
+      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
+    const localSigner = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Hex;
+    const expiry = 1795593600; // 08:00 UTC
+
     const oracle = new AtlasOracleService({
       enableLiveAtlas: false,
-      authorizedSigner: ATLAS_OFFICIAL_SIGNER,
+      authorizedSigner: localSigner,
     });
 
-    // Valid historical proof right at expiry
-    oracle.setHttpFetcher(async (endpoint) => {
+    let fetchCount = 0;
+    let offsetSec = 0;
+    oracle.setHttpFetcher(async (endpoint, body) => {
       expect(endpoint).toBe("/v1/price/history");
+      fetchCount += 1;
+      const targetTs = Number(body.timestamp);
+      const idx = Math.round((targetTs - (expiry - 29 * 60)) / 60);
+      const price18 = (60_000n + BigInt(idx) * 10n) * 10n ** 18n;
+      const built = await buildSignedAtlasProofWithKey({
+        privateKey: localPk,
+        packages: [
+          {
+            feedIdHex: ATLAS_FEEDS.BTC.feedIdHex,
+            price18,
+            timestampSeconds: targetTs + offsetSec,
+          },
+        ],
+      });
       return {
-        payload: PRODUCTION_ATLAS_HISTORY_BTC.payload,
-        signature: PRODUCTION_ATLAS_HISTORY_BTC.signature,
-        magicMarker: PRODUCTION_ATLAS_HISTORY_BTC.magicMarker,
+        payload: built.payload,
+        signature: built.signature,
+        magicMarker: built.magicMarker,
       };
     });
-    const proof = await oracle.fetchSignedExpiryProof(
-      "BTC",
-      PRODUCTION_ATLAS_HISTORY_BTC.timestampSeconds
-    );
-    expect(proof).not.toBeNull();
-    expect(proof!.source).toBe("ATLAS_PULL_HISTORY");
-    expect(proof!.price8).toBe(PRODUCTION_ATLAS_HISTORY_BTC.expectedPrice8);
-    expect(proof!.extraData.endsWith("7096")).toBe(true);
 
-    // Rejects proof whose signed timestamp is outside [expiry - 60, expiry + 60]
+    // 1. Exact 0-second match during first 15 minutes
+    const twap = await oracle.fetchSignedTwapProofs("BTC", expiry, {
+      nowSec: expiry + 120,
+    });
+    expect(twap).not.toBeNull();
+    expect(fetchCount).toBe(30);
+    expect(twap!.sampleCount).toBe(30);
+    expect(twap!.proofs).toHaveLength(30);
+    expect(twap!.source).toBe("ATLAS_TWAP_30M");
+    expect(twap!.maxAbsTimestampDiffSec).toBe(0);
+    // Average of 60000, 60010, ..., 60290 = 60145.00
+    expect(twap!.twapPriceUsd).toBeCloseTo(60145, 6);
+
+    // 2. Subsequent call hits cache (0 additional Atlas API requests)
+    const cached = await oracle.fetchSignedTwapProofs("BTC", expiry, {
+      nowSec: expiry + 180,
+    });
+    expect(cached!.twapPrice8).toBe(twap!.twapPrice8);
+    expect(fetchCount).toBe(30);
+
+    // 3. Inside 15m exact grace period, even a 1-second offset is rejected
+    offsetSec = 1;
     await expect(
-      oracle.fetchSignedExpiryProof(
-        "BTC",
-        PRODUCTION_ATLAS_HISTORY_BTC.timestampSeconds + 120
-      )
-    ).rejects.toThrow(/outside expiry window/i);
+      oracle.fetchSignedTwapProofs("BTC", expiry, {
+        nowSec: expiry + 120,
+        bypassCache: true,
+      })
+    ).rejects.toThrow(/deviates by 1s/i);
 
-    // Falls back to /v1/price/latest when /v1/price/history fails AND expiry is within last 60s
-    const calls: string[] = [];
-    oracle.setHttpFetcher(async (endpoint) => {
-      calls.push(endpoint);
-      if (endpoint === "/v1/price/history") {
-        throw new Error("history indexing delay");
-      }
-      return {
-        payload: PRODUCTION_ATLAS_LATEST_MULTI.payload,
-        signature: PRODUCTION_ATLAS_LATEST_MULTI.signature,
-        magicMarker: PRODUCTION_ATLAS_LATEST_MULTI.magicMarker,
-      };
+    // 4. After 15m grace period, <= 10s fallback tolerance succeeds
+    offsetSec = 8;
+    const fallbackTwap = await oracle.fetchSignedTwapProofs("BTC", expiry, {
+      nowSec: expiry + 901,
+      bypassCache: true,
     });
-    const latestProof = await oracle.fetchSignedExpiryProof(
-      "BTC",
-      PRODUCTION_ATLAS_LATEST_MULTI.timestampSeconds,
-      { nowSec: PRODUCTION_ATLAS_LATEST_MULTI.timestampSeconds + 25 }
-    );
-    expect(calls).toEqual(["/v1/price/history", "/v1/price/latest"]);
-    expect(latestProof).not.toBeNull();
-    expect(latestProof!.source).toBe("ATLAS_PULL_LATEST");
-    expect(latestProof!.price8).toBe(PRODUCTION_ATLAS_LATEST_MULTI.btcPrice8);
+    expect(fallbackTwap).not.toBeNull();
+    expect(fallbackTwap!.maxAbsTimestampDiffSec).toBe(8);
   });
 
   it("evaluates Atlas ConsensusScore circuit breaker across HEALTHY, DEGRADED, WARNING, CRITICAL, and SPLIT_MARKET", () => {
@@ -1147,8 +1166,9 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
     }
   });
 
-  it("Atlas Permissionless Settlement Keeper pauses on WARNING/CRITICAL and settles with trailing extraData when HEALTHY", async () => {
+  it("Atlas 30m TWAP Keeper freezes disputed expiries (avg ConsensusScore < 0.40) and settles healthy expiries with 30 proofs", async () => {
     const expiry = PRODUCTION_ATLAS_HISTORY_BTC.timestampSeconds;
+    const disputedExpiry = expiry - 86400;
     const buyer = "0x9999999999999999999999999999999999999999";
 
     await services.db.upsertTicketOnOpen({
@@ -1168,13 +1188,70 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       openTxHash: "0x" + "11".repeat(32),
       timestamp: expiry - 3600,
     });
+    await services.db.upsertTicketOnOpen({
+      seriesId: "0x" + "cd".repeat(32),
+      isUp: 1,
+      taker: buyer,
+      maker: services.config.makers[0]!.address,
+      tierKind: "STANDARD",
+      underlying: "BTC",
+      direction: "BULL",
+      lowerStrike: 58000,
+      upperStrike: 60000,
+      expiry: disputedExpiry,
+      maxPayout: 50,
+      stakeUsdt: 20,
+      protocolFeeUsdt: 0.77,
+      openTxHash: "0x" + "12".repeat(32),
+      timestamp: disputedExpiry - 3600,
+    });
 
-    services.atlasOracle.setHttpFetcher(async (endpoint) => {
+    // Seed 30 healthy minute samples for `expiry` (avg = 0.94 >= 0.40)
+    // and 30 unhealthy minute samples for `disputedExpiry` (avg = 0.25 < 0.40)
+    for (let i = 0; i < 30; i++) {
+      await services.db.upsertTwapHealthSample({
+        underlying: "BTC",
+        expiry,
+        sampleTs: expiry - (29 - i) * 60,
+        priceUsd: 58659.31,
+        consensusScore: 0.94,
+        consensusStatus: "HEALTHY",
+        observedAt: expiry,
+      });
+      await services.db.upsertTwapHealthSample({
+        underlying: "BTC",
+        expiry: disputedExpiry,
+        sampleTs: disputedExpiry - (29 - i) * 60,
+        priceUsd: 58000,
+        consensusScore: 0.25,
+        consensusStatus: "CRITICAL",
+        observedAt: disputedExpiry,
+      });
+    }
+
+    const localPk =
+      "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" as Hex;
+    const localSigner = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266" as Hex;
+    const prevSigner = (services.atlasOracle as any).authorizedSigner;
+    (services.atlasOracle as any).authorizedSigner = localSigner;
+
+    services.atlasOracle.setHttpFetcher(async (endpoint, body) => {
       if (endpoint === "/v1/price/history") {
+        const ts = Number(body.timestamp);
+        const built = await buildSignedAtlasProofWithKey({
+          privateKey: localPk,
+          packages: [
+            {
+              feedIdHex: ATLAS_FEEDS.BTC.feedIdHex,
+              price18: PRODUCTION_ATLAS_HISTORY_BTC.expectedPrice18,
+              timestampSeconds: ts,
+            },
+          ],
+        });
         return {
-          payload: PRODUCTION_ATLAS_HISTORY_BTC.payload,
-          signature: PRODUCTION_ATLAS_HISTORY_BTC.signature,
-          magicMarker: PRODUCTION_ATLAS_HISTORY_BTC.magicMarker,
+          payload: built.payload,
+          signature: built.signature,
+          magicMarker: built.magicMarker,
         };
       }
       throw new Error("unexpected endpoint");
@@ -1189,79 +1266,197 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
         feedIdHex: null,
         oracleTimestamp: null,
         submitter: null,
+        sampleCount: null,
+        isManualOverride: false,
+        overrideReason: null,
       });
+    const isPausedSpy = vi
+      .spyOn(services.chain, "isExpiryPausedOnChain")
+      .mockResolvedValue(false);
+    const pauseSpy = vi
+      .spyOn(services.chain, "pauseExpiryOnChain")
+      .mockResolvedValue(("0x" + "99".repeat(32)) as Hex);
     const nowSpy = vi
       .spyOn(services.chain, "getEffectiveNow")
       .mockResolvedValue(expiry + 120);
     const fakeTxHash = ("0x" + "ab".repeat(32)) as Hex;
     const submitSpy = vi
-      .spyOn(services.chain, "submitAtlasSettlementProofOnChain")
-      .mockImplementation(async (underlying, exp, proof) => {
-        // Confirm encoded calldata appends trailing Atlas extraData ending with 0x7096
-        const encoded = services.chain.encodeSettleWithAtlasProofData(
+      .spyOn(services.chain, "submitAtlasTwapSettlementOnChain")
+      .mockImplementation(async (underlying, exp, twap) => {
+        expect(twap.proofs).toHaveLength(30);
+        const encoded = services.chain.encodeSettleWithAtlasTwapData(
           underlying,
           exp,
-          proof.extraData
+          twap.proofs
         );
-        expect(encoded.endsWith("7096")).toBe(true);
+        expect(encoded.startsWith("0x")).toBe(true);
         await services.db.recordSettlement({
           underlying,
           expiry: exp,
-          settlementPrice: Number(PRODUCTION_ATLAS_HISTORY_BTC.expectedPrice8) / 1e8,
+          settlementPrice: twap.twapPriceUsd,
           txHash: fakeTxHash,
           settledAt: exp + 120,
-          source: proof.source,
-          feedId: proof.feedId,
-          feedIdHex: proof.feedIdHex,
-          oracleTimestamp: proof.timestampSeconds,
+          source: "ATLAS_TWAP_30M",
+          feedId: twap.feedId,
+          feedIdHex: twap.feedIdHex,
+          oracleTimestamp: twap.windowEndTimestamp,
           submitter: services.chain.getOracleAddress(),
+          sampleCount: twap.sampleCount,
+          isManualOverride: false,
+          overrideReason: null,
         });
         return fakeTxHash;
       });
 
     try {
-      // 1. WARNING status -> Settlement Circuit Breaker MUST pause automated settlement
-      services.atlasOracle.setTelemetryOverride("BTC", {
-        consensusStatus: "WARNING",
-        consensusScore: 0.68,
-      });
-      const pausedResults = await services.chain.runSettlementKeeper();
-      expect(pausedResults).toHaveLength(0);
-      expect(submitSpy).not.toHaveBeenCalled();
-
-      // 2. Restore HEALTHY -> Keeper fetches signed Atlas history proof and settles!
-      services.atlasOracle.setTelemetryOverride("BTC", {
-        consensusStatus: "HEALTHY",
-        consensusScore: 0.95,
-      });
-      const settledResults = await services.chain.runSettlementKeeper();
-      expect(settledResults).toHaveLength(1);
-      expect(settledResults[0]!.underlying).toBe("BTC");
-      expect(settledResults[0]!.expiry).toBe(expiry);
-      expect(settledResults[0]!.source).toBe("ATLAS_PULL_HISTORY");
-      expect(settledResults[0]!.feedId).toBe("626");
+      const results = await services.chain.runSettlementKeeper();
+      // Healthy expiry settled via 30-point TWAP; disputed expiry (<0.40) frozen on-chain via pauseExpiry!
+      const settled = results.find((r) => r.expiry === expiry);
+      const disputed = results.find((r) => r.expiry === disputedExpiry);
+      expect(settled).toBeDefined();
+      expect(settled!.source).toBe("ATLAS_TWAP_30M");
+      expect(settled!.sampleCount).toBe(30);
+      expect(disputed).toBeDefined();
+      expect(disputed!.txHash).toBe("PAUSED_FOR_ADMIN");
+      expect(disputed!.disputed).toBe(true);
+      expect(pauseSpy).toHaveBeenCalledWith("BTC", disputedExpiry);
       expect(submitSpy).toHaveBeenCalledTimes(1);
+      // Pass 1 (sentinel pause) MUST execute before Pass 2 (slow proof fetch + settlement)
+      expect(pauseSpy.mock.invocationCallOrder[0]!).toBeLessThan(
+        submitSpy.mock.invocationCallOrder[0]!
+      );
 
-      // 3. GET /api/market/settlement-history returns Atlas settled record + proof metadata
+      // GET /api/oracle/settlement-proof returns DISPUTED_PAUSED for disputedExpiry (0 Atlas calls)
+      const disputedProofRes = await app.inject({
+        method: "GET",
+        url: `/api/oracle/settlement-proof?underlying=BTC&expiry=${disputedExpiry}`,
+      });
+      expect(disputedProofRes.statusCode).toBe(200);
+      expect(disputedProofRes.json().status).toBe("DISPUTED_PAUSED");
+
+      // GET /api/market/settlement-history returns Atlas 30m TWAP settled record
       const histRes = await app.inject({
         method: "GET",
         url: "/api/market/settlement-history?underlying=BTC&limit=5",
       });
       expect(histRes.statusCode).toBe(200);
       const hist = histRes.json();
-      expect(hist.feedId).toBe("626");
-      expect(hist.oracleAddress).toBe(
-        "0x3333333333333333333333333333333333333333"
-      );
       expect(hist.records).toHaveLength(1);
-      expect(hist.records[0].source).toBe("ATLAS_PULL_HISTORY");
-      expect(hist.records[0].oracleTimestamp).toBe(expiry);
+      expect(hist.records[0].source).toBe("ATLAS_TWAP_30M");
+      expect(hist.records[0].sampleCount).toBe(30);
+      expect(hist.records[0].isManualOverride).toBe(false);
       expect(hist.records[0].txHash).toBe(fakeTxHash);
     } finally {
+      (services.atlasOracle as any).authorizedSigner = prevSigner;
       readSpy.mockRestore();
+      isPausedSpy.mockRestore();
+      pauseSpy.mockRestore();
       nowSpy.mockRestore();
       submitSpy.mockRestore();
       services.atlasOracle.setHttpFetcher(undefined);
+    }
+  });
+
+  it("enforces fail-closed 503 on live Atlas offline/stale, allows synthetic mode without API key, enforces 20/30m health coverage, and caches TWAP fetch failures", async () => {
+    const liveApp = await buildApp({
+      databaseUrl: undefined,
+      dbPath: ":memory:",
+      rpcUrl: "http://127.0.0.1:8545",
+      enableLiveAtlas: true,
+      atlasApiKey: "test-live-key",
+      enableBinanceKlines: false,
+      vaultAddress: "0x1111111111111111111111111111111111111111",
+      settlementOracleAddress: "0x3333333333333333333333333333333333333333",
+      lensAddress: "0x4444444444444444444444444444444444444444",
+      usdtAddress: "0x2222222222222222222222222222222222222222",
+      chainId: 31337,
+    });
+    try {
+      const shelfRes = await liveApp.app.inject({
+        method: "GET",
+        url: "/api/market/shelf?underlying=BTC&direction=BULL&tenor=DAILY&stake=20",
+      });
+      const tier = (shelfRes.json().tiers as TicketSummary[])[1]!;
+      const taker = "0x7777777777777777777777777777777777777777" as const;
+
+      // Without any live Atlas updates when live key is active, /api/rfq/open MUST reject with 503
+      const staleOpen = await liveApp.app.inject({
+        method: "POST",
+        url: "/api/rfq/open",
+        payload: {
+          taker,
+          underlying: "BTC",
+          direction: "BULL",
+          tenor: "DAILY",
+          tierKind: "STANDARD",
+          lowerStrike: tier.lowerStrike,
+          upperStrike: tier.upperStrike,
+          stakeUsdt: 20,
+        },
+      });
+      expect(staleOpen.statusCode).toBe(503);
+      expect(staleOpen.json().circuitBreaker).toBe(true);
+
+      // Insufficient health coverage (only 3 low-score minutes < 20/30m) must NOT falsely freeze as DISPUTED
+      const sparseExpiry = 1795420800;
+      for (let i = 0; i < 3; i++) {
+        await liveApp.services.db.upsertTwapHealthSample({
+          underlying: "BTC",
+          expiry: sparseExpiry,
+          sampleTs: sparseExpiry - (29 - i) * 60,
+          priceUsd: 60000,
+          consensusScore: 0.2,
+          consensusStatus: "CRITICAL",
+          observedAt: sparseExpiry,
+        });
+      }
+      const sparseHealth = await liveApp.services.chain.getTwapWindowHealth(
+        "BTC",
+        sparseExpiry
+      );
+      expect(sparseHealth.status).toBe("INSUFFICIENT_DATA");
+      expect(sparseHealth.healthy).toBe(true);
+
+      // Failed TWAP fetch must enter 60s failure cooldown (does not hammer Atlas again on immediate retry)
+      let fetchCalls = 0;
+      liveApp.services.atlasOracle.setHttpFetcher(async () => {
+        fetchCalls += 1;
+        throw new Error("upstream 500");
+      });
+      await expect(
+        liveApp.services.atlasOracle.fetchSignedTwapProofs("BTC", sparseExpiry, {
+          nowSec: sparseExpiry + 120,
+        })
+      ).rejects.toThrow(/Missing signed Atlas history proof/);
+      const callsAfterFirst = fetchCalls;
+      await expect(
+        liveApp.services.atlasOracle.fetchSignedTwapProofs("BTC", sparseExpiry, {
+          nowSec: sparseExpiry + 120,
+        })
+      ).rejects.toThrow(/Missing signed Atlas history proof/);
+      expect(fetchCalls).toBe(callsAfterFirst);
+    } finally {
+      await liveApp.app.close();
+    }
+
+    // When enableLiveAtlas=true but ATLAS_API_KEY is empty, live mode falls back to synthetic and does NOT falsely 503
+    const syntheticApp = await buildApp({
+      databaseUrl: undefined,
+      dbPath: ":memory:",
+      rpcUrl: "http://127.0.0.1:8545",
+      enableLiveAtlas: true,
+      atlasApiKey: "",
+      enableBinanceKlines: false,
+      vaultAddress: "0x1111111111111111111111111111111111111111",
+      settlementOracleAddress: "0x3333333333333333333333333333333333333333",
+      lensAddress: "0x4444444444444444444444444444444444444444",
+      usdtAddress: "0x2222222222222222222222222222222222222222",
+      chainId: 31337,
+    });
+    try {
+      expect(syntheticApp.services.atlasOracle.isLiveModeActive()).toBe(false);
+    } finally {
+      await syntheticApp.app.close();
     }
   });
 
@@ -1391,6 +1586,9 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
             feedIdHex: ATLAS_FEEDS.ETH.feedIdHex,
             oracleTimestamp: expiry,
             submitter: "0x000000000000000000000000000000000000dEaD",
+            sampleCount: 30,
+            isManualOverride: false,
+            overrideReason: null,
           };
         }
         return {
@@ -1400,6 +1598,9 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
           feedIdHex: null,
           oracleTimestamp: null,
           submitter: null,
+          sampleCount: null,
+          isManualOverride: false,
+          overrideReason: null,
         };
       });
 
@@ -1415,7 +1616,7 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       expect(body.records).toHaveLength(1);
       expect(body.records[0].expiry).toBe(expiry);
       expect(body.records[0].priceUsd).toBeCloseTo(1642.19787142, 6);
-      expect(body.records[0].source).toBe("ONCHAIN_SYNCED");
+      expect(body.records[0].source).toBe("ATLAS_TWAP_30M");
     } finally {
       nowSpy.mockRestore();
       syncSpy.mockRestore();

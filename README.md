@@ -1,31 +1,63 @@
-# Payoff on BNB Chain
+# Payoff — The First Structured Prediction Market on BNB Chain
 
-**Zero-Liquidation, 100%-Collateralized Vertical Spread Tickets with Trustless On-Chain Atlas Pull Oracle Settlement**
+**Events Are Binary. Asset Prices Are Continuous.**  
+*Trade crypto direction with an anchored Start Line, customizable Target Multipliers (`1.5x`–`5x+`), continuous payouts, zero intraday liquidations, and trustless 30-Minute TWAP Atlas Pull Oracle settlement.*
 
 Built for the **HackQuest BNB Bangkok Hackathon** — targeting the **Developer Track** and the **CoinMarketCap × Atlas Challenge**.
 
 > **Read the 1-page hackathon submission brief:** [`docs/HACKATHON_ONE_PAGER.md`](./docs/HACKATHON_ONE_PAGER.md)  
-> **Inspect the transparent market-making math:** [`packages/mock-maker/README.md`](./packages/mock-maker/README.md)
+> **Inspect the transparent odds & market-making engine:** [`packages/mock-maker/README.md`](./packages/mock-maker/README.md)
 
 ---
 
-## Why Payoff?
+## Why a Structured Prediction Market?
 
-Retail crypto traders face an uncomfortable binary today:
-- **Perpetual futures** expose users to sudden wick liquidations and funding drain.
-- **Traditional options** bury simple directional bets under Greeks, margin tiers, and illiquid multi-leg books.
+First-generation prediction markets (like Polymarket) are **Binary (`Yes / No`)**.  
+Binary markets are natural for discrete events like elections or sports—where the real-world outcome is strictly `Yes` or `No`.
 
-**Payoff** packages vertical option spreads into simple, fixed-risk directional tickets on **BNB Smart Chain**:
-- **Fixed Max Loss, Zero Liquidations**: Your ticket stake (`tUSDT`) is your absolute maximum loss—no margin calls, no stop-out wicks, ever.
-- **100% On-Chain Collateralization**: Every minted spread locks `1 UP + 1 DOWN = 1 tUSDT` inside `PayoffSpreadVault.sol`, backed jointly by taker premium and pre-funded market-maker `makerMargin`.
-- **Trustless Expiry Settlement via Atlas Pull Oracle**: Anyone can settle expired markets permissionlessly on BSC Testnet by submitting an **Atlas Enterprise signed historical proof** (`/v1/price/history`, `signed: true`) pinned strictly to `[expiry - 60s, expiry + 60s]`, verified on-chain against Atlas's official ECDSA signer (`0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600`).
-- **Deep Atlas Enterprise `ConsensusScore` Protection**: Live multi-venue consensus health (`HEALTHY` / `DEGRADED` / `WARNING` / `CRITICAL` / `SPLIT_MARKET`) and `priceVolatility` drive real-time UI badges, automated settlement keeper circuit breakers, and dynamic market-maker risk spreads.
+When applied to **continuous financial asset prices (`BTC`, `ETH`)**, however, binary prediction markets break down:
+1. **The All-or-Nothing Cliff (`$1` Short = `100%` Wipeout)**: If you predict BTC will reach `$62,000` and it rallies from `$60,000` to `$61,990`, your directional call was completely right—yet a binary market pays you **`$0`**.
+2. **No Freedom to Express Magnitude**: Whether you expect a modest `+1.5%` move or a `+6%` breakout, a single `Yes/No` market forces everyone into one rigid line and one fixed odds profile (or fragments liquidity across 10 separate price-bracket pools).
+3. **Expiry Cliff Manipulation**: In a `0-or-1` price market, pushing spot by a few dollars at expiry flips `100%` of the pool from `YES` to `NO`, creating huge incentives for last-second price manipulation.
+4. **And Perpetual Futures Aren't the Answer for Casual Directional Bets**: High-leverage perps liquidate traders on temporary intraday wicks and bleed funding even when their end-of-day thesis is right.
+
+---
+
+## What Makes Payoff a *Structured* Prediction Market?
+
+Instead of forcing continuous prices into a `0` or `1` binary box, **Payoff** introduces **Structured Prediction Markets** on **BNB Smart Chain**.
+
+| Dimension | Traditional Binary Prediction Market (`0` or `1`) | **Payoff — Structured Prediction Market** |
+|---|---|---|
+| **Built For** | Discrete events (elections, sports, yes/no rulings) | **Continuous asset prices (`BTC`, `ETH`, crypto & macro metrics)** |
+| **User Choice** | Pick `Yes` or `No` on a single fixed threshold | Pick **`UP` / `DOWN`** + **how far price will reach (Target Cap & Multiplier Tier)** |
+| **Payout Curve** | All-or-nothing cliff (`$1` miss = `0` payout) | **Continuous payout** from the anchored **Start Line** up to your **Target Cap** |
+| **If Price Stays Flat** | Frequently `100%` loss if below the threshold | **Built-in Start Line cushion** recovers a portion of stake on conservative/standard tiers |
+| **Intraday Wick Risk** | High pin-risk spread spikes near expiry | **Zero liquidations** (100% collateralized in `tUSDT`) + **1-click early cashout anytime** |
+| **Expiry Fairness** | `$1` move at expiry flips `100%` of the pot | **Continuous payout slope + 30-Minute Atlas TWAP (`30 × 1m` signed proofs) + `ConsensusScore` Guard** |
+
+### Where Is the "Structure"?
+
+1. **Structured Input — Anchored Start Line + Your Chosen Target Multiplier (`1.5x` to `5x+`)**:
+   - Payoff automatically anchors a protected **Start Line** on a shared liquidity grid so you don't start from zero.
+   - Beyond picking **`UP`** or **`DOWN`** (`24h Daily` or `7D Weekly`), you choose **where you think the price can reach**—selecting your own structure of **Breakeven Cushion** and **Max Multiplier**:
+     - **Cushioned Tier (`~1.6x` Max)**: Low breakeven hurdle; even if price finishes completely flat, you recover a large portion of your stake.
+     - **Standard Tier (`~2.5x` Max)**: Built for everyday swings—wick-proof directional exposure without margin calls.
+     - **Breakout Tier (`~4.5x+` Max) & Custom Target**: Higher target cap for high-conviction directional breakouts.
+2. **Structured Continuous Payout — Earn by How Far Price Moves**:
+   - Once price crosses the **Start Line**, every dollar of movement toward your **Target Cap** increases your payout proportionally, maxing out at your full multiplier once the target is reached.
+   - Every ticket surfaces **5 intuitive retail numbers**: **Stake (= Max Loss)**, **Breakeven Price**, **If-Flat Return**, **Target Cap & Max Payout**, and **Live Early-Cashout Value**.
+   - **Higher User Retention & Sustainable Protocol Revenue**: Because traders aren't wiped out to `$0` on near-misses or sideways chop, user bankrolls last multiple rounds longer—driving higher repeat volume and organic on-chain USDT fee revenue.
+3. **Structured Liquidity & Manipulation-Resistant Settlement**:
+   - **100% On-Chain Collateralization (`1 UP + 1 DOWN = 1 tUSDT`)**: Every minted prediction locks full max-payout collateral inside `PayoffSpreadVault.sol`, backed jointly by user stake and pre-funded market-maker `makerMargin`. Users can hold to expiry or **cash out early** via competitive EIP-712 reverse-RFQ (with atomic `UP + DOWN` merge collateral unlocks).
+   - **Trustless 30-Minute TWAP Expiry Settlement via Atlas Pull Oracle**: Aligned with institutional settlement standards, anyone can settle expired markets permissionlessly on BSC Testnet by submitting **30 deterministic 1-minute Atlas Enterprise signed historical proofs** (`07:31–08:00 UTC`, `/v1/price/history`, `signed: true`). `AtlasPullSettlementOracle` verifies all 30 ECDSA signatures against Atlas's official signer (`0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600`) in one atomic transaction (`0s` exact-second match within 15m after expiry, `±10s` liveness fallback thereafter), computes the equal-weighted mean once for all redemptions, and locks early closes 30 minutes before expiry.
+   - **Deep Atlas Enterprise `ConsensusScore` Protection & Dispute Guard**: Live multi-venue consensus health (`HEALTHY` / `DEGRADED` / `WARNING` / `CRITICAL` / `SPLIT_MARKET`) and `priceVolatility` drive real-time UI badges, dynamic odds-maker risk spreads (fail-closed if Atlas goes offline/stale `>60s`), and a 30-minute aggregate health check (`avgConsensusScore < 0.40` automatically freezes the disputed expiry on-chain via a pause-only `pauser` sentinel for transparent admin `emergencyManualSettle` with a public audit reason).
 
 ---
 
 ## Architecture Overview
 
-Payoff enforces a clean architectural boundary between the **Core Protocol** (permissionless settlement & escrow) and the **Open-Source Reference / Mock Market Maker** (`packages/mock-maker`), which is published openly in this repository so judges can audit the exact financial math driving every live quote.
+Payoff enforces a clean architectural boundary between the **Core Structured Prediction Protocol** (permissionless 30m TWAP settlement & 100%-collateralized escrow vault) and the **Open-Source Reference Odds / Market Maker** (`packages/mock-maker`), which prices continuous `[Start Line, Target Cap]` payoff structures openly in this repository so judges can audit the exact financial math driving every live quote.
 
 ```mermaid
 flowchart LR
@@ -56,7 +88,7 @@ flowchart LR
   Web <-->|"HTTP / WS"| Server
   Web -->|"fillOpenQuote / fillCloseQuote / redeem"| Vault
   Web -->|"faucet()"| USDT
-  Server -->|"settleWithAtlasProof + extraData"| Oracle
+  Server -->|"settleWithAtlasTwap(30 proofs)"| Oracle
   Vault -->|"getSettlementPrice()"| Oracle
   Lens -->|"Single eth_call"| Vault
   Vault <--> USDT
@@ -76,39 +108,38 @@ flowchart LR
 
 ## Deployed Contracts — BNB Smart Chain Testnet (Chain ID `97`)
 
-Deployment manifest: [`packages/contracts/deployments/bscTestnet.json`](./packages/contracts/deployments/bscTestnet.json) (Deployment Block: **`144779395`**)
+Deployment manifest: [`packages/contracts/deployments/bscTestnet.json`](./packages/contracts/deployments/bscTestnet.json) (Deployment Block: **`144840259`**)
 
 | Contract | Address (BscScan Testnet) | Decentralized Verification (Sourcify v2) | Role |
 |---|---|---|---|
-| **`MockUSDT` (`tUSDT`)** | [`0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe`](https://testnet.bscscan.com/address/0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe) | [`exact_match`](https://repo.sourcify.dev/97/0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe) | 6-decimal testnet USDT collateral with public `faucet()` |
-| **`AtlasPullSettlementOracle`** | [`0xB3AcE075249f812064737804a3d4E2195346B54A`](https://testnet.bscscan.com/address/0xB3AcE075249f812064737804a3d4E2195346B54A) | [`exact_match`](https://repo.sourcify.dev/97/0xB3AcE075249f812064737804a3d4E2195346B54A) | Permissionless on-chain Atlas Pull ECDSA settlement oracle |
-| **`PayoffSpreadVault`** | [`0x3f0c3606c216895d58fE33A0f5593D665692b9cd`](https://testnet.bscscan.com/address/0x3f0c3606c216895d58fE33A0f5593D665692b9cd) | [`exact_match`](https://repo.sourcify.dev/97/0x3f0c3606c216895d58fE33A0f5593D665692b9cd) | Core 100%-collateralized ERC-1155 `UP`/`DOWN` escrow vault |
-| **`PayoffVaultLens`** | [`0x5Bfb86858783a8292c41B0f905C05aA8f112bC66`](https://testnet.bscscan.com/address/0x5Bfb86858783a8292c41B0f905C05aA8f112bC66) | [`exact_match`](https://repo.sourcify.dev/97/0x5Bfb86858783a8292c41B0f905C05aA8f112bC66) | Stateless read-only periphery for single-call UI/indexer queries |
+| **`MockUSDT` (`tUSDT`)** | [`0x20845985df410F84c2e30Ba44A19dD564baE9bED`](https://testnet.bscscan.com/address/0x20845985df410F84c2e30Ba44A19dD564baE9bED) | [`exact_match`](https://repo.sourcify.dev/97/0x20845985df410F84c2e30Ba44A19dD564baE9bED) | 6-decimal testnet USDT collateral with public `faucet()` |
+| **`AtlasPullSettlementOracle`** | [`0x00ea779192dAd354D25016841e3Ff2Bc8f545114`](https://testnet.bscscan.com/address/0x00ea779192dAd354D25016841e3Ff2Bc8f545114) | [`exact_match`](https://repo.sourcify.dev/97/0x00ea779192dAd354D25016841e3Ff2Bc8f545114) | Permissionless 30m (30×1m) Atlas TWAP ECDSA oracle + dispute pause |
+| **`PayoffSpreadVault`** | [`0x5a6AaD747cd5313E31fa663fF719b2a18fF00174`](https://testnet.bscscan.com/address/0x5a6AaD747cd5313E31fa663fF719b2a18fF00174) | [`exact_match`](https://repo.sourcify.dev/97/0x5a6AaD747cd5313E31fa663fF719b2a18fF00174) | Core 100%-collateralized ERC-1155 `UP`/`DOWN` escrow vault (30m close lock) |
+| **`PayoffVaultLens`** | [`0x831532F56ac6aB2B628a7b6cEAb1Eef3a828d60E`](https://testnet.bscscan.com/address/0x831532F56ac6aB2B628a7b6cEAb1Eef3a828d60E) | [`exact_match`](https://repo.sourcify.dev/97/0x831532F56ac6aB2B628a7b6cEAb1Eef3a828d60E) | Stateless read-only periphery for single-call UI/indexer queries |
 
-> **On-chain protocol parameters**: `protocolOpenFeeBps = 400` (4%, hard-capped ≤ 500 bps), `protocolCloseFeeBps = 0` (hard-capped ≤ 100 bps), reference market maker pre-funded with `1,000,000 tUSDT` in `makerMargin` using exact finite approval.
+> **On-chain protocol parameters**: `protocolOpenFeeBps = 400` (4%, hard-capped ≤ 500 bps), `protocolCloseFeeBps = 0` (hard-capped ≤ 100 bps), `MIN_OPEN_LEAD_TIME = 1h`, `MIN_CLOSE_LEAD_TIME = 30m`, TWAP `30 samples × 60s` (`settlementDelay = 60s`, `exactMatchGracePeriod = 15m`, `fallbackTimestampTolerance = ±10s`), reference market maker pre-funded with `1,000,000 tUSDT` in `makerMargin` using exact finite approval.
 
 ---
 
 ## Live Verified On-Chain Atlas Pull Oracle Proof
 
-`AtlasPullSettlementOracle` inherits `PullOracleConsumerBase` (`oracle-atlas/pull-oracle-consumer`), verifies ECDSA signatures from **Atlas Oracle's official production signer** (`0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600`, trailing calldata marker `0x7096`), and supports:
+`AtlasPullSettlementOracle` inherits unmodified `PullOracleConsumerBase` (`oracle-atlas/pull-oracle-consumer`), verifies ECDSA signatures from **Atlas Oracle's official production signer** (`0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600`, trailing calldata marker `0x7096`), and supports:
 - **`BTC/USD`**: Feed ID **`#626`** (`bytes4(0x00000272)`)
 - **`ETH/USD`**: Feed ID **`#632`** (`bytes4(0x00000278)`)
 
 ### Live BSC Testnet Verification Results (`pnpm verify:atlas:bsc`)
 
 1. **Live `eth_call` `verifyLatestAtlasPrice` (Freshness-checked on BSC Testnet)**:
-   - `BTC/USD` (`0x00000272`): **`$58,629.45988588`** @ `ts=1795605841` · `ConsensusScore = 94.54% (HEALTHY)`
-   - `ETH/USD` (`0x00000278`): **`$1,642.64096169`** @ `ts=1795605841` · `ConsensusScore = 94.69% (HEALTHY)`
+   - `BTC/USD` (`0x00000272`): **`$59,653.75598044`** @ `ts=1795633291` · `ConsensusScore = 93.27% (HEALTHY)`
+   - `ETH/USD` (`0x00000278`): **`$1,679.40804865`** @ `ts=1795633291` · `ConsensusScore = 93.49% (HEALTHY)`
 
-2. **Live Permissionless Expiry-Pinned Settlement Transaction (`settleWithAtlasProof`)**:
-   - **Transaction Hash**: [`0x0965ed4a8d161a25a3ca2ce75b7275dc4e2c8c90044d6b124933c6b99b7ebdbe`](https://testnet.bscscan.com/tx/0x0965ed4a8d161a25a3ca2ce75b7275dc4e2c8c90044d6b124933c6b99b7ebdbe) (Block **`144779429`**)
-   - **Call**: `settleWithAtlasProof(keccak256("BTC"), 1795593600)` with trailing Atlas Enterprise `/v1/price/history` (`signed: true`) proof bytes
-   - **Verified On-Chain State (`getSettlement(ASSET_BTC, 1795593600)`)**:
-     - `settled`: `true`
-     - `price`: **`$58,659.31128708`** (`5865931128708`, 8-decimal vault price scaled safely from 18-decimal Atlas price)
-     - `feedId`: `0x00000272` (`#626`)
-     - `oracleTimestamp`: `1795593600` (`2026-11-25T08:00:00.000Z`, exact 08:00 UTC expiry pin)
+2. **Live Permissionless 30-Point 1-Minute TWAP Settlement Transaction (`settleWithAtlasTwap`)**:
+   - **Transaction Hash**: [`0xe4b6067ea5ba92d688746adf0ac547406fada9f28a81e0250137b5265de2dc90`](https://testnet.bscscan.com/tx/0xe4b6067ea5ba92d688746adf0ac547406fada9f28a81e0250137b5265de2dc90) (Block **`144840391`**, **`344,021` gas**)
+   - **Call**: `settleWithAtlasTwap(keccak256("BTC"), 1795593600, proofs[30])` with 30 signed Atlas Enterprise `/v1/price/history` (`signed: true`) proofs spanning `2026-11-25T07:31:00Z` to `2026-11-25T08:00:00Z` (`maxTimestampDiff = 0s`)
+   - **Verified On-Chain State (`getSettlement` & `getSettlementMeta`)**:
+     - `settled`: `true`, `isManualOverride`: `false`, `sampleCount`: `30`
+     - `price`: **`$58,750.15513875`** (`5875015513875`, exact 30-point equal-weight arithmetic mean scaled safely from 18-dec Atlas prices)
+     - `feedId`: `0x00000272` (`#626`), `window`: `[1795591860 .. 1795593600]`
 
 ---
 
@@ -116,15 +147,15 @@ Deployment manifest: [`packages/contracts/deployments/bscTestnet.json`](./packag
 
 Rather than treating an oracle as a passive price number, Payoff wires Atlas Enterprise **`consensusScores`** (`consensusScore`, `consensusStatus`, `twapPrice`, `medianPrice`, `priceVolatility`) across all three layers of the stack:
 
-1. **Consumer UI — Real-Time Atlas Oracle Live Shield (`AtlasOracleBadge.tsx`)**:
-   - Displays live `Atlas Oracle · HEALTHY · 94.5%`, Feed ID (`#626 BTC/USD` / `#632 ETH/USD`), TWAP vs. Median spread, `priceVolatility`, and clickable on-chain ECDSA verifier reference (`0x59eD...DC600` on BSC Testnet).
-   - Color-coded in real time (`HEALTHY` teal, `DEGRADED`/`WARNING` amber, `CRITICAL`/`SPLIT_MARKET` crimson).
-2. **Backend — Settlement Keeper Circuit Breaker (`atlasOracle.ts` + `chainService.ts`)**:
-   - Streams live updates over `wss://push.atlasoracle.io/ws` (with automatic HTTP fallback to `POST /v1/price/latest` and strict server-side `X-API-KEY` isolation).
-   - Automatically pauses permissionless settlement submission whenever `consensusStatus` is `WARNING`, `CRITICAL`, or `SPLIT_MARKET` (or `consensusScore < 70%`), surfacing live circuit-breaker telemetry on `GET /api/oracle/consensus`, `GET /api/health`, WebSocket `TICK` broadcasts, and the `/ops` dashboard.
-3. **Reference Market Maker — Dynamic Spread & Quoting Circuit Breaker (`packages/mock-maker`)**:
-   - `computeConsensusRiskAdjustments(atlasTelemetry)` widens ask/bid spreads (`1.35x` on `DEGRADED`, `1.85x–2.0x` on `WARNING`) and boosts the Black-Scholes IV floor automatically when `priceVolatility > 0.5%`.
-   - Halts new `OpenQuote` signing via `ConsensusCircuitBreakerError` on `CRITICAL` / `SPLIT_MARKET`, while intentionally keeping reverse-RFQ `CloseQuote` exits available (with conservative spreads) so existing ticket holders are never trapped.
+1. **Consumer UI — Real-Time Atlas Oracle Live Shield (`AtlasOracleBadge.tsx`) & Self-Service Settlement**:
+   - Displays live `Atlas Oracle · HEALTHY · 93%`, Feed ID (`#626 BTC/USD` / `#632 ETH/USD`), TWAP vs. Median spread, `priceVolatility`, and clearly separated clickable BscScan links for the **Oracle Contract** and **Authorized ECDSA Signer**.
+   - On `/positions`, locks Early Close during the final 30m TWAP window and provides a permissionless **"Settle with Atlas 30m TWAP"** wallet action after expiry (or a clear disputed-pause notice if frozen).
+2. **Backend — 30m TWAP Health Sentinel & Permissionless Settlement Keeper (`atlasOracle.ts` + `chainService.ts`)**:
+   - Streams live updates over `wss://push.atlasoracle.io/ws` (with zombie-socket ping/reconnect watchdog and automatic HTTP fallback to `POST /v1/price/latest`, strict server-side `X-API-KEY` isolation).
+   - Aggregates 1-minute bucketed `consensusScore` observations across the final 30 minutes (`07:31–08:00 UTC`). In a two-pass keeper cycle (sentinel freeze checks run before any proof fetch), if coverage reaches `>= 20/30` minutes and the average drops below **`40%` (`0.40`)**—or becomes mathematically irrecoverable before expiry—the `pauser` sentinel immediately calls `pauseExpiry()` on-chain during the 60s pre-permissionless buffer to lock out bad data for transparent admin `emergencyManualSettle(assetId, expiry, price, reason)` (sparse windows with `< 20/30` minutes fail open with a warning so server downtime never halts normal settlement; Gnosis Safe multisig + timelock planned for mainnet).
+3. **Reference Market Maker — Dynamic Spread & Fail-Closed Quoting Guard (`packages/mock-maker` + `rfqGateway.ts`)**:
+   - `computeConsensusRiskAdjustments(atlasTelemetry)` widens ask/bid spreads (`1.35x` on `DEGRADED`, `1.85x–2.0x` on `WARNING`) and boosts the Black-Scholes IV floor automatically when `priceVolatility > 0.5%` (single-source in `ShelfEngine`, zero double-counting).
+   - Halts new `OpenQuote` signing on `CRITICAL` / `SPLIT_MARKET`, and fails closed (HTTP 503) on both Open & Close RFQs if the live Atlas feed goes offline or stale (`>60s` local / `>90s` oracle timestamp).
    - Full mathematical specification and Put-Call Parity proof in [`packages/mock-maker/README.md`](./packages/mock-maker/README.md).
 
 ---
@@ -147,8 +178,8 @@ cp .env.example .env
 ```bash
 pnpm build:shared && pnpm test:shared          # 12/12 passing
 pnpm build:mock-maker && pnpm test:mock-maker  #  4/4 passing
-CI=true pnpm compile:contracts && CI=true pnpm test:contracts  # 17/17 passing (incl. real Atlas 0x59eD...DC600 proof tests)
-pnpm test:server && pnpm build:server          # 14/14 passing
+CI=true pnpm compile:contracts && CI=true pnpm test:contracts  # 16/16 passing (incl. 30-pt TWAP, dispute pause, & real Atlas 0x59eD...DC600 tests)
+pnpm test:server && pnpm build:server          # 15/15 passing
 pnpm build:web                                 # React 19 + Vite production bundle
 pnpm typecheck                                 # Full workspace strict TypeScript check
 ```
@@ -171,12 +202,29 @@ docker compose up --build
 # Deploy MockUSDT, AtlasPullSettlementOracle, PayoffSpreadVault, PayoffVaultLens + fund MM margin
 pnpm deploy:bsc
 
-# Verify live Atlas Pull eth_call + execute real on-chain settleWithAtlasProof tx on BSC Testnet
+# Verify live Atlas Pull eth_call + execute real on-chain 30-point settleWithAtlasTwap tx on BSC Testnet
 pnpm verify:atlas:bsc
 
 # Verify all 4 contracts on Sourcify v2 (and BscScan when BSCSCAN_API_KEY is set)
 pnpm --filter @payoff/contracts verify:bsc
 ```
+
+### 5. Emergency Admin Settlement CLI (Disputed Expiries)
+When an expiry is frozen on-chain (either automatically by the `pauser` sentinel on `avgConsensusScore < 0.40`, or manually by the admin), automated TWAP settlement is locked and must be resolved via [`packages/contracts/scripts/emergency-settle.ts`](./packages/contracts/scripts/emergency-settle.ts) (owner/pauser private key only, never exposed via HTTP API):
+
+```bash
+cd packages/contracts
+
+# 1. Optional: manually freeze a disputed expiry (verifies on-chain configured asset, 08:00 UTC seconds timestamp, and post-tx paused state)
+ACTION=pause ASSET=BTC EXPIRY=1795593600 npx hardhat run scripts/emergency-settle.ts --network bscTestnet
+
+# 2. Dry-run irreversible manual settlement (prints live on-chain state & runs staticcall without broadcasting)
+ACTION=settle ASSET=BTC EXPIRY=1795593600 PRICE_USD=64250.50 REASON="Atlas 30m avg score < 0.40" npx hardhat run scripts/emergency-settle.ts --network bscTestnet
+
+# 3. Broadcast confirmed manual settlement on BSC Testnet (requires explicit CONFIRM=yes on non-local chains)
+ACTION=settle ASSET=BTC EXPIRY=1795593600 PRICE_USD=64250.50 REASON="Atlas 30m avg score < 0.40" CONFIRM=yes npx hardhat run scripts/emergency-settle.ts --network bscTestnet
+```
+> Built-in safety rails: refuses ephemeral `--network hardhat`, rejects unconfigured asset names or millisecond timestamps (use `FORCE=1` only for non-`08:00 UTC` test expiries), parses `PRICE_USD` strictly with `ethers.parseUnits(raw, 8)` (no float rounding), and requires `CONFIRM=yes` before broadcasting `emergencyManualSettle`.
 
 ---
 

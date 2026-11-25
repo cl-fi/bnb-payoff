@@ -9,6 +9,7 @@ import {
   type PublicClient,
 } from "viem";
 import {
+  ATLAS_SETTLEMENT_ORACLE_ABI,
   BSC_TESTNET,
   LOCAL_HARDHAT,
   MOCK_USDT_ABI,
@@ -572,6 +573,48 @@ export async function executeRedeemTx(params: {
     wallet,
     to: vaultAddress,
     data: redeemData,
+  });
+  await waitForConfirmedReceipt(publicClient, hash);
+  return hash;
+}
+
+/**
+ * Permissionlessly submits 30 signed Atlas historical proofs to
+ * `AtlasPullSettlementOracle.settleWithAtlasTwap(assetId, expiry, proofs)`.
+ */
+export async function executeSettleWithAtlasTwapTx(params: {
+  wallet: ConnectedWallet;
+  rpcUrl: string;
+  oracleAddress: `0x${string}`;
+  assetId: `0x${string}`;
+  expiry: number;
+  proofs: `0x${string}`[];
+  publicClient?: PublicClient;
+}): Promise<`0x${string}`> {
+  const { wallet, rpcUrl, oracleAddress, assetId, expiry, proofs } = params;
+  if (!wallet.address) throw new Error("Please connect a wallet first");
+  await ensureWalletOnTargetChain(wallet, rpcUrl);
+  const publicClient =
+    params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
+
+  await publicClient.simulateContract({
+    account: wallet.address,
+    address: oracleAddress,
+    abi: ATLAS_SETTLEMENT_ORACLE_ABI,
+    functionName: "settleWithAtlasTwap",
+    args: [assetId, BigInt(expiry), proofs],
+  });
+
+  const data = encodeFunctionData({
+    abi: ATLAS_SETTLEMENT_ORACLE_ABI,
+    functionName: "settleWithAtlasTwap",
+    args: [assetId, BigInt(expiry), proofs],
+  });
+
+  const hash = await sendEvmTx({
+    wallet,
+    to: oracleAddress,
+    data,
   });
   await waitForConfirmedReceipt(publicClient, hash);
   return hash;

@@ -5,6 +5,10 @@ import {
   ATLAS_FEEDS,
   ATLAS_MAGIC_MARKER,
   ATLAS_OFFICIAL_SIGNER,
+  SETTLEMENT_EXACT_MATCH_GRACE_SEC,
+  SETTLEMENT_FALLBACK_TOLERANCE_SEC,
+  SETTLEMENT_TWAP_INTERVAL_SEC,
+  SETTLEMENT_TWAP_SAMPLE_COUNT,
   type AtlasConsensusStatus,
   type AtlasFeedConfig,
   type AtlasFeedTelemetry,
@@ -85,6 +89,37 @@ export interface AtlasSignedProofResult {
   timestampSeconds: number;
   recoveredSigner: Hex;
   source: Extract<SettlementSource, "ATLAS_PULL_HISTORY" | "ATLAS_PULL_LATEST">;
+}
+
+export interface AtlasSignedTwapResult {
+  underlying: UnderlyingSymbol;
+  expiry: number;
+  feedId: string;
+  feedIdHex: Hex;
+  sampleCount: number;
+  sampleIntervalSec: number;
+  targetTimestamps: number[];
+  actualTimestamps: number[];
+  maxAbsTimestampDiffSec: number;
+  proofs: Hex[];
+  twapPrice8: bigint;
+  twapPriceUsd: number;
+  windowStartTimestamp: number;
+  windowEndTimestamp: number;
+  recoveredSigner: Hex;
+  source: "ATLAS_TWAP_30M";
+}
+
+export function buildTwapSampleTimestamps(
+  expirySec: number,
+  sampleCount: number = SETTLEMENT_TWAP_SAMPLE_COUNT,
+  intervalSec: number = SETTLEMENT_TWAP_INTERVAL_SEC
+): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < sampleCount; i++) {
+    out.push(expirySec - (sampleCount - 1 - i) * intervalSec);
+  }
+  return out;
 }
 
 export interface ConsensusGuardState {
@@ -425,11 +460,21 @@ export class AtlasOracleService {
 
   private ws: WebSocket | null = null;
   private wsConnected = false;
+  private lastWsMessageMs = 0;
   private stopped = true;
   private reconnectAttempts = 0;
   private reconnectTimer?: NodeJS.Timeout;
   private pollTimer?: NodeJS.Timeout;
   private baselineTimer?: NodeJS.Timeout;
+  private twapCache = new Map<
+    string,
+    { cachedAtMs: number; result: AtlasSignedTwapResult }
+  >();
+  private twapFailureCache = new Map<
+    string,
+    { failedAtMs: number; message: string }
+  >();
+  private twapInFlight = new Map<string, Promise<AtlasSignedTwapResult | null>>();
 
   constructor(opts: AtlasOracleServiceOptions = {}) {
     this.apiKey = opts.apiKey?.trim() || undefined;
@@ -496,16 +541,34 @@ export class AtlasOracleService {
     return this.wsConnected;
   }
 
-  isLiveDataAvailable(underlying?: UnderlyingSymbol): boolean {
+  /**
+   * True only when live Atlas feeds are both enabled AND configured with an API key
+   * or injected test fetcher (prevents false 503 blocks in synthetic local dev mode).
+   */
+  isLiveModeActive(): boolean {
+    return this.enableLiveAtlas && Boolean(this.apiKey || this.httpFetcher);
+  }
+
+  isLiveDataAvailable(
+    underlying?: UnderlyingSymbol,
+    maxAgeMs = 60_000
+  ): boolean {
     if (!this.enableLiveAtlas && !this.httpFetcher) return false;
-    const staleThresholdMs = 120_000;
     const now = Date.now();
+    const nowSec = Math.floor(now / 1000);
+    const maxOracleLagSec = Math.max(90, Math.ceil(maxAgeMs / 1000) + 30);
     if (underlying) {
-      const ts = this.lastLiveUpdateMs.get(underlying) ?? 0;
-      return ts > 0 && now - ts < staleThresholdMs;
+      const receivedAtMs = this.lastLiveUpdateMs.get(underlying) ?? 0;
+      if (!(receivedAtMs > 0 && now - receivedAtMs <= maxAgeMs)) {
+        return false;
+      }
+      const tel = this.telemetry.get(underlying);
+      if (!tel || !(tel.timestampSeconds > 0)) return false;
+      return nowSec - tel.timestampSeconds <= maxOracleLagSec;
     }
     return (
-      this.isLiveDataAvailable("BTC") || this.isLiveDataAvailable("ETH")
+      this.isLiveDataAvailable("BTC", maxAgeMs) ||
+      this.isLiveDataAvailable("ETH", maxAgeMs)
     );
   }
 
@@ -584,9 +647,27 @@ export class AtlasOracleService {
       this.connectWebSocket();
     }
 
-    // Fallback HTTP poll if WS is disconnected or telemetry hasn't refreshed in >15s
+    // Fallback HTTP poll & WS zombie connection watchdog
     this.pollTimer = setInterval(() => {
       const now = Date.now();
+      if (this.wsConnected && this.ws) {
+        const wsSilentMs = now - this.lastWsMessageMs;
+        if (wsSilentMs > 30_000) {
+          // Half-open / zombie WebSocket: terminate and let close handler reconnect
+          this.wsConnected = false;
+          try {
+            this.ws.terminate();
+          } catch {
+            // ignore terminate error
+          }
+        } else if (wsSilentMs > 15_000) {
+          try {
+            this.ws.ping();
+          } catch {
+            // ignore ping error
+          }
+        }
+      }
       const btcAge = now - (this.lastLiveUpdateMs.get("BTC") ?? 0);
       const ethAge = now - (this.lastLiveUpdateMs.get("ETH") ?? 0);
       if (!this.wsConnected || btcAge > 15_000 || ethAge > 15_000) {
@@ -619,6 +700,7 @@ export class AtlasOracleService {
     if (this.ws) {
       try {
         this.ws.removeAllListeners();
+        this.ws.on("error", () => {});
         this.ws.terminate();
       } catch {
         // ignore close error
@@ -640,6 +722,7 @@ export class AtlasOracleService {
         return;
       }
       this.wsConnected = true;
+      this.lastWsMessageMs = Date.now();
       this.reconnectAttempts = 0;
       const subPayload = {
         method: "SUBSCRIPTION",
@@ -655,7 +738,12 @@ export class AtlasOracleService {
       }
     });
 
+    socket.on("pong", () => {
+      this.lastWsMessageMs = Date.now();
+    });
+
     socket.on("message", (raw: RawData) => {
+      this.lastWsMessageMs = Date.now();
       try {
         const text = typeof raw === "string" ? raw : raw.toString("utf8");
         const parsed = JSON.parse(text) as { d?: AtlasSignedPayloadData };
@@ -929,94 +1017,207 @@ export class AtlasOracleService {
   }
 
   /**
-   * Fetches and cryptographically pre-verifies an expiry-pinned signed Atlas Pull proof:
-   * 1. Queries `POST /v1/price/history` with `{ feedIds: [feedId], timestamp: expirySec, signed: true }`.
-   * 2. Falls back to `/v1/price/latest` ONLY if `expirySec` is within the last 60 seconds.
-   * 3. Strictly validates `timestampSeconds` is within `[expirySec - 60, expirySec + 60]`.
-   * 4. Assembles `extraData = concatHex([payload, signature, magicMarker])` and verifies
-   *    ECDSA recovery matches `authorizedSigner` off-chain before spending gas.
+   * Fetches and cryptographically pre-verifies all 30 deterministic 1-minute signed
+   * Atlas historical proofs (`[expiry - 29m .. expiry]`) for `settleWithAtlasTwap`.
+   *
+   * Uses in-flight singleflight deduplication and a 15-minute in-memory cache so
+   * concurrent API/Keeper callers never hammer the upstream Atlas API quota.
    */
-  async fetchSignedExpiryProof(
+  async fetchSignedTwapProofs(
     underlying: UnderlyingSymbol,
     expirySec: number,
-    opts?: { nowSec?: number }
-  ): Promise<AtlasSignedProofResult | null> {
+    opts?: {
+      nowSec?: number;
+      sampleCount?: number;
+      sampleIntervalSec?: number;
+      exactMatchGraceSec?: number;
+      fallbackToleranceSec?: number;
+      bypassCache?: boolean;
+    }
+  ): Promise<AtlasSignedTwapResult | null> {
     if (!this.enableLiveAtlas && !this.httpFetcher) return null;
     if (!this.apiKey && !this.httpFetcher) return null;
 
-    const feed = this.feeds[underlying];
+    const sampleCount = opts?.sampleCount ?? SETTLEMENT_TWAP_SAMPLE_COUNT;
+    const sampleIntervalSec =
+      opts?.sampleIntervalSec ?? SETTLEMENT_TWAP_INTERVAL_SEC;
+    const exactMatchGraceSec =
+      opts?.exactMatchGraceSec ?? SETTLEMENT_EXACT_MATCH_GRACE_SEC;
+    const fallbackToleranceSec =
+      opts?.fallbackToleranceSec ?? SETTLEMENT_FALLBACK_TOLERANCE_SEC;
     const nowSec = opts?.nowSec ?? Math.floor(Date.now() / 1000);
-    const windowSec = this.expiryWindowSec;
+    const toleranceSec =
+      nowSec <= expirySec + exactMatchGraceSec ? 0 : fallbackToleranceSec;
 
-    let data: AtlasSignedPayloadData | null = null;
-    let source: "ATLAS_PULL_HISTORY" | "ATLAS_PULL_LATEST" =
-      "ATLAS_PULL_HISTORY";
-
-    try {
-      data = await this.postAtlasApi("/v1/price/history", {
-        feedIds: [feed.feedId],
-        timestamp: expirySec,
-        signed: true,
-      });
-    } catch {
-      data = null;
-    }
-
-    const canFallbackLatest = Math.abs(nowSec - expirySec) <= windowSec;
-    if ((!data || !data.payload || !data.signature) && canFallbackLatest) {
-      try {
-        data = await this.postAtlasApi("/v1/price/latest", {
-          feedIds: [feed.feedId],
-          signed: true,
-        });
-        source = "ATLAS_PULL_LATEST";
-      } catch {
-        data = null;
+    const cacheKey = `${underlying}:${expirySec}:${sampleCount}:${sampleIntervalSec}:${toleranceSec}`;
+    if (!opts?.bypassCache) {
+      const cached = this.twapCache.get(cacheKey);
+      if (cached && Date.now() - cached.cachedAtMs < 15 * 60_000) {
+        return cached.result;
       }
+      const failed = this.twapFailureCache.get(cacheKey);
+      if (failed && Date.now() - failed.failedAtMs < 60_000) {
+        throw new Error(failed.message);
+      }
+      const pending = this.twapInFlight.get(cacheKey);
+      if (pending) return pending;
     }
 
-    if (!data || !data.payload || !data.signature) {
-      return null;
+    const work = this._doFetchSignedTwapProofs({
+      underlying,
+      expirySec,
+      sampleCount,
+      sampleIntervalSec,
+      toleranceSec,
+    })
+      .then((res) => {
+        if (res) {
+          this.twapFailureCache.delete(cacheKey);
+          this.twapCache.set(cacheKey, { cachedAtMs: Date.now(), result: res });
+        }
+        return res;
+      })
+      .catch((err: unknown) => {
+        const msg =
+          err instanceof Error
+            ? err.message
+            : "Atlas 30m TWAP proof fetch failed";
+        this.twapFailureCache.set(cacheKey, {
+          failedAtMs: Date.now(),
+          message: msg,
+        });
+        throw err;
+      })
+      .finally(() => {
+        if (this.twapInFlight.get(cacheKey) === work) {
+          this.twapInFlight.delete(cacheKey);
+        }
+      });
+
+    if (!opts?.bypassCache) {
+      this.twapInFlight.set(cacheKey, work);
     }
+    return work;
+  }
 
-    const verified = await verifyAtlasSignedPayload({
-      payload: data.payload,
-      signature: data.signature,
-      magicMarker: data.magicMarker ?? ATLAS_MAGIC_MARKER,
-      expectedSigner: this.authorizedSigner,
-    });
+  private async _doFetchSignedTwapProofs(params: {
+    underlying: UnderlyingSymbol;
+    expirySec: number;
+    sampleCount: number;
+    sampleIntervalSec: number;
+    toleranceSec: number;
+  }): Promise<AtlasSignedTwapResult | null> {
+    const {
+      underlying,
+      expirySec,
+      sampleCount,
+      sampleIntervalSec,
+      toleranceSec,
+    } = params;
+    const feed = this.feeds[underlying];
+    const targetTimestamps = buildTwapSampleTimestamps(
+      expirySec,
+      sampleCount,
+      sampleIntervalSec
+    );
 
-    const pkg = verified.packages.find((p) => p.feedId === feed.feedId);
-    if (!pkg) {
-      throw new Error(
-        `Atlas proof missing feed #${feed.feedId} (${underlying})`
+    const proofs: Hex[] = new Array(sampleCount);
+    const actualTimestamps: number[] = new Array(sampleCount);
+    const prices18: bigint[] = new Array(sampleCount);
+    let recoveredSigner: Hex = this.authorizedSigner;
+    let maxAbsDiff = 0;
+
+    const CONCURRENCY = 6;
+    for (let start = 0; start < sampleCount; start += CONCURRENCY) {
+      const slice = targetTimestamps.slice(start, start + CONCURRENCY);
+      await Promise.all(
+        slice.map(async (targetTs, offset) => {
+          const idx = start + offset;
+          let data: AtlasSignedPayloadData | null = null;
+          let lastErr: unknown;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              data = await this.postAtlasApi("/v1/price/history", {
+                feedIds: [feed.feedId],
+                timestamp: targetTs,
+                signed: true,
+              });
+              if (data?.payload && data?.signature) break;
+            } catch (err) {
+              lastErr = err;
+            }
+            if (attempt < 2) {
+              await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+            }
+          }
+
+          if (!data || !data.payload || !data.signature) {
+            throw new Error(
+              `Missing signed Atlas history proof for ${underlying} sample #${idx} (ts=${targetTs}): ${
+                lastErr instanceof Error ? lastErr.message : "empty payload"
+              }`
+            );
+          }
+
+          const verified = await verifyAtlasSignedPayload({
+            payload: data.payload,
+            signature: data.signature,
+            magicMarker: data.magicMarker ?? ATLAS_MAGIC_MARKER,
+            expectedSigner: this.authorizedSigner,
+          });
+
+          const pkg = verified.packages.find((p) => p.feedId === feed.feedId);
+          if (!pkg) {
+            throw new Error(
+              `Atlas proof #${idx} missing feed #${feed.feedId} (${underlying})`
+            );
+          }
+          if (pkg.price18 <= 0n) {
+            throw new Error(
+              `Atlas proof #${idx} has non-positive price for ${underlying}`
+            );
+          }
+
+          const diff = Math.abs(pkg.timestampSeconds - targetTs);
+          if (diff > toleranceSec) {
+            throw new Error(
+              `Atlas proof #${idx} timestamp ${pkg.timestampSeconds} deviates by ${diff}s from target ${targetTs} (max tolerance ${toleranceSec}s)`
+            );
+          }
+          if (diff > maxAbsDiff) maxAbsDiff = diff;
+
+          proofs[idx] = verified.extraData;
+          actualTimestamps[idx] = pkg.timestampSeconds;
+          prices18[idx] = pkg.price18;
+          recoveredSigner = verified.recoveredSigner;
+        })
       );
     }
 
-    // Strict expiry window check matching AtlasPullSettlementOracle.sol [expiry - 60, expiry + 60]
-    if (
-      pkg.timestampSeconds < expirySec - windowSec ||
-      pkg.timestampSeconds > expirySec + windowSec
-    ) {
-      throw new Error(
-        `Atlas proof timestamp ${pkg.timestampSeconds} outside expiry window [${expirySec - windowSec}, ${expirySec + windowSec}]`
-      );
+    let sumPrice18 = 0n;
+    for (const p of prices18) {
+      sumPrice18 += p;
     }
+    const twapPrice8 = sumPrice18 / (BigInt(sampleCount) * PRICE_DECIMALS_DIFF);
+    if (twapPrice8 <= 0n) return null;
 
     return {
       underlying,
+      expiry: expirySec,
       feedId: feed.feedId,
-      feedIdHex: pkg.feedIdHex,
-      payload: verified.payload,
-      signature: verified.signature,
-      magicMarker: verified.magicMarker,
-      extraData: verified.extraData,
-      price18: pkg.price18,
-      price8: pkg.price8,
-      priceUsd: pkg.priceUsd,
-      timestampSeconds: pkg.timestampSeconds,
-      recoveredSigner: verified.recoveredSigner,
-      source,
+      feedIdHex: feed.feedIdHex,
+      sampleCount,
+      sampleIntervalSec,
+      targetTimestamps,
+      actualTimestamps,
+      maxAbsTimestampDiffSec: maxAbsDiff,
+      proofs,
+      twapPrice8,
+      twapPriceUsd: Number(twapPrice8) / 1e8,
+      windowStartTimestamp: actualTimestamps[0]!,
+      windowEndTimestamp: actualTimestamps[sampleCount - 1]!,
+      recoveredSigner,
+      source: "ATLAS_TWAP_30M",
     };
   }
 }

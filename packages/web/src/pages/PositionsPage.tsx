@@ -1,12 +1,14 @@
 import { useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
   Award,
   CheckCircle2,
   Clock,
   Droplets,
   ExternalLink,
   Loader2,
+  Lock,
   ShieldCheck,
   TrendingUp,
   Wallet,
@@ -22,6 +24,7 @@ import {
   executeClaimTestUsdtTx,
   executeCloseTicketTx,
   executeRedeemTx,
+  executeSettleWithAtlasTwapTx,
   getExplorerBaseUrl,
   type ConnectedWallet,
 } from "../lib/wallet";
@@ -68,6 +71,7 @@ export function PositionsPage({
   const [redeemingSeriesId, setRedeemingSeriesId] = useState<string | null>(
     null
   );
+  const [settlingKey, setSettlingKey] = useState<string | null>(null);
   const [toastMsg, setToastMsg] = useState<string | undefined>();
   const [actionErr, setActionErr] = useState<string | undefined>();
   const [faucetAmount, setFaucetAmount] = useState<number>(1000);
@@ -255,6 +259,59 @@ export function PositionsPage({
       setActionErr(formatPositionError(err, "Claim failed"));
     } finally {
       setRedeemingSeriesId(null);
+    }
+  };
+
+  const handlePermissionlessSettle = async (pos: PositionView) => {
+    const settleId = `${pos.underlying}:${pos.expiry}`;
+    setSettlingKey(settleId);
+    setToastMsg(undefined);
+    setActionErr(undefined);
+    try {
+      const bundle = await api.getSettlementProof(pos.underlying, pos.expiry);
+      if (bundle.status === "ALREADY_SETTLED") {
+        setToastMsg(t.settleAlreadyDone);
+        onRefresh();
+        return;
+      }
+      if (bundle.status === "DISPUTED_PAUSED") {
+        setActionErr(t.disputedExpiryNotice);
+        onRefresh();
+        return;
+      }
+      if (bundle.status === "WAITING_DELAY") {
+        setActionErr(t.settleWaitingDelay);
+        return;
+      }
+      if (!bundle.proofs || bundle.proofs.length === 0) {
+        throw new Error("Missing signed Atlas TWAP proofs");
+      }
+      const hash = await executeSettleWithAtlasTwapTx({
+        wallet,
+        rpcUrl: health?.rpcUrl || BSC_TESTNET.rpcUrl,
+        oracleAddress: bundle.oracleAddress,
+        assetId: bundle.assetId,
+        expiry: bundle.expiry,
+        proofs: bundle.proofs,
+      });
+      await api.ingestTx(hash).catch(() => api.syncChain());
+      setToastMsg(
+        t.settleTwapSuccess(
+          pos.underlying,
+          bundle.twapPriceUsd ? `$${bundle.twapPriceUsd.toLocaleString()}` : "--"
+        )
+      );
+      onRefresh();
+    } catch (err: any) {
+      const rawMsg = String(err?.shortMessage || err?.message || "");
+      if (rawMsg.includes("AlreadySettled")) {
+        setToastMsg(t.settleAlreadyDone);
+        onRefresh();
+      } else {
+        setActionErr(formatPositionError(err, "Settlement failed"));
+      }
+    } finally {
+      setSettlingKey(null);
     }
   };
 
@@ -491,22 +548,28 @@ export function PositionsPage({
             const key = positionKey(pos);
             const isBull = pos.isUp;
             const statusPill =
-              pos.status === "ACTIVE"
-                ? { label: t.statusActive, cls: "bg-[#e9f3f1] text-[#0e7c72]" }
-                : pos.status === "CLOSED_EARLY"
-                  ? {
-                      label: t.statusClosed,
-                      cls: "bg-[#eef0f2] text-[#3a4552]",
-                    }
-                  : pos.status === "SETTLED_CLAIMABLE"
-                    ? {
-                        label: t.statusClaimable,
-                        cls: "bg-[#fbf3dd] text-[#8a6410]",
-                      }
-                    : {
-                        label: t.statusSettled,
-                        cls: "bg-[#eef0f2] text-[#667080]",
-                      };
+              pos.status === "ACTIVE" && pos.awaitingSettlement
+                ? pos.expiryPaused
+                  ? { label: t.statusDisputed, cls: "bg-[#fbeeea] text-[#b54134]" }
+                  : { label: t.statusAwaitingSettle, cls: "bg-[#fbf3dd] text-[#8a6410]" }
+                : pos.status === "ACTIVE" && pos.inTwapWindow
+                  ? { label: t.statusTwapWindow, cls: "bg-[#fbf3dd] text-[#8a6410]" }
+                  : pos.status === "ACTIVE"
+                    ? { label: t.statusActive, cls: "bg-[#e9f3f1] text-[#0e7c72]" }
+                    : pos.status === "CLOSED_EARLY"
+                      ? {
+                          label: t.statusClosed,
+                          cls: "bg-[#eef0f2] text-[#3a4552]",
+                        }
+                      : pos.status === "SETTLED_CLAIMABLE"
+                        ? {
+                            label: t.statusClaimable,
+                            cls: "bg-[#fbf3dd] text-[#8a6410]",
+                          }
+                        : {
+                            label: t.statusSettled,
+                            cls: "bg-[#eef0f2] text-[#667080]",
+                          };
 
             return (
               <div
@@ -548,10 +611,23 @@ export function PositionsPage({
                     </h2>
                   </div>
 
-                  {pos.status === "ACTIVE" ? (
+                  {pos.status === "ACTIVE" && pos.awaitingSettlement ? (
+                    <div className="text-right">
+                      <div className="text-[11px] font-medium text-[#8a6410]">
+                        {pos.expiryPaused ? t.statusDisputed : t.statusAwaitingSettle}
+                      </div>
+                      <div className="text-sm font-semibold text-[#3a4552] mt-1">
+                        {pos.expiryPaused
+                          ? t.disputedShortLabel
+                          : t.awaitingTwapShortLabel}
+                      </div>
+                    </div>
+                  ) : pos.status === "ACTIVE" ? (
                     <div className="text-right">
                       <div className="text-[11px] font-medium text-[#667080]">
-                        {t.canExitNow}
+                        {pos.inTwapWindow
+                          ? t.indicativeCloseLockedLabel
+                          : t.canExitNow}
                       </div>
                       <div className="text-2xl font-bold text-[#14202a] tabular-nums">
                         {pos.indicativeExitUsdt.toFixed(2)}{" "}
@@ -641,16 +717,58 @@ export function PositionsPage({
                     {t.holdNotice}
                   </span>
 
-                  {pos.status === "ACTIVE" && pos.remainingBalanceUsdt > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => handleOpenEarlyClose(pos)}
-                      className="flex items-center gap-1.5 rounded-lg bg-[#14202a] px-4 py-2 text-xs font-semibold text-white hover:bg-[#000a12] transition cursor-pointer"
-                    >
-                      <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
-                      {t.earlyCloseCta}
-                    </button>
-                  )}
+                  {pos.status === "ACTIVE" &&
+                    pos.remainingBalanceUsdt > 0 &&
+                    (pos.awaitingSettlement ? (
+                      pos.expiryPaused ? (
+                        <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#f1ccc6] bg-[#fbeeea] px-3 py-2 text-xs font-semibold text-[#b54134]">
+                          <AlertTriangle
+                            className="h-3.5 w-3.5 shrink-0"
+                            aria-hidden="true"
+                          />
+                          {t.disputedExpiryNotice}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={
+                            !pos.canPermissionlessSettle ||
+                            settlingKey === `${pos.underlying}:${pos.expiry}`
+                          }
+                          onClick={() => void handlePermissionlessSettle(pos)}
+                          className="flex items-center gap-1.5 rounded-lg bg-[#0e7c72] px-4 py-2 text-xs font-semibold text-white hover:bg-[#0a635b] disabled:opacity-50 transition cursor-pointer"
+                        >
+                          {settlingKey === `${pos.underlying}:${pos.expiry}` ? (
+                            <Loader2
+                              className="h-3.5 w-3.5 animate-spin"
+                              aria-hidden="true"
+                            />
+                          ) : (
+                            <ShieldCheck
+                              className="h-3.5 w-3.5"
+                              aria-hidden="true"
+                            />
+                          )}
+                          {pos.canPermissionlessSettle
+                            ? t.settleWithAtlasTwapCta
+                            : t.settleWaitingDelayShort}
+                        </button>
+                      )
+                    ) : pos.inTwapWindow ? (
+                      <span className="inline-flex items-center gap-1.5 rounded-lg border border-[#e6cf8b] bg-[#fbf3dd] px-3 py-2 text-xs font-semibold text-[#8a6410]">
+                        <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        {t.twapWindowCloseLocked}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEarlyClose(pos)}
+                        className="flex items-center gap-1.5 rounded-lg bg-[#14202a] px-4 py-2 text-xs font-semibold text-white hover:bg-[#000a12] transition cursor-pointer"
+                      >
+                        <TrendingUp className="h-3.5 w-3.5" aria-hidden="true" />
+                        {t.earlyCloseCta}
+                      </button>
+                    ))}
 
                   {pos.status === "SETTLED_CLAIMABLE" && (
                     <button

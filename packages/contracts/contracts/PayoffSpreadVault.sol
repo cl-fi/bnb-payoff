@@ -40,8 +40,8 @@ contract PayoffSpreadVault is
 
     uint16 public constant MAX_OPEN_FEE_BPS = 500; // 5.00% hard protocol cap
     uint16 public constant MAX_CLOSE_FEE_BPS = 100; // 1.00% hard cap
-    uint64 internal constant MIN_OPEN_LEAD_TIME = 1 hours;
-    uint64 internal constant MIN_CLOSE_LEAD_TIME = 5 minutes;
+    uint64 public constant MIN_OPEN_LEAD_TIME = 1 hours;
+    uint64 public constant MIN_CLOSE_LEAD_TIME = 30 minutes;
     uint64 internal constant DEFAULT_SETTLEMENT_UTC_OFFSET = 8 hours;
     uint64 internal constant DEFAULT_EXPIRY_INTERVAL = 1 days;
 

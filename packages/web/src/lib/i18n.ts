@@ -115,10 +115,24 @@ const dict = {
       "用 10~20 USDT 体验防插针、永不爆仓的高赔率价差票，支持 BNB Smart Chain 测试网一键领水。",
     goTrade: "去交易",
     statusActive: "持仓中",
+    statusTwapWindow: "30m 结算观察期",
+    statusAwaitingSettle: "待链上结算",
+    statusDisputed: "争议冻结中",
     statusClosed: "已提前止盈",
     statusClaimable: "待领奖",
     statusSettled: "已到期结算",
+    twapWindowCloseLocked: "30m TWAP 观察期 · 已锁定早平",
+    settleWithAtlasTwapCta: "使用 Atlas 30m TWAP 自主结算",
+    settleWaitingDelayShort: "等待 60s 结算缓冲期...",
+    settleWaitingDelay: "距离开放无许可结算不足 60 秒，请稍后重试。",
+    settleAlreadyDone: "该期已在链上完成结算，已刷新可领奖状态。",
+    settleTwapSuccess: (sym: string, px: string) =>
+      `已完成 ${sym} 30m Atlas TWAP 链上结算（结算价 ${px}）`,
+    disputedExpiryNotice: "预言机健康度异常 (<40%) · 争议冻结等待管理员裁决",
+    disputedShortLabel: "等待管理员透明裁决",
+    awaitingTwapShortLabel: "已到期 · 待提交 30 点 TWAP",
     canExitNow: "当前可提前平仓",
+    indicativeCloseLockedLabel: "参考估值 · 早平已锁定",
     claimable: "可领取收益",
     realized: "已落袋",
     earlyCloseCta: "提前平仓止盈",
@@ -171,10 +185,10 @@ const dict = {
     payoffHoverPayout: "到期可拿回",
     rulesTitle: "结算规则、预言机验证与资金保障",
     rulesBadge:
-      "Atlas Pull 链上验签结算 + ConsensusScore 熔断 · BNB Chain 100% 全额托管",
-    rulesItem1Title: "1. Atlas Pull Oracle 无许可密码学结算与时间窗口锚定",
+      "Atlas 30m 链上 TWAP 验签结算 + 健康分争议保护 · BNB Chain 100% 全额托管",
+    rulesItem1Title: "1. Atlas 30 分钟确定性 TWAP 无许可链上结算（对齐 OKX/Deribit）",
     rulesItem1Body: (underlying: string, feedId: string, expiryUtc: string) =>
-      `本合约严格以 Atlas Oracle Feed #${feedId} (${underlying}/USD) 在 ${fmtUtc(expiryUtc)} 的签名历史价格为准，由 BSC 测试网合约 AtlasPullSettlementOracle 链上验证官方 ECDSA 签名（时间窗严格锚定在到期 ±60 秒内）并开放无许可结算与领奖。`,
+      `本合约严格以 Atlas Oracle Feed #${feedId} (${underlying}/USD) 在 ${fmtUtc(expiryUtc)} 前 30 分钟（每分钟 1 点，共 30 个整分钟签名，07:31–08:00 UTC）的等权算术均值作为结算价。AtlasPullSettlementOracle 在链上逐点验证官方 ECDSA 签名（到期后前 15 分钟内 0 秒精确锚定，之后放宽 ±10 秒兜底），全市场只计算 1 次即可开放所有人领奖；到期前 30 分钟锁定早平。`,
     rulesItem2Title: "2. 线性赔付边界与公式",
     rulesItem2Body: (
       start: string,
@@ -185,9 +199,9 @@ const dict = {
       isBull
         ? `到期价 ≤ ${fmtUsd(start)} 时赔付为 0；处于 ${fmtUsd(start)} ~ ${fmtUsd(cap)} 之间按涨幅线性赔付：((结算价 − ${fmtUsd(start)}) / (${fmtUsd(cap)} − ${fmtUsd(start)})) × ${fmtUsdt(maxPayout)}；到期价 ≥ ${fmtUsd(cap)} 时封顶拿满 ${fmtUsdt(maxPayout)}。`
         : `到期价 ≥ ${fmtUsd(start)} 时赔付为 0；处于 ${fmtUsd(cap)} ~ ${fmtUsd(start)} 之间按跌幅线性赔付：((${fmtUsd(start)} − 结算价) / (${fmtUsd(start)} − ${fmtUsd(cap)})) × ${fmtUsdt(maxPayout)}；到期价 ≤ ${fmtUsd(cap)} 时封顶拿满 ${fmtUsdt(maxPayout)}。`,
-    rulesItem3Title: "3. Enterprise ConsensusScore 熔断保护与 100% 链上全额抵押",
+    rulesItem3Title: "3. ConsensusScore 健康度争议冻结与 100% 链上全额抵押",
     rulesItem3Body:
-      "成交瞬间买方本金与做市商封顶赔付金 100% 锁入 BNB Chain 智能合约金库，盘中剧烈插针绝不强平。系统实时监控 Atlas ConsensusScore：当市场共识出现分歧（WARNING/CRITICAL/SPLIT_MARKET）时自动暂停结算或报价熔断；持仓期间可随时按实时报价一键提前卖出，同网格多空仓位支持链上原子 Merge 释放流动性。",
+      "成交瞬间买方本金与做市商封顶赔付金 100% 锁入 BNB Chain 智能合约金库，盘中剧烈插针绝不强平。系统实时监控 Atlas ConsensusScore：交易期间极端分歧触发报价熔断；若结算窗口 30 分钟平均健康分低于 40%，系统将自动放弃脏数据并在链上冻结该期，交由管理员附公开审计理由透明裁决。",
     // Atlas Oracle Badge copy
     atlasBadgeTitle: "Atlas Oracle 实时共识护盾",
     atlasFeedLabel: "数据源 Feed",
@@ -195,7 +209,8 @@ const dict = {
     atlasTwapLabel: "TWAP 均价",
     atlasMedianLabel: "中位价 Median",
     atlasVolatilityLabel: "价格波动率",
-    atlasVerifierLabel: "链上 ECDSA 验签者",
+    atlasVerifierLabel: "链上结算合约 / 验签者",
+    atlasOracleContractLabel: "Oracle 合约",
     atlasBreakerActive: "熔断保护触发",
     atlasBreakerNormal: "结算与报价守护正常",
     atlasBscTestnet: "BSC 测试网",
@@ -342,10 +357,26 @@ const dict = {
       "Start with 10–20 USDT for wick-proof, capped-loss directional trades on BNB Smart Chain Testnet.",
     goTrade: "Explore markets",
     statusActive: "Active",
+    statusTwapWindow: "30m TWAP window",
+    statusAwaitingSettle: "Awaiting settlement",
+    statusDisputed: "Disputed · Paused",
     statusClosed: "Closed early",
     statusClaimable: "Claimable",
     statusSettled: "Settled",
+    twapWindowCloseLocked: "30m TWAP window · Early close locked",
+    settleWithAtlasTwapCta: "Settle with Atlas 30m TWAP",
+    settleWaitingDelayShort: "60s settlement buffer...",
+    settleWaitingDelay:
+      "Permissionless settlement opens 60s after expiry; please retry shortly.",
+    settleAlreadyDone: "This expiry is already settled on-chain.",
+    settleTwapSuccess: (sym: string, px: string) =>
+      `Settled ${sym} via 30m Atlas TWAP (${px})`,
+    disputedExpiryNotice:
+      "Oracle health alert (<40%) · Disputed expiry paused awaiting admin settlement",
+    disputedShortLabel: "Awaiting admin resolution",
+    awaitingTwapShortLabel: "Expired · Ready for 30-pt TWAP",
     canExitNow: "Exit value now",
+    indicativeCloseLockedLabel: "Indicative value · Close locked",
     claimable: "Claimable payout",
     realized: "Realized",
     earlyCloseCta: "Take profit / Exit",
@@ -401,10 +432,10 @@ const dict = {
     payoffHoverPayout: "Expiry Payout",
     rulesTitle: "Settlement Rules & Oracle Security",
     rulesBadge:
-      "Atlas Pull Oracle Cryptographic Settlement + Enterprise ConsensusScore Circuit Breaker · 100% On-Chain Collateral on BNB Chain",
-    rulesItem1Title: "1. Permissionless Atlas Pull Oracle Cryptographic Settlement",
+      "Atlas 30m On-Chain TWAP Settlement + Health Dispute Guard · 100% On-Chain Collateral on BNB Chain",
+    rulesItem1Title: "1. Permissionless 30-Minute Atlas TWAP Settlement (OKX / Deribit Standard)",
     rulesItem1Body: (underlying: string, feedId: string, expiryUtc: string) =>
-      `Settles strictly against Atlas Oracle Feed #${feedId} (${underlying}/USD) signed history price at ${fmtUtc(expiryUtc)}. AtlasPullSettlementOracle verifies the official ECDSA signature directly on BSC Testnet within a strict ±60s expiry window—enabling deterministic, permissionless settlement.`,
+      `Settles against the equal-weighted arithmetic mean of 30 deterministic 1-minute signed Atlas Oracle Feed #${feedId} (${underlying}/USD) prices over the final 30 minutes before ${fmtUtc(expiryUtc)} (07:31–08:00 UTC). AtlasPullSettlementOracle verifies all 30 official ECDSA signatures on-chain (0s exact match within 15m after expiry, ±10s fallback thereafter), computed once and reused for all redemptions. Early close locks 30m prior to expiry.`,
     rulesItem2Title: "2. Linear Payoff Bounds & Formula",
     rulesItem2Body: (
       start: string,
@@ -416,9 +447,9 @@ const dict = {
         ? `Pays 0 if expiry ≤ ${fmtUsd(start)}. Between ${fmtUsd(start)} and ${fmtUsd(cap)}, pays linearly: ((Expiry − ${fmtUsd(start)}) / (${fmtUsd(cap)} − ${fmtUsd(start)})) × ${fmtUsdt(maxPayout)}. Pays the full ${fmtUsdt(maxPayout)} cap at or above ${fmtUsd(cap)}.`
         : `Pays 0 if expiry ≥ ${fmtUsd(start)}. Between ${fmtUsd(cap)} and ${fmtUsd(start)}, pays linearly: ((${fmtUsd(start)} − Expiry) / (${fmtUsd(start)} − ${fmtUsd(cap)})) × ${fmtUsdt(maxPayout)}. Pays the full ${fmtUsdt(maxPayout)} cap at or below ${fmtUsd(cap)}.`,
     rulesItem3Title:
-      "3. Enterprise ConsensusScore Circuit Breaker & 100% On-Chain Collateral",
+      "3. ConsensusScore Health Dispute Freeze & 100% On-Chain Collateral",
     rulesItem3Body:
-      "Full max payout is 100% locked in the BNB Chain vault at fill—intraday wicks never liquidate your ticket. Live Atlas Enterprise ConsensusScore protects settlement and quoting against market divergence (WARNING/CRITICAL/SPLIT_MARKET), while early exit RFQ unlocks liquidity via atomic Merge on shared grid pools.",
+      "Full max payout is 100% locked in the BNB Chain vault at fill—intraday wicks never liquidate your ticket. Live Atlas Enterprise ConsensusScore halts quoting during extreme divergence or stale feeds; if the 30-minute settlement window averages below 40% health score, the expiry is automatically frozen on-chain for transparent admin resolution with a public audit reason.",
     // Atlas Oracle Badge copy
     atlasBadgeTitle: "Atlas Oracle Live Shield",
     atlasFeedLabel: "Oracle Feed",
@@ -426,7 +457,8 @@ const dict = {
     atlasTwapLabel: "TWAP",
     atlasMedianLabel: "Median",
     atlasVolatilityLabel: "Volatility",
-    atlasVerifierLabel: "On-Chain ECDSA Verifier",
+    atlasVerifierLabel: "Oracle Contract / Signer",
+    atlasOracleContractLabel: "Oracle Contract",
     atlasBreakerActive: "Circuit Breaker Active",
     atlasBreakerNormal: "Settlement & Quoting Guard Active",
     atlasBscTestnet: "BSC Testnet",

@@ -105,3 +105,13 @@ export const DEFAULT_CLOSE_FEE_BPS = 0;
 
 /** Unified daily/weekly option settlement hour in UTC */
 export const SETTLEMENT_UTC_HOUR = 8;
+
+/** Deterministic 30-minute TWAP settlement constants (aligned with Deribit / OKX / Binance) */
+export const SETTLEMENT_TWAP_SAMPLE_COUNT = 30;
+export const SETTLEMENT_TWAP_INTERVAL_SEC = 60;
+export const SETTLEMENT_DELAY_SEC = 60;
+export const SETTLEMENT_EXACT_MATCH_GRACE_SEC = 900;
+export const SETTLEMENT_FALLBACK_TOLERANCE_SEC = 10;
+export const SETTLEMENT_HEALTH_MIN_AVG_SCORE = 0.4;
+export const SETTLEMENT_HEALTH_MIN_OBSERVED_MINUTES = 20;
+export const MIN_CLOSE_LEAD_TIME_SEC = 1800; // 30 minutes (locked once TWAP window starts)

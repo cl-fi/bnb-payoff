@@ -17,23 +17,31 @@ import {
   MOCK_USDT_ABI,
   PAYOFF_LENS_ABI,
   PAYOFF_VAULT_ABI,
+  SETTLEMENT_DELAY_SEC,
+  SETTLEMENT_HEALTH_MIN_AVG_SCORE,
+  SETTLEMENT_HEALTH_MIN_OBSERVED_MINUTES,
+  SETTLEMENT_TWAP_INTERVAL_SEC,
+  SETTLEMENT_TWAP_SAMPLE_COUNT,
   SETTLEMENT_UTC_HOUR,
   assetIdToSymbol,
   priceToUnits,
   symbolToAssetId,
   unitsToPrice,
   unitsToUsdt,
+  type AtlasFeedTelemetry,
   type Direction,
   type HedgeEvaluation,
   type SettlementSource,
+  type TwapWindowHealthSummary,
   type UnderlyingSymbol,
 } from "@payoff/shared";
 import type { ServerConfig } from "../config.js";
 import type { PayoffDatabase } from "../db/database.js";
 import {
   buildSignedAtlasProofWithKey,
+  buildTwapSampleTimestamps,
   type AtlasOracleService,
-  type AtlasSignedProofResult,
+  type AtlasSignedTwapResult,
   type ConsensusGuardState,
 } from "./atlasOracle.js";
 import type { MarketDataService } from "./marketData.js";
@@ -47,17 +55,22 @@ export interface SettlementMeta {
   feedIdHex?: Hex;
   oracleTimestamp?: number;
   submitter?: Hex;
+  sampleCount?: number;
+  isManualOverride?: boolean;
+  overrideReason?: string | null;
 }
 
 export interface SettlementKeeperResult {
   underlying: UnderlyingSymbol;
   expiry: number;
   priceUsd: number;
-  txHash: Hex | "ALREADY_SETTLED_ONCHAIN";
+  txHash: Hex | "ALREADY_SETTLED_ONCHAIN" | "PAUSED_FOR_ADMIN";
   source: SettlementSource;
   feedId?: string;
   feedIdHex?: Hex;
   oracleTimestamp?: number;
+  sampleCount?: number;
+  disputed?: boolean;
 }
 
 export interface OnChainActivePosition {
@@ -117,6 +130,7 @@ export class ChainService {
   public readonly publicClient: PublicClient;
   private readonly logsClient: PublicClient;
   private oracleAccount;
+  private pauserAccount;
   private resolvedOracleAddress: Hex | null = null;
   private resolvedOracleFetchedAt = 0;
   private cachedProtocolFees: { openFeeBps: number; closeFeeBps: number } | null =
@@ -163,12 +177,219 @@ export class ChainService {
       this.logsClient = this.publicClient;
     }
     this.oracleAccount = privateKeyToAccount(this.config.oraclePrivateKey);
+    this.pauserAccount = privateKeyToAccount(this.config.pauserPrivateKey);
     if (
       this.config.settlementOracleAddress &&
       this.config.settlementOracleAddress !== ZERO_ADDR
     ) {
       this.resolvedOracleAddress = this.config.settlementOracleAddress;
     }
+  }
+
+  private createWalletTransport() {
+    if (this.config.chainId === BSC_TESTNET.chainId) {
+      const primary = http(this.config.rpcUrl);
+      const isAlreadyFallback =
+        this.config.rpcUrl.replace(/\/+$/, "").toLowerCase() ===
+        BSC_TESTNET_FALLBACK_RPC;
+      return isAlreadyFallback
+        ? primary
+        : fallback([primary, http(BSC_TESTNET_FALLBACK_RPC)], { rank: false });
+    }
+    return http(this.config.rpcUrl);
+  }
+
+  /**
+   * Records 1-minute bucketed `consensusScore` health observations during the
+   * 30-minute TWAP window (`07:31..08:00 UTC`) so each minute carries equal weight.
+   */
+  async recordTwapHealthTick(telemetry: AtlasFeedTelemetry): Promise<void> {
+    if (
+      telemetry.consensusScore === null ||
+      !Number.isFinite(telemetry.consensusScore) ||
+      !(telemetry.price > 0)
+    ) {
+      return;
+    }
+    const ts =
+      telemetry.timestampSeconds > 0
+        ? telemetry.timestampSeconds
+        : Math.floor(Date.now() / 1000);
+    const daySec = 86400;
+    const offset = SETTLEMENT_UTC_HOUR * 3600;
+    const dayIdx = Math.floor((ts - offset) / daySec);
+    const currExpiry = dayIdx * daySec + offset;
+    const nextExpiry = (dayIdx + 1) * daySec + offset;
+
+    const spanSec =
+      (SETTLEMENT_TWAP_SAMPLE_COUNT - 1) * SETTLEMENT_TWAP_INTERVAL_SEC;
+    const lowerLeadSec = spanSec + 30;
+    let targetExpiry: number | null = null;
+    if (ts >= nextExpiry - lowerLeadSec && ts <= nextExpiry + 30) {
+      targetExpiry = nextExpiry;
+    } else if (ts >= currExpiry - lowerLeadSec && ts <= currExpiry + 30) {
+      targetExpiry = currExpiry;
+    }
+    if (targetExpiry === null) return;
+
+    const windowStart = targetExpiry - spanSec;
+    const rawIdx = Math.round(
+      (ts - windowStart) / SETTLEMENT_TWAP_INTERVAL_SEC
+    );
+    const clampedIdx = Math.max(
+      0,
+      Math.min(SETTLEMENT_TWAP_SAMPLE_COUNT - 1, rawIdx)
+    );
+    const sampleTs =
+      windowStart + clampedIdx * SETTLEMENT_TWAP_INTERVAL_SEC;
+
+    try {
+      await this.db.upsertTwapHealthSample({
+        underlying: telemetry.underlying,
+        expiry: targetExpiry,
+        sampleTs,
+        priceUsd: telemetry.price,
+        consensusScore: telemetry.consensusScore,
+        consensusStatus: telemetry.consensusStatus,
+        observedAt: Math.floor(Date.now() / 1000),
+      });
+    } catch {
+      // non-fatal telemetry persistence failure
+    }
+  }
+
+  getActiveTwapWindowExpiry(effNow: number): number {
+    const daySec = 86400;
+    const offset = SETTLEMENT_UTC_HOUR * 3600;
+    const dayIdx = Math.floor((effNow - offset) / daySec);
+    const recentExpiry = dayIdx * daySec + offset;
+    const nextExpiry = (dayIdx + 1) * daySec + offset;
+    // Show the most recent 08:00 UTC window for 1h post-expiry (e.g. during settlement/dispute review),
+    // otherwise track the upcoming 08:00 UTC expiry.
+    if (effNow - recentExpiry <= 3600) {
+      return recentExpiry;
+    }
+    return nextExpiry;
+  }
+
+  async isExpiryPausedOnChain(
+    underlying: UnderlyingSymbol,
+    expiry: number
+  ): Promise<boolean> {
+    if (!this.isConfigured()) return false;
+    try {
+      const oracleContract = await this.getSettlementOracleContract();
+      if (oracleContract === ZERO_ADDR) return false;
+      const paused = await this.publicClient.readContract({
+        address: oracleContract,
+        abi: ATLAS_SETTLEMENT_ORACLE_ABI,
+        functionName: "isExpiryPaused",
+        args: [symbolToAssetId(underlying), BigInt(expiry)],
+      });
+      return Boolean(paused);
+    } catch {
+      return false;
+    }
+  }
+
+  async getTwapWindowHealth(
+    underlying: UnderlyingSymbol,
+    expiry: number,
+    opts?: { checkOnChain?: boolean }
+  ): Promise<TwapWindowHealthSummary> {
+    const samples = await this.db.getTwapHealthSamples(underlying, expiry);
+    const observedMinutes = samples.length;
+    const target = SETTLEMENT_TWAP_SAMPLE_COUNT;
+
+    let avgConsensusScore: number | null = null;
+    let minConsensusScore: number | null = null;
+    let indicativeTwapUsd: number | null = null;
+    let mathematicallyIrrecoverable = false;
+
+    if (observedMinutes > 0) {
+      let scoreSum = 0;
+      let minScore = Infinity;
+      let priceSum = 0;
+      for (const s of samples) {
+        scoreSum += s.avgConsensusScore;
+        if (s.minConsensusScore < minScore) minScore = s.minConsensusScore;
+        priceSum += s.priceUsd;
+      }
+      avgConsensusScore = Number((scoreSum / observedMinutes).toFixed(4));
+      minConsensusScore = Number(minScore.toFixed(4));
+      indicativeTwapUsd = Number((priceSum / observedMinutes).toFixed(2));
+      const remainingMinutes = Math.max(0, target - observedMinutes);
+      mathematicallyIrrecoverable =
+        (scoreSum + remainingMinutes * 1.0) / target <
+        SETTLEMENT_HEALTH_MIN_AVG_SCORE;
+    }
+
+    let onChainPaused = false;
+    let onChainSettled = false;
+    if (opts?.checkOnChain) {
+      const [paused, settledData] = await Promise.all([
+        this.isExpiryPausedOnChain(underlying, expiry),
+        this.readOnChainSettlement(underlying, expiry),
+      ]);
+      onChainPaused = paused;
+      onChainSettled = Boolean(settledData?.settled);
+    }
+
+    const hasSufficientCoverage =
+      observedMinutes >= SETTLEMENT_HEALTH_MIN_OBSERVED_MINUTES;
+    const status: TwapWindowHealthSummary["status"] =
+      mathematicallyIrrecoverable
+        ? "DISPUTED_LOW_HEALTH"
+        : !hasSufficientCoverage
+          ? "INSUFFICIENT_DATA"
+          : avgConsensusScore! < SETTLEMENT_HEALTH_MIN_AVG_SCORE
+            ? "DISPUTED_LOW_HEALTH"
+            : "HEALTHY";
+
+    return {
+      underlying,
+      expiry,
+      expiryIso: new Date(expiry * 1000).toISOString(),
+      sampleCountTarget: target,
+      observedMinutes,
+      avgConsensusScore,
+      minConsensusScore,
+      indicativeTwapUsd,
+      threshold: SETTLEMENT_HEALTH_MIN_AVG_SCORE,
+      healthy:
+        !onChainPaused &&
+        (onChainSettled || status !== "DISPUTED_LOW_HEALTH"),
+      mathematicallyIrrecoverable,
+      status,
+      onChainPaused,
+      onChainSettled,
+    };
+  }
+
+  async pauseExpiryOnChain(
+    underlying: UnderlyingSymbol,
+    expiry: number
+  ): Promise<Hex> {
+    const oracleContract = await this.getSettlementOracleContract();
+    if (oracleContract === ZERO_ADDR) {
+      throw new Error("AtlasPullSettlementOracle contract address not configured");
+    }
+    const wallet = createWalletClient({
+      account: this.pauserAccount,
+      transport: this.createWalletTransport(),
+    });
+    const hash = await wallet.writeContract({
+      address: oracleContract,
+      abi: ATLAS_SETTLEMENT_ORACLE_ABI,
+      functionName: "pauseExpiry",
+      args: [symbolToAssetId(underlying), BigInt(expiry)],
+      chain: null,
+    });
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") {
+      throw new Error(`pauseExpiry transaction reverted (tx=${hash})`);
+    }
+    return hash;
   }
 
   getOracleAddress(): Hex {
@@ -234,6 +455,7 @@ export class ChainService {
   }
 
   start() {
+    void this.verifyPauserKeyMatch();
     const tick = async () => {
       await this.syncEvents();
       await this.runSettlementKeeper();
@@ -243,6 +465,37 @@ export class ChainService {
       void tick();
     }, 5000);
     this.timer.unref?.();
+  }
+
+  private async verifyPauserKeyMatch(): Promise<void> {
+    if (!this.isConfigured()) return;
+    try {
+      const oracleContract = await this.getSettlementOracleContract();
+      if (oracleContract === ZERO_ADDR) return;
+      const [onChainPauser, onChainOwner] = await Promise.all([
+        this.publicClient.readContract({
+          address: oracleContract,
+          abi: ATLAS_SETTLEMENT_ORACLE_ABI,
+          functionName: "pauser",
+        }),
+        this.publicClient.readContract({
+          address: oracleContract,
+          abi: ATLAS_SETTLEMENT_ORACLE_ABI,
+          functionName: "owner",
+        }),
+      ]);
+      const localPauser = this.pauserAccount.address.toLowerCase();
+      if (
+        localPauser !== String(onChainPauser).toLowerCase() &&
+        localPauser !== String(onChainOwner).toLowerCase()
+      ) {
+        console.warn(
+          `[SettlementSentinel] Configured pauser address (${this.pauserAccount.address}) does not match on-chain pauser (${onChainPauser}) or owner (${onChainOwner}); automatic pauseExpiry calls will revert Unauthorized.`
+        );
+      }
+    } catch {
+      // ignore startup RPC check failure
+    }
   }
 
   stop() {
@@ -665,16 +918,56 @@ export class ChainService {
     if (txHash && (await this.db.hasProcessedLog(txHash, logIndex))) {
       return false;
     }
-    if (log.eventName !== "ExpirySettled") return false;
+    if (
+      log.eventName !== "ExpirySettled" &&
+      log.eventName !== "EmergencyExpirySettled"
+    ) {
+      return false;
+    }
 
     const ts = await getTs(log.blockNumber);
+    if (log.eventName === "EmergencyExpirySettled") {
+      const args = log.args as {
+        assetId: Hex;
+        expiry: bigint;
+        settlementPrice: bigint;
+        admin: Hex;
+        reason: string;
+      };
+      const underlying = tryAssetIdToSymbol(args.assetId);
+      if (!underlying) return false;
+      const expiry = Number(args.expiry);
+      this.pendingSettlementMeta.delete(`${underlying}-${expiry}`);
+      await this.db.recordSettlement({
+        underlying,
+        expiry,
+        settlementPrice: unitsToPrice(args.settlementPrice),
+        txHash: txHash ?? "0x",
+        settledAt: ts,
+        source: "ADMIN_EMERGENCY_SETTLED",
+        feedId: null,
+        feedIdHex: null,
+        oracleTimestamp: expiry,
+        submitter: args.admin ?? null,
+        sampleCount: 0,
+        isManualOverride: true,
+        overrideReason: args.reason || null,
+      });
+      if (txHash) {
+        await this.db.markLogProcessed(txHash, logIndex);
+      }
+      return true;
+    }
+
     const args = log.args as {
       assetId: Hex;
       expiry: bigint;
       settlementPrice: bigint;
       submitter: Hex;
       feedId: Hex;
-      oracleTimestamp: bigint;
+      windowStartTimestamp?: bigint;
+      windowEndTimestamp?: bigint;
+      sampleCount?: number | bigint;
     };
     const underlying = tryAssetIdToSymbol(args.assetId);
     if (!underlying) return false;
@@ -684,11 +977,16 @@ export class ChainService {
     const meta = this.pendingSettlementMeta.get(metaKey);
     this.pendingSettlementMeta.delete(metaKey);
 
-    const feedIdHex = args.feedId || meta?.feedIdHex || ATLAS_FEEDS[underlying].feedIdHex;
+    const feedIdHex =
+      args.feedId || meta?.feedIdHex || ATLAS_FEEDS[underlying].feedIdHex;
     const feedId =
       meta?.feedId ??
       decodeFeedIdHexToDecimal(feedIdHex) ??
       ATLAS_FEEDS[underlying].feedId;
+    const sampleCount =
+      args.sampleCount !== undefined
+        ? Number(args.sampleCount)
+        : meta?.sampleCount ?? SETTLEMENT_TWAP_SAMPLE_COUNT;
 
     await this.db.recordSettlement({
       underlying,
@@ -696,11 +994,16 @@ export class ChainService {
       settlementPrice: unitsToPrice(args.settlementPrice),
       txHash: txHash ?? "0x",
       settledAt: ts,
-      source: meta?.source ?? "ONCHAIN_SYNCED",
+      source: meta?.source ?? "ATLAS_TWAP_30M",
       feedId,
       feedIdHex,
-      oracleTimestamp: Number(args.oracleTimestamp ?? meta?.oracleTimestamp ?? expiry),
+      oracleTimestamp: Number(
+        args.windowEndTimestamp ?? meta?.oracleTimestamp ?? expiry
+      ),
       submitter: args.submitter ?? meta?.submitter ?? null,
+      sampleCount,
+      isManualOverride: false,
+      overrideReason: null,
     });
 
     if (txHash) {
@@ -1053,7 +1356,21 @@ export class ChainService {
     try {
       const latestBlock = await this.logsClient.getBlockNumber();
       const oracleContract = await this.getSettlementOracleContract();
-      const lastSyncedStr = await this.db.getSyncState("lastSyncedBlock");
+      // Reset lastSyncedBlock automatically if contracts were redeployed to new addresses
+      const currentVaultKey = `${this.config.vaultAddress.toLowerCase()}:${oracleContract.toLowerCase()}`;
+      const syncedVaultKey = await this.db.getSyncState("syncedContracts");
+      let lastSyncedStr = await this.db.getSyncState("lastSyncedBlock");
+      if (syncedVaultKey !== currentVaultKey) {
+        const resetBlock =
+          this.config.deploymentBlock > 0
+            ? BigInt(this.config.deploymentBlock) - 1n
+            : latestBlock > 100n
+              ? latestBlock - 100n
+              : 0n;
+        await this.db.setSyncState("lastSyncedBlock", resetBlock.toString());
+        await this.db.setSyncState("syncedContracts", currentVaultKey);
+        lastSyncedStr = resetBlock.toString();
+      }
       let fromBlock = lastSyncedStr
         ? BigInt(lastSyncedStr) + 1n
         : this.config.deploymentBlock > 0
@@ -1195,20 +1512,32 @@ export class ChainService {
         }
         const onChain = await this.readOnChainSettlement(sym, expiry);
         if (onChain?.settled && onChain.settlementPrice > 0) {
-          const feedIdHex =
-            onChain.feedIdHex ?? ATLAS_FEEDS[sym].feedIdHex;
+          const feedIdHex = onChain.isManualOverride
+            ? null
+            : onChain.feedIdHex ?? ATLAS_FEEDS[sym].feedIdHex;
+          const inferredSource: SettlementSource = onChain.isManualOverride
+            ? "ADMIN_EMERGENCY_SETTLED"
+            : existing?.source ??
+              (onChain.sampleCount && onChain.sampleCount > 1
+                ? "ATLAS_TWAP_30M"
+                : "ONCHAIN_SYNCED");
           await this.db.recordSettlement({
             underlying: sym,
             expiry,
             settlementPrice: onChain.settlementPrice,
             txHash: existing?.txHash || "onchain-verified",
             settledAt: onChain.settledAt || effNow,
-            source: existing?.source || "ONCHAIN_SYNCED",
-            feedId:
-              decodeFeedIdHexToDecimal(feedIdHex) ?? ATLAS_FEEDS[sym].feedId,
+            source: inferredSource,
+            feedId: onChain.isManualOverride
+              ? null
+              : decodeFeedIdHexToDecimal(feedIdHex ?? undefined) ??
+                ATLAS_FEEDS[sym].feedId,
             feedIdHex,
             oracleTimestamp: onChain.oracleTimestamp ?? expiry,
             submitter: onChain.submitter,
+            sampleCount: onChain.sampleCount,
+            isManualOverride: onChain.isManualOverride,
+            overrideReason: onChain.overrideReason,
           });
           backfilled += 1;
         }
@@ -1231,6 +1560,9 @@ export class ChainService {
     feedIdHex: Hex | null;
     oracleTimestamp: number | null;
     submitter: Hex | null;
+    sampleCount: number | null;
+    isManualOverride: boolean;
+    overrideReason: string | null;
   } | null> {
     if (!this.isConfigured()) return null;
     try {
@@ -1251,21 +1583,31 @@ export class ChainService {
           feedIdHex: null,
           oracleTimestamp: null,
           submitter: null,
+          sampleCount: null,
+          isManualOverride: false,
+          overrideReason: null,
         };
       }
       let feedIdHex: Hex | null = null;
       let oracleTimestamp: number | null = null;
       let submitter: Hex | null = null;
+      let sampleCount: number | null = null;
+      let isManualOverride = false;
+      let overrideReason: string | null = null;
       try {
-        const [fId, oTs, sub] = await this.publicClient.readContract({
-          address: oracleContract,
-          abi: ATLAS_SETTLEMENT_ORACLE_ABI,
-          functionName: "getSettlementMeta",
-          args: [assetId, BigInt(expiry)],
-        });
-        feedIdHex = fId;
-        oracleTimestamp = Number(oTs);
+        const [fId, _startTs, endTs, sub, count, manual, reason] =
+          await this.publicClient.readContract({
+            address: oracleContract,
+            abi: ATLAS_SETTLEMENT_ORACLE_ABI,
+            functionName: "getSettlementMeta",
+            args: [assetId, BigInt(expiry)],
+          });
+        feedIdHex = fId === "0x00000000" ? null : fId;
+        oracleTimestamp = Number(endTs) || expiry;
         submitter = sub;
+        sampleCount = Number(count);
+        isManualOverride = Boolean(manual);
+        overrideReason = reason || null;
       } catch {
         // optional metadata view fallback
       }
@@ -1276,6 +1618,9 @@ export class ChainService {
         feedIdHex,
         oracleTimestamp,
         submitter,
+        sampleCount,
+        isManualOverride,
+        overrideReason,
       };
     } catch {
       return null;
@@ -1283,12 +1628,13 @@ export class ChainService {
   }
 
   /**
-   * Atlas Permissionless Settlement Keeper:
-   * 1. Finds expired unsettled `(underlying, expiry)` pairs from DB + PayoffVaultLens.
-   * 2. Enforces Atlas Enterprise ConsensusScore Circuit Breaker (`getConsensusGuard`).
-   * 3. Fetches & cryptographically pre-verifies expiry-pinned signed Atlas Pull proof.
-   * 4. Encodes `settleWithAtlasProof(assetId, expiry)` + trailing `extraData` bytes and
-   *    submits transaction to `AtlasPullSettlementOracle`.
+   * Atlas Permissionless 30m TWAP Settlement Keeper + Health Sentinel:
+   * 1. Pre-expiry sentinel: monitors active expiries inside the 30-min TWAP window;
+   *    if 30m avg ConsensusScore is mathematically irrecoverable (< 0.40) or < 0.40
+   *    in the final 2 minutes, calls `pauseExpiry` on-chain via `pauser`.
+   * 2. Post-expiry settlement: after `settlementDelay` (60s), verifies 30m window
+   *    health >= 0.40, fetches 30 signed historical proofs (`07:31..08:00 UTC`),
+   *    and submits 1 atomic `settleWithAtlasTwap(assetId, expiry, proofs)` tx.
    */
   async runSettlementKeeper(): Promise<SettlementKeeperResult[]> {
     if (!this.isConfigured()) return [];
@@ -1311,125 +1657,237 @@ export class ChainService {
 
       const candidates: Array<{ underlying: UnderlyingSymbol; expiry: number }> =
         [];
+      const consider = (underlying: UnderlyingSymbol, expiry: number) => {
+        if (expiry <= effNow + 1800) {
+          candidates.push({ underlying, expiry });
+        }
+      };
+
       for (const t of dbTickets) {
-        if (t.status === "ACTIVE" && t.expiry <= effNow) {
-          candidates.push({ underlying: t.underlying, expiry: t.expiry });
+        if (t.status === "ACTIVE") {
+          consider(t.underlying, t.expiry);
         }
       }
       if (onChainSeries) {
         for (const s of onChainSeries) {
-          if (s.expiry <= effNow) {
-            candidates.push({ underlying: s.underlying, expiry: s.expiry });
-          }
+          consider(s.underlying, s.expiry);
         }
       }
 
+      const uniqueCandidates: Array<{
+        underlying: UnderlyingSymbol;
+        expiry: number;
+        pairKey: string;
+      }> = [];
       const checkedPairs = new Set<string>();
       for (const c of candidates) {
         const pairKey = `${c.underlying}-${c.expiry}`;
         if (checkedPairs.has(pairKey)) continue;
         checkedPairs.add(pairKey);
+        uniqueCandidates.push({ ...c, pairKey });
+      }
 
+      // Pass 1 (Fast Sentinel & Backfill): freeze any disputed expiries FIRST so a slow
+      // 30-proof Atlas fetch on another asset never delays pauseExpiry past settlementDelay.
+      const readyToSettle: Array<{
+        underlying: UnderlyingSymbol;
+        expiry: number;
+        pairKey: string;
+      }> = [];
+
+      for (const c of uniqueCandidates) {
+        const { pairKey } = c;
         if (await this.db.getSettlement(c.underlying, c.expiry)) continue;
+
+        const health = await this.getTwapWindowHealth(c.underlying, c.expiry);
+
+        // Pre-expiry proactive sentinel: only freeze before expiry when mathematically irrecoverable
+        if (effNow < c.expiry) {
+          if (health.mathematicallyIrrecoverable) {
+            const alreadyPaused = await this.isExpiryPausedOnChain(
+              c.underlying,
+              c.expiry
+            );
+            if (!alreadyPaused) {
+              try {
+                const txHash = await this.pauseExpiryOnChain(
+                  c.underlying,
+                  c.expiry
+                );
+                console.warn(
+                  `[SettlementSentinel] Pre-expiry froze ${c.underlying} expiry=${c.expiry} (mathematically irrecoverable, avgScore=${health.avgConsensusScore}) tx=${txHash}`
+                );
+              } catch (err: any) {
+                console.warn(
+                  `[SettlementSentinel] Failed to pre-freeze ${c.underlying} expiry=${c.expiry}:`,
+                  err?.shortMessage || err?.message || err
+                );
+              }
+            }
+          }
+          continue;
+        }
 
         const onChain = await this.readOnChainSettlement(
           c.underlying,
           c.expiry
         );
         if (onChain?.settled && onChain.settlementPrice > 0) {
-          const feedIdHex =
-            onChain.feedIdHex ?? ATLAS_FEEDS[c.underlying].feedIdHex;
+          const feedIdHex = onChain.isManualOverride
+            ? null
+            : onChain.feedIdHex ?? ATLAS_FEEDS[c.underlying].feedIdHex;
+          const inferredSource: SettlementSource = onChain.isManualOverride
+            ? "ADMIN_EMERGENCY_SETTLED"
+            : onChain.sampleCount && onChain.sampleCount > 1
+              ? "ATLAS_TWAP_30M"
+              : "ONCHAIN_SYNCED";
           await this.db.recordSettlement({
             underlying: c.underlying,
             expiry: c.expiry,
             settlementPrice: onChain.settlementPrice,
             txHash: "onchain-backfill",
             settledAt: onChain.settledAt || effNow,
-            source: "ONCHAIN_SYNCED",
-            feedId:
-              decodeFeedIdHexToDecimal(feedIdHex) ??
-              ATLAS_FEEDS[c.underlying].feedId,
+            source: inferredSource,
+            feedId: onChain.isManualOverride
+              ? null
+              : decodeFeedIdHexToDecimal(feedIdHex ?? undefined) ??
+                ATLAS_FEEDS[c.underlying].feedId,
             feedIdHex,
             oracleTimestamp: onChain.oracleTimestamp ?? c.expiry,
             submitter: onChain.submitter,
+            sampleCount: onChain.sampleCount,
+            isManualOverride: onChain.isManualOverride,
+            overrideReason: onChain.overrideReason,
           });
           results.push({
             underlying: c.underlying,
             expiry: c.expiry,
             priceUsd: onChain.settlementPrice,
             txHash: "ALREADY_SETTLED_ONCHAIN",
-            source: "ONCHAIN_SYNCED",
-            feedId:
-              decodeFeedIdHexToDecimal(feedIdHex) ??
-              ATLAS_FEEDS[c.underlying].feedId,
-            feedIdHex,
+            source: inferredSource,
+            feedId: onChain.isManualOverride
+              ? undefined
+              : decodeFeedIdHexToDecimal(feedIdHex ?? undefined) ??
+                ATLAS_FEEDS[c.underlying].feedId,
+            feedIdHex: feedIdHex ?? undefined,
             oracleTimestamp: onChain.oracleTimestamp ?? c.expiry,
+            sampleCount: onChain.sampleCount ?? undefined,
           });
           continue;
         }
 
-        // Enforce Atlas Enterprise ConsensusScore Settlement Circuit Breaker
-        const guard = this.atlasOracle.getConsensusGuard(c.underlying);
-        if (!guard.settlementSafe) {
+        // Skip if already paused on-chain (awaiting admin emergencyManualSettle)
+        const pausedOnChain = await this.isExpiryPausedOnChain(
+          c.underlying,
+          c.expiry
+        );
+        if (pausedOnChain) {
           const lastLog = this.lastBreakerLogAt.get(pairKey) ?? 0;
           if (Date.now() - lastLog > 60_000) {
             this.lastBreakerLogAt.set(pairKey, Date.now());
             console.warn(
-              `[SettlementKeeper] Circuit breaker paused settlement for ${c.underlying} expiry=${c.expiry}: ${guard.reason}`
+              `[SettlementKeeper] ${c.underlying} expiry=${c.expiry} is paused on-chain; awaiting admin emergencyManualSettle`
             );
           }
           continue;
         }
 
-        let proof: AtlasSignedProofResult | null = null;
+        // 30-minute aggregate ConsensusScore health gate (>= 20/30m coverage & avg < 0.40 -> freeze for admin)
+        if (health.status === "DISPUTED_LOW_HEALTH") {
+          try {
+            await this.pauseExpiryOnChain(c.underlying, c.expiry);
+            console.warn(
+              `[SettlementKeeper] 30m avg ConsensusScore=${health.avgConsensusScore} < 0.40 (${health.observedMinutes}/${health.sampleCountTarget}m) for ${c.underlying} expiry=${c.expiry}; froze expiry on-chain for manual admin settlement`
+            );
+            results.push({
+              underlying: c.underlying,
+              expiry: c.expiry,
+              priceUsd: 0,
+              txHash: "PAUSED_FOR_ADMIN",
+              source: "ATLAS_TWAP_30M",
+              disputed: true,
+            });
+          } catch (err: any) {
+            console.warn(
+              `[SettlementKeeper] Failed to pause disputed ${c.underlying} expiry=${c.expiry}:`,
+              err?.shortMessage || err?.message || err
+            );
+          }
+          continue;
+        }
+
+        if (health.status === "INSUFFICIENT_DATA") {
+          const warnKey = `insufficient:${pairKey}`;
+          const lastLog = this.lastBreakerLogAt.get(warnKey) ?? 0;
+          if (Date.now() - lastLog > 60_000) {
+            this.lastBreakerLogAt.set(warnKey, Date.now());
+            console.warn(
+              `[SettlementSentinel] ${c.underlying} expiry=${c.expiry} has only ${health.observedMinutes}/${health.sampleCountTarget}m health samples (< ${SETTLEMENT_HEALTH_MIN_OBSERVED_MINUTES}m min coverage); proceeding with signed Atlas 30m TWAP`
+            );
+          }
+        }
+
+        // Respect on-chain 60s settlementDelay before permissionless TWAP submission
+        if (effNow < c.expiry + SETTLEMENT_DELAY_SEC) {
+          continue;
+        }
+
+        readyToSettle.push(c);
+      }
+
+      // Pass 2 (Settlement Submission): fetch 30 signed historical proofs and submit settleWithAtlasTwap
+      for (const c of readyToSettle) {
+        const { pairKey } = c;
+        let twap: AtlasSignedTwapResult | null = null;
         try {
-          proof = await this.atlasOracle.fetchSignedExpiryProof(
+          twap = await this.atlasOracle.fetchSignedTwapProofs(
             c.underlying,
             c.expiry,
             { nowSec: effNow }
           );
         } catch (err: any) {
           console.warn(
-            `[SettlementKeeper] Atlas proof validation failed for ${c.underlying} expiry=${c.expiry}:`,
+            `[SettlementKeeper] Atlas 30m TWAP proof validation failed for ${c.underlying} expiry=${c.expiry}:`,
             err?.message || err
           );
           continue;
         }
 
-        if (!proof || !(proof.priceUsd > 0)) {
+        if (!twap || !(twap.twapPriceUsd > 0)) {
           const lastLog = this.lastWaitingLogAt.get(pairKey) ?? 0;
           if (Date.now() - lastLog > 60_000) {
             this.lastWaitingLogAt.set(pairKey, Date.now());
             console.info(
-              `[SettlementKeeper] Waiting for signed Atlas historical proof for ${c.underlying} expiry=${c.expiry} (${new Date(c.expiry * 1000).toISOString()})`
+              `[SettlementKeeper] Waiting for 30 signed Atlas historical proofs for ${c.underlying} expiry=${c.expiry} (${new Date(c.expiry * 1000).toISOString()})`
             );
           }
           continue;
         }
 
         try {
-          const txHash = await this.submitAtlasSettlementProofOnChain(
+          const txHash = await this.submitAtlasTwapSettlementOnChain(
             c.underlying,
             c.expiry,
-            proof
+            twap
           );
           this.lastWaitingLogAt.delete(pairKey);
           console.info(
-            `[SettlementKeeper] Settled ${c.underlying} expiry=${c.expiry} via AtlasPullSettlementOracle at $${proof.priceUsd} (feed=#${proof.feedId}, oracleTs=${proof.timestampSeconds}, source=${proof.source}) tx=${txHash}`
+            `[SettlementKeeper] Settled ${c.underlying} expiry=${c.expiry} via 30m Atlas TWAP at $${twap.twapPriceUsd} (feed=#${twap.feedId}, samples=${twap.sampleCount}, maxDiff=${twap.maxAbsTimestampDiffSec}s) tx=${txHash}`
           );
           results.push({
             underlying: c.underlying,
             expiry: c.expiry,
-            priceUsd: proof.priceUsd,
+            priceUsd: twap.twapPriceUsd,
             txHash,
-            source: proof.source,
-            feedId: proof.feedId,
-            feedIdHex: proof.feedIdHex,
-            oracleTimestamp: proof.timestampSeconds,
+            source: twap.source,
+            feedId: twap.feedId,
+            feedIdHex: twap.feedIdHex,
+            oracleTimestamp: twap.windowEndTimestamp,
+            sampleCount: twap.sampleCount,
           });
         } catch (err: any) {
           console.warn(
-            `[SettlementKeeper] Failed to submit Atlas settlement proof for ${c.underlying} expiry=${c.expiry}:`,
+            `[SettlementKeeper] Failed to submit Atlas 30m TWAP settlement for ${c.underlying} expiry=${c.expiry}:`,
             err?.shortMessage || err?.details || err?.message || err
           );
         }
@@ -1445,29 +1903,26 @@ export class ChainService {
   }
 
   /**
-   * Encodes `settleWithAtlasProof(assetId, expiry)` and appends signed Atlas
-   * `extraData` bytes directly onto trailing calldata before sending the transaction.
+   * Encodes `settleWithAtlasTwap(assetId, expiry, proofs)` calldata.
    */
-  encodeSettleWithAtlasProofData(
+  encodeSettleWithAtlasTwapData(
     underlying: UnderlyingSymbol,
     expiry: number,
-    extraData: Hex
+    proofs: Hex[]
   ): Hex {
-    const calldata = encodeFunctionData({
+    return encodeFunctionData({
       abi: ATLAS_SETTLEMENT_ORACLE_ABI,
-      functionName: "settleWithAtlasProof",
-      args: [symbolToAssetId(underlying), BigInt(expiry)],
+      functionName: "settleWithAtlasTwap",
+      args: [symbolToAssetId(underlying), BigInt(expiry), proofs],
     });
-    const suffix = extraData.startsWith("0x") ? extraData.slice(2) : extraData;
-    return `${calldata}${suffix}` as Hex;
   }
 
-  async submitAtlasSettlementProofOnChain(
+  async submitAtlasTwapSettlementOnChain(
     underlying: UnderlyingSymbol,
     expiry: number,
-    proof: Pick<
-      AtlasSignedProofResult,
-      "extraData" | "feedId" | "feedIdHex" | "timestampSeconds"
+    twap: Pick<
+      AtlasSignedTwapResult,
+      "proofs" | "feedId" | "feedIdHex" | "windowEndTimestamp" | "sampleCount"
     > & { source: SettlementSource }
   ): Promise<Hex> {
     const oracleContract = await this.getSettlementOracleContract();
@@ -1477,22 +1932,25 @@ export class ChainService {
 
     const metaKey = `${underlying}-${expiry}`;
     this.pendingSettlementMeta.set(metaKey, {
-      source: proof.source,
-      feedId: proof.feedId,
-      feedIdHex: proof.feedIdHex,
-      oracleTimestamp: proof.timestampSeconds,
+      source: twap.source,
+      feedId: twap.feedId,
+      feedIdHex: twap.feedIdHex,
+      oracleTimestamp: twap.windowEndTimestamp,
       submitter: this.oracleAccount.address,
+      sampleCount: twap.sampleCount,
+      isManualOverride: false,
+      overrideReason: null,
     });
 
-    const data = this.encodeSettleWithAtlasProofData(
+    const data = this.encodeSettleWithAtlasTwapData(
       underlying,
       expiry,
-      proof.extraData
+      twap.proofs
     );
 
     const wallet = createWalletClient({
       account: this.oracleAccount,
-      transport: http(this.config.rpcUrl),
+      transport: this.createWalletTransport(),
     });
     const hash = await wallet.sendTransaction({
       to: oracleContract,
@@ -1530,13 +1988,16 @@ export class ChainService {
       args: [targetAddress, parseUnits("1000", 6)],
       chain: null,
     });
-    await this.publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== "success") {
+      throw new Error(`faucet mint transaction reverted (tx=${hash})`);
+    }
     return hash;
   }
 
   /**
-   * Local Hardhat devnet only: advances EVM block timestamp past `expiry`,
-   * signs a local Atlas Pull proof with the devnet signer, and calls `settleWithAtlasProof`.
+   * Local Hardhat devnet only: advances EVM block timestamp past `expiry + settlementDelay`,
+   * signs 30 local 1-minute Atlas Pull proofs, and calls `settleWithAtlasTwap`.
    */
   async simulateExpiryAndSettleLocal(params: {
     underlying: UnderlyingSymbol;
@@ -1550,7 +2011,7 @@ export class ChainService {
     }
     const { underlying, expiry, settlementPrice } = params;
     const effNow = await this.getEffectiveNow();
-    const targetTs = Math.max(effNow + 5, expiry + 60);
+    const targetTs = Math.max(effNow + 5, expiry + SETTLEMENT_DELAY_SEC + 5);
 
     await this.publicClient.request({
       method: "evm_setNextBlockTimestamp" as any,
@@ -1564,25 +2025,31 @@ export class ChainService {
 
     const feedCfg = ATLAS_FEEDS[underlying];
     const price18 = priceToUnits(settlementPrice) * 10n ** 10n;
-    const built = await buildSignedAtlasProofWithKey({
-      privateKey: this.config.oraclePrivateKey,
-      packages: [
-        {
-          feedIdHex: feedCfg.feedIdHex,
-          price18,
-          timestampSeconds: expiry,
-        },
-      ],
-    });
+    const sampleTimestamps = buildTwapSampleTimestamps(expiry);
+    const proofs: Hex[] = [];
+    for (const sampleTs of sampleTimestamps) {
+      const built = await buildSignedAtlasProofWithKey({
+        privateKey: this.config.oraclePrivateKey,
+        packages: [
+          {
+            feedIdHex: feedCfg.feedIdHex,
+            price18,
+            timestampSeconds: sampleTs,
+          },
+        ],
+      });
+      proofs.push(built.extraData);
+    }
 
-    const txHash = await this.submitAtlasSettlementProofOnChain(
+    const txHash = await this.submitAtlasTwapSettlementOnChain(
       underlying,
       expiry,
       {
-        extraData: built.extraData,
+        proofs,
         feedId: feedCfg.feedId,
         feedIdHex: feedCfg.feedIdHex,
-        timestampSeconds: expiry,
+        windowEndTimestamp: expiry,
+        sampleCount: sampleTimestamps.length,
         source: "DEV_SIMULATED",
       }
     );

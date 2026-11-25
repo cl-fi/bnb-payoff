@@ -27,10 +27,10 @@ Payoff uses **Atlas Enterprise Pull Oracle** and **ConsensusScore** as load-bear
 | Atlas Capability | Endpoint / Feed | Load-Bearing Role in Payoff |
 |---|---|---|
 | **Price Feeds** | `#626` (`0x00000272`, BTC/USD)<br/>`#632` (`0x00000278`, ETH/USD) | Single unified source of truth for live UI spot, shelf pricing, chart close anchoring, and on-chain expiry settlement. |
-| **Signed Historical Proofs** | `POST /v1/price/history`<br/>(`signed: true`, `timestamp: expirySec`) | Powers **permissionless expiry-pinned settlement** in `AtlasPullSettlementOracle.settleWithAtlasProof(assetId, expiry)`. Enforces `aggregatedTs ∈ [expiry - 60s, expiry + 60s]`, preventing timestamp cherry-picking while allowing settlement even hours after expiry. |
-| **Signed Live Pull Proofs** | `POST /v1/price/latest`<br/>(`signed: true`) | Verified on-chain via `verifyLatestAtlasPrice(assetId)` (`maxLiveFreshness = 180s`) and used as HTTP fallback when WebSocket disconnects or an expiry occurred within the last 60s. |
-| **Real-Time WebSocket Stream** | `wss://push.atlasoracle.io/ws`<br/>(`modix@auth.price@626`, `632`) | Streams sub-second spot ticks + live `consensusScores` to `@payoff/server`, broadcast to `@payoff/web` over `/ws/stream`. |
-| **Enterprise `ConsensusScore`** | `consensusScore`, `consensusStatus`, `twapPrice`, `medianPrice`, `priceVolatility` | Drives **three active safeguards**:<br/>1. **Settlement Keeper Circuit Breaker**: pauses auto-settlement on `WARNING`/`CRITICAL`/`SPLIT_MARKET` or `score < 70%`.<br/>2. **Market Maker Risk Engine** (`@payoff/mock-maker`): widens spreads (`1.35x` `DEGRADED`, `1.85x–2.0x` `WARNING`), scales BS IV floor when `priceVolatility > 0.5%`, and halts new `OpenQuote` signing on `CRITICAL`/`SPLIT_MARKET` (while keeping `CloseQuote` exits open).<br/>3. **Live UI Shield (`AtlasOracleBadge`)**: shows real-time consensus status, score %, TWAP vs. Median, and ECDSA verifier info. |
+| **Signed Historical Proofs (30m TWAP)** | `POST /v1/price/history`<br/>(`signed: true`, 30× 1-min points `07:31–08:00 UTC`) | Powers **permissionless 30-minute TWAP settlement** in `AtlasPullSettlementOracle.settleWithAtlasTwap(assetId, expiry, proofs[30])` (aligned with Deribit/OKX/Binance). Enforces `0s` exact timestamp match within 15m after expiry (`±10s` fallback thereafter), eliminating cherry-picking in one atomic tx (`~344k gas`), with 30m pre-expiry early-close lock. |
+| **Signed Live Pull Proofs** | `POST /v1/price/latest`<br/>(`signed: true`) | Verified on-chain via `verifyLatestAtlasPrice(assetId)` (`maxLiveFreshness = 180s`) and used as HTTP fallback when WebSocket disconnects. |
+| **Real-Time WebSocket Stream** | `wss://push.atlasoracle.io/ws`<br/>(`modix@auth.price@626`, `632`) | Streams sub-second spot ticks + live `consensusScores` with zombie-socket ping watchdog to `@payoff/server`, broadcast to `@payoff/web` over `/ws/stream`. |
+| **Enterprise `ConsensusScore`** | `consensusScore`, `consensusStatus`, `twapPrice`, `medianPrice`, `priceVolatility` | Drives **three active safeguards**:<br/>1. **30m TWAP Health Sentinel**: aggregates 1-minute bucketed scores over `07:31–08:00 UTC` (two-pass keeper checks pauses before proof fetches); if `>= 20/30m` coverage averages `< 40%` (or becomes mathematically irrecoverable), `pauser` freezes the disputed expiry on-chain during the 60s buffer for transparent `owner` `emergencyManualSettle` with public audit reason.<br/>2. **Market Maker Risk Engine** (`@payoff/mock-maker` + `rfqGateway`): widens spreads (`1.35x` `DEGRADED`, `1.85x–2.0x` `WARNING`), scales BS IV floor when `priceVolatility > 0.5%`, halts `OpenQuote` on `CRITICAL`/`SPLIT_MARKET`, and fails closed (HTTP 503) if Atlas goes offline/stale (`>60s`).<br/>3. **Live UI Shield (`AtlasOracleBadge` + `/positions`)**: displays real-time consensus score, separated Oracle Contract vs Signer links, and permissionless 30m TWAP self-settlement. |
 
 > **API Key Compliance**: `ATLAS_API_KEY` is read strictly server-side from gitignored `.env`, never exposed via `/api/health` or `/api/oracle/consensus`, never bundled into `packages/web`, and never committed to Git.
 
@@ -38,20 +38,20 @@ Payoff uses **Atlas Enterprise Pull Oracle** and **ConsensusScore** as load-bear
 
 ## 3. BNB Chain Testnet Contracts & Verified On-Chain Proof
 
-All 4 contracts are live on **BNB Smart Chain Testnet (Chain ID `97`, Block `144779395`)** and verified with **Sourcify API v2 `exact_match`**:
+All 4 contracts are live on **BNB Smart Chain Testnet (Chain ID `97`, Block `144840259`)** and verified with **Sourcify API v2 `exact_match`**:
 
 | Contract | BSC Testnet Address | Sourcify v2 |
 |---|---|---|
-| `MockUSDT` (`tUSDT`, 6-dec) | [`0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe`](https://testnet.bscscan.com/address/0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe) | [`exact_match`](https://repo.sourcify.dev/97/0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe) |
-| `AtlasPullSettlementOracle` | [`0xB3AcE075249f812064737804a3d4E2195346B54A`](https://testnet.bscscan.com/address/0xB3AcE075249f812064737804a3d4E2195346B54A) | [`exact_match`](https://repo.sourcify.dev/97/0xB3AcE075249f812064737804a3d4E2195346B54A) |
-| `PayoffSpreadVault` | [`0x3f0c3606c216895d58fE33A0f5593D665692b9cd`](https://testnet.bscscan.com/address/0x3f0c3606c216895d58fE33A0f5593D665692b9cd) | [`exact_match`](https://repo.sourcify.dev/97/0x3f0c3606c216895d58fE33A0f5593D665692b9cd) |
-| `PayoffVaultLens` | [`0x5Bfb86858783a8292c41B0f905C05aA8f112bC66`](https://testnet.bscscan.com/address/0x5Bfb86858783a8292c41B0f905C05aA8f112bC66) | [`exact_match`](https://repo.sourcify.dev/97/0x5Bfb86858783a8292c41B0f905C05aA8f112bC66) |
+| `MockUSDT` (`tUSDT`, 6-dec) | [`0x20845985df410F84c2e30Ba44A19dD564baE9bED`](https://testnet.bscscan.com/address/0x20845985df410F84c2e30Ba44A19dD564baE9bED) | [`exact_match`](https://repo.sourcify.dev/97/0x20845985df410F84c2e30Ba44A19dD564baE9bED) |
+| `AtlasPullSettlementOracle` | [`0x00ea779192dAd354D25016841e3Ff2Bc8f545114`](https://testnet.bscscan.com/address/0x00ea779192dAd354D25016841e3Ff2Bc8f545114) | [`exact_match`](https://repo.sourcify.dev/97/0x00ea779192dAd354D25016841e3Ff2Bc8f545114) |
+| `PayoffSpreadVault` | [`0x5a6AaD747cd5313E31fa663fF719b2a18fF00174`](https://testnet.bscscan.com/address/0x5a6AaD747cd5313E31fa663fF719b2a18fF00174) | [`exact_match`](https://repo.sourcify.dev/97/0x5a6AaD747cd5313E31fa663fF719b2a18fF00174) |
+| `PayoffVaultLens` | [`0x831532F56ac6aB2B628a7b6cEAb1Eef3a828d60E`](https://testnet.bscscan.com/address/0x831532F56ac6aB2B628a7b6cEAb1Eef3a828d60E) | [`exact_match`](https://repo.sourcify.dev/97/0x831532F56ac6aB2B628a7b6cEAb1Eef3a828d60E) |
 
-**Live On-Chain Atlas Pull Proof Executed on BSC Testnet**:
+**Live On-Chain 30-Point Atlas TWAP Proof Executed on BSC Testnet**:
 - **Authorized Production Signer**: `0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600` (magic marker `0x7096`)
-- **Live `verifyLatestAtlasPrice` (`eth_call`)**: `BTC/USD` `$58,629.45988588` (`94.54% HEALTHY`) & `ETH/USD` `$1,642.64096169` (`94.69% HEALTHY`)
-- **Live `settleWithAtlasProof(ASSET_BTC, 1795593600)` Tx**: [`0x0965ed4a8d161a25a3ca2ce75b7275dc4e2c8c90044d6b124933c6b99b7ebdbe`](https://testnet.bscscan.com/tx/0x0965ed4a8d161a25a3ca2ce75b7275dc4e2c8c90044d6b124933c6b99b7ebdbe) (Block `144779429`)
-- **Verified On-Chain Settlement**: `settled = true`, `price = $58,659.31128708`, `feedId = 0x00000272`, `oracleTimestamp = 1795593600` (`2026-11-25T08:00:00.000Z`)
+- **Live `verifyLatestAtlasPrice` (`eth_call`)**: `BTC/USD` `$59,653.75598044` (`93.27% HEALTHY`) & `ETH/USD` `$1,679.40804865` (`93.49% HEALTHY`)
+- **Live `settleWithAtlasTwap(ASSET_BTC, 1795593600, proofs[30])` Tx**: [`0xe4b6067ea5ba92d688746adf0ac547406fada9f28a81e0250137b5265de2dc90`](https://testnet.bscscan.com/tx/0xe4b6067ea5ba92d688746adf0ac547406fada9f28a81e0250137b5265de2dc90) (Block `144840391`, `344,021` gas)
+- **Verified On-Chain Settlement**: `settled = true`, `price = $58,750.15513875`, `samples = 30` (`maxTimestampDiff = 0s`), `window = [1795591860..1795593600]`, `isManualOverride = false`
 
 ---
 

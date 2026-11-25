@@ -16,6 +16,7 @@ import type {
   PositionView,
   TicketSummary,
   TierKind,
+  TwapWindowHealthSummary,
   UnderlyingSymbol,
 } from "@payoff/shared";
 
@@ -51,6 +52,9 @@ export interface HealthResponse {
   settlementCircuitBreaker?: Partial<
     Record<UnderlyingSymbol, ConsensusGuardState>
   >;
+  twapWindowHealth?: Partial<
+    Record<UnderlyingSymbol, TwapWindowHealthSummary>
+  >;
   vaultHealth: {
     usdtBalanceUsdt: number;
     lockedUsdt: number;
@@ -67,12 +71,37 @@ export interface OracleConsensusResponse {
   feeds: Record<UnderlyingSymbol, AtlasFeedConfig>;
   telemetry: Partial<Record<UnderlyingSymbol, AtlasFeedTelemetry>>;
   circuitBreaker: Partial<Record<UnderlyingSymbol, ConsensusGuardState>>;
+  twapWindowHealth?: Partial<
+    Record<UnderlyingSymbol, TwapWindowHealthSummary>
+  >;
   wsConnected?: boolean;
   updatedAtMs: number;
 }
 
+export interface SettlementProofResponse {
+  status: "READY" | "ALREADY_SETTLED" | "DISPUTED_PAUSED" | "WAITING_DELAY";
+  underlying: UnderlyingSymbol;
+  expiry: number;
+  oracleAddress: `0x${string}`;
+  assetId: `0x${string}`;
+  availableAt?: number;
+  feedId?: string;
+  feedIdHex?: `0x${string}`;
+  sampleCount?: number;
+  twapPriceUsd?: number;
+  windowStartTimestamp?: number;
+  windowEndTimestamp?: number;
+  maxAbsTimestampDiffSec?: number;
+  proofs?: `0x${string}`[];
+  reason?: string;
+  health?: TwapWindowHealthSummary;
+}
+
 export interface SettlementHistoryRecord extends OfficialSettlementPrice {
   settledAt?: number;
+  sampleCount?: number | null;
+  isManualOverride?: boolean;
+  overrideReason?: string | null;
 }
 
 export interface SettlementHistoryResponse {
@@ -152,6 +181,11 @@ export const api = {
 
   getOracleConsensus: () =>
     reqJson<OracleConsensusResponse>("/api/oracle/consensus"),
+
+  getSettlementProof: (underlying: UnderlyingSymbol, expiry: number) =>
+    reqJson<SettlementProofResponse>(
+      `/api/oracle/settlement-proof?underlying=${underlying}&expiry=${expiry}`
+    ),
 
   getSettlementHistory: (underlying: UnderlyingSymbol, limit = 10) =>
     reqJson<SettlementHistoryResponse>(
