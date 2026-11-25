@@ -1,0 +1,25 @@
+{
+  "network": "bscTestnet",
+  "chainId": 97,
+  "usdtAddress": "0x1031Ea6993B28AC957f5AD976D030f58ecAdddCe",
+  "vaultAddress": "0x3f0c3606c216895d58fE33A0f5593D665692b9cd",
+  "lensAddress": "0x5Bfb86858783a8292c41B0f905C05aA8f112bC66",
+  "settlementOracleAddress": "0xB3AcE075249f812064737804a3d4E2195346B54A",
+  "atlasSignerAddress": "0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600",
+  "atlasFeeds": {
+    "BTC": {
+      "feedId": "626",
+      "feedIdHex": "0x00000272",
+      "pair": "BTC/USD"
+    },
+    "ETH": {
+      "feedId": "632",
+      "feedIdHex": "0x00000278",
+      "pair": "ETH/USD"
+    }
+  },
+  "deploymentBlock": 144779395,
+  "protocolOpenFeeBps": 400,
+  "protocolCloseFeeBps": 0,
+  "deployedAt": "2026-11-25T11:23:29.788Z"
+}

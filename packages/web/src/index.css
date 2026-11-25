@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/* Chrome is monochrome; colour is reserved for data (payoff received, live state, risk). */
+:root {
+  --n-0: #ffffff;
+  --n-50: #f7f8f9;
+  --n-100: #eef0f2;
+  --n-200: #e2e5e8;
+  --n-300: #c8ccd1;
+  --n-500: #667080;
+  --n-700: #3a4552;
+  --n-900: #14202a;
+  --ink-hover: #000a12;
+  --pay: #0e7c72;
+  --pay-tint: #e9f3f1;
+  --neg: #b54134;
+  --neg-tint: #fbeeea;
+  --warn: #8a6410;
+  --warn-tint: #fbf3dd;
+  --r-sm: 8px;
+  --r-lg: 14px;
+  --shadow-1: 0 1px 2px rgba(20, 32, 42, 0.06), 0 1px 1px rgba(20, 32, 42, 0.04);
+  --shadow-2: 0 4px 12px rgba(20, 32, 42, 0.08), 0 1px 2px rgba(20, 32, 42, 0.06);
+  --shadow-3: 0 24px 64px rgba(20, 32, 42, 0.18), 0 2px 6px rgba(20, 32, 42, 0.08);
+}
+
+@layer base {
+  body {
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background-color: var(--n-50);
+    color: var(--n-900);
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 9999px;
+  background: var(--n-200);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: var(--n-900);
+  border: 3px solid var(--n-0);
+  cursor: pointer;
+  box-shadow: var(--shadow-2);
+}
+
+.safe-pb {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: rgba(20, 32, 42, 0.4);
+  backdrop-filter: blur(2px);
+}

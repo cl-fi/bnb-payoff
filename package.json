@@ -1,0 +1,28 @@
+{
+  "name": "bnb-payoff",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.32.0",
+  "scripts": {
+    "build": "pnpm build:shared && pnpm build:mock-maker && pnpm compile:contracts && pnpm build:server && pnpm build:web",
+    "test": "pnpm test:shared && pnpm test:mock-maker && pnpm test:contracts && pnpm test:server",
+    "typecheck": "pnpm --filter @payoff/shared typecheck && pnpm --filter @payoff/mock-maker typecheck && pnpm --filter @payoff/server typecheck && pnpm --filter @payoff/web typecheck",
+    "build:shared": "pnpm --filter @payoff/shared build",
+    "test:shared": "pnpm --filter @payoff/shared test",
+    "build:mock-maker": "pnpm --filter @payoff/mock-maker build",
+    "test:mock-maker": "pnpm --filter @payoff/mock-maker test",
+    "compile:contracts": "pnpm --filter @payoff/contracts compile",
+    "test:contracts": "pnpm --filter @payoff/contracts test",
+    "test:server": "pnpm --filter @payoff/server test",
+    "build:server": "pnpm --filter @payoff/server build",
+    "build:web": "pnpm --filter @payoff/web build",
+    "deploy:local": "pnpm --filter @payoff/contracts deploy:local",
+    "deploy:bsc": "pnpm --filter @payoff/contracts deploy:bsc",
+    "verify:atlas:bsc": "pnpm --filter @payoff/contracts verify:atlas:bsc",
+    "dev:server": "pnpm --filter @payoff/server dev",
+    "dev:web": "pnpm --filter @payoff/web dev"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

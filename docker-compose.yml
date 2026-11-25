@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bnb-payoff-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-payoff}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payoff_dev_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-payoff}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - payoff_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-payoff} -d ${POSTGRES_DB:-payoff}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    container_name: bnb-payoff-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: ${PORT:-4000}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:5173}
+      CHAIN_ID: ${CHAIN_ID:-97}
+      RPC_URL: ${RPC_URL:-https://data-seed-prebsc-1-s1.bnbchain.org:8545}
+      USDT_ADDRESS: ${USDT_ADDRESS:-}
+      VAULT_ADDRESS: ${VAULT_ADDRESS:-}
+      LENS_ADDRESS: ${LENS_ADDRESS:-}
+      SETTLEMENT_ORACLE_ADDRESS: ${SETTLEMENT_ORACLE_ADDRESS:-}
+      DEPLOYMENT_BLOCK: ${DEPLOYMENT_BLOCK:-}
+      DATABASE_URL: postgres://${POSTGRES_USER:-payoff}:${POSTGRES_PASSWORD:-payoff_dev_secret}@postgres:5432/${POSTGRES_DB:-payoff}
+      ATLAS_API_KEY: ${ATLAS_API_KEY:-}
+      ATLAS_BTC_FEED_ID: ${ATLAS_BTC_FEED_ID:-626}
+      ATLAS_ETH_FEED_ID: ${ATLAS_ETH_FEED_ID:-632}
+      ENABLE_LIVE_ATLAS: ${ENABLE_LIVE_ATLAS:-true}
+      ENABLE_BINANCE_KLINES: ${ENABLE_BINANCE_KLINES:-true}
+      TESTNET_WALLET_PK: ${TESTNET_WALLET_PK:-}
+      MM1_PRIVATE_KEY: ${MM1_PRIVATE_KEY:-}
+      MM2_PRIVATE_KEY: ${MM2_PRIVATE_KEY:-}
+      MM3_PRIVATE_KEY: ${MM3_PRIVATE_KEY:-}
+      FEE_RECIPIENT_ADDRESS: ${FEE_RECIPIENT_ADDRESS:-}
+      PROTOCOL_FEE_BPS: ${PROTOCOL_FEE_BPS:-400}
+      CLOSE_FEE_BPS: ${CLOSE_FEE_BPS:-0}
+    ports:
+      - "127.0.0.1:4000:4000"
+
+volumes:
+  payoff_pgdata:

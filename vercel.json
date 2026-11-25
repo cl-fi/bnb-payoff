@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "pnpm install --filter @payoff/shared --filter @payoff/web --frozen-lockfile",
+  "buildCommand": "pnpm --filter @payoff/shared build && pnpm --filter @payoff/web build",
+  "outputDirectory": "packages/web/dist",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
