@@ -25,6 +25,7 @@ import {
   executeCloseTicketTx,
   executeRedeemTx,
   executeSettleWithAtlasTwapTx,
+  extractWalletErrorMessage,
   getExplorerBaseUrl,
   type ConnectedWallet,
 } from "../lib/wallet";
@@ -92,7 +93,8 @@ export function PositionsPage({
     const errName = String(
       err?.cause?.data?.errorName || err?.data?.errorName || ""
     );
-    const full = `${errName} ${err?.shortMessage || ""} ${err?.message || ""}`;
+    const extracted = extractWalletErrorMessage(err, fallback);
+    const full = `${errName} ${extracted} ${err?.shortMessage || ""} ${err?.message || ""}`;
     if (
       full.includes("自成交") ||
       full.includes("SelfTradeNotAllowed") ||
@@ -104,10 +106,7 @@ export function PositionsPage({
     if (full.includes("QuoteExpired") || full.includes("0x8727a7f9")) {
       return t.quoteExpiredError;
     }
-    if (errName) {
-      return `${err?.shortMessage || fallback} (${errName})`;
-    }
-    return String(err?.shortMessage || err?.message || fallback);
+    return extracted;
   };
 
   const handleClaimTestUsdt = async () => {
@@ -138,7 +137,7 @@ export function PositionsPage({
       setToastMsg(t.faucetSuccess(clampedAmount));
       onRefresh();
     } catch (err: any) {
-      setFaucetErr(err?.shortMessage || err?.message || "Claim failed");
+      setFaucetErr(extractWalletErrorMessage(err, "Claim failed"));
     } finally {
       setFaucetBusy(false);
     }

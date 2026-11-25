@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useAccount,
+  useConnect,
+  useConnectors,
+  useDisconnect,
+  useSwitchChain,
+} from "wagmi";
 import {
   BSC_TESTNET,
   type AtlasFeedTelemetry,
@@ -13,14 +20,17 @@ import {
 } from "./lib/api";
 import { getCopy, type Locale } from "./lib/i18n";
 import {
-  connectInjectedWallet,
+  BINANCE_WALLET_ICON,
+  WALLETCONNECT_ICON,
+  getOrderedWalletConnectors,
+  type WalletConnectorOption,
+} from "./lib/wagmi";
+import {
   createClientForRpc,
   disconnectWalletSession,
+  extractWalletErrorMessage,
   readUsdtBalance,
-  subscribeDiscoveredWallets,
-  switchConnectedWalletChain,
   type ConnectedWallet,
-  type DiscoveredWallet,
 } from "./lib/wallet";
 import { Header, type ConsumerTab } from "./components/Header";
 import { WalletModal } from "./components/WalletModal";
@@ -44,17 +54,15 @@ export function App() {
   const [health, setHealth] = useState<HealthResponse | undefined>();
 
   const [walletModalOpen, setWalletModalOpen] = useState(false);
-  const [discoveredWallets, setDiscoveredWallets] = useState<
-    DiscoveredWallet[]
-  >([]);
   const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [switchingChain, setSwitchingChain] = useState(false);
   const [walletErr, setWalletErr] = useState<string | undefined>();
-  const [wallet, setWallet] = useState<ConnectedWallet>({
-    kind: "NONE",
-    chainId: BSC_TESTNET.chainId,
-    usdtBalance: 0,
-  });
+  const [usdtBalance, setUsdtBalance] = useState<number>(0);
+
+  const { address, isConnected, chainId: walletChainId, connector } = useAccount();
+  const connectors = useConnectors();
+  const { connectAsync } = useConnect();
+  const { disconnectAsync } = useDisconnect();
+  const { switchChainAsync, isPending: switchingChain } = useSwitchChain();
 
   const [liveSpots, setLiveSpots] = useState<
     Record<UnderlyingSymbol, { spot: number; change24hPct: number }>
@@ -70,6 +78,51 @@ export function App() {
   >({});
   const [positions, setPositions] = useState<PositionView[]>([]);
 
+  const targetChainId = health?.chainId ?? BSC_TESTNET.chainId;
+
+  const walletOptions = useMemo(
+    () => getOrderedWalletConnectors(connectors),
+    [connectors]
+  );
+
+  const wallet: ConnectedWallet = useMemo(() => {
+    if (!isConnected || !address) {
+      return {
+        kind: "NONE",
+        chainId: targetChainId,
+        usdtBalance: 0,
+      };
+    }
+
+    const hay = `${connector?.id || ""} ${connector?.name || ""}`.toLowerCase();
+    const isBinance = hay.includes("binance");
+    const isWc = hay.includes("walletconnect");
+
+    return {
+      kind: "WAGMI",
+      walletName: isBinance ? "Binance Wallet" : connector?.name || "Web3 Wallet",
+      walletIcon:
+        connector?.icon ||
+        (isBinance
+          ? BINANCE_WALLET_ICON
+          : isWc
+            ? WALLETCONNECT_ICON
+            : undefined),
+      connectorId: connector?.id,
+      address,
+      chainId: targetChainId,
+      walletChainId,
+      usdtBalance,
+    };
+  }, [
+    isConnected,
+    address,
+    connector,
+    targetChainId,
+    walletChainId,
+    usdtBalance,
+  ]);
+
   useEffect(() => {
     const syncRoute = () => setOpsMode(isOpsRoute());
     window.addEventListener("popstate", syncRoute);
@@ -78,10 +131,6 @@ export function App() {
       window.removeEventListener("popstate", syncRoute);
       window.removeEventListener("hashchange", syncRoute);
     };
-  }, []);
-
-  useEffect(() => {
-    return subscribeDiscoveredWallets(setDiscoveredWallets);
   }, []);
 
   const refreshHealth = useCallback(async () => {
@@ -108,8 +157,12 @@ export function App() {
   }, []);
 
   const refreshWalletAndPositions = useCallback(
-    async (w: ConnectedWallet, h?: HealthResponse) => {
-      if (!w.address) return;
+    async (addr: `0x${string}` | undefined, h?: HealthResponse) => {
+      if (!addr) {
+        setUsdtBalance(0);
+        setPositions([]);
+        return;
+      }
       const curHealth = h || health;
       const chainId = curHealth?.chainId ?? BSC_TESTNET.chainId;
       const rpcUrl = curHealth?.rpcUrl ?? BSC_TESTNET.rpcUrl;
@@ -120,12 +173,10 @@ export function App() {
 
       const client = createClientForRpc(chainId, rpcUrl);
       const [bal, posRes] = await Promise.all([
-        readUsdtBalance(client, usdtAddress, w.address),
-        api.getPositions(w.address).catch(() => ({ positions: [] })),
+        readUsdtBalance(client, usdtAddress, addr),
+        api.getPositions(addr).catch(() => ({ positions: [] })),
       ]);
-      setWallet((prev) =>
-        prev.address === w.address ? { ...prev, usdtBalance: bal } : prev
-      );
+      setUsdtBalance(bal);
       setPositions(posRes.positions);
     },
     [health]
@@ -149,36 +200,15 @@ export function App() {
       .catch(() => {});
   }, [refreshHealth]);
 
+  // Keep USDT balance & positions synced on connect, auto-reconnect, account switch, or chain switch
   useEffect(() => {
-    if (wallet.kind !== "INJECTED" || !wallet.provider?.on) return;
-    const handleAccounts = (accounts: string[]) => {
-      if (!accounts || accounts.length === 0) {
-        setWallet({
-          kind: "NONE",
-          chainId: health?.chainId ?? BSC_TESTNET.chainId,
-          usdtBalance: 0,
-        });
-        setPositions([]);
-      } else {
-        const next: ConnectedWallet = {
-          ...wallet,
-          address: accounts[0] as `0x${string}`,
-        };
-        setWallet(next);
-        void refreshWalletAndPositions(next);
-      }
-    };
-    const handleChainChanged = (hexChainId: string) => {
-      const nextId = parseInt(String(hexChainId), 16);
-      setWallet((prev) => ({ ...prev, walletChainId: nextId }));
-    };
-    wallet.provider.on("accountsChanged", handleAccounts);
-    wallet.provider.on("chainChanged", handleChainChanged);
-    return () => {
-      wallet.provider?.removeListener?.("accountsChanged", handleAccounts);
-      wallet.provider?.removeListener?.("chainChanged", handleChainChanged);
-    };
-  }, [wallet, health, refreshWalletAndPositions]);
+    if (!isConnected || !address) {
+      setUsdtBalance(0);
+      setPositions([]);
+      return;
+    }
+    void refreshWalletAndPositions(address);
+  }, [isConnected, address, walletChainId, health, refreshWalletAndPositions]);
 
   useEffect(() => {
     const wsUrl = getWsUrl(wallet.address);
@@ -206,31 +236,55 @@ export function App() {
     return () => ws.close();
   }, [wallet.address]);
 
-  const handleConnectDiscovered = async (d: DiscoveredWallet) => {
-    setConnectingId(d.id);
+  const handleConnectOption = async (option: WalletConnectorOption) => {
+    setConnectingId(option.uid);
     setWalletErr(undefined);
     try {
       const h = health || (await refreshHealth());
-      const targetChainId = h?.chainId ?? BSC_TESTNET.chainId;
-      const rpcUrl = h?.rpcUrl ?? BSC_TESTNET.rpcUrl;
-      const connected = await connectInjectedWallet(d, targetChainId, rpcUrl);
-      setWallet(connected);
+      const desiredChainId = h?.chainId ?? BSC_TESTNET.chainId;
+
+      // Close native top-layer <dialog> before launching QR modals (Binance App QR / WalletConnect)
+      // so the dialog top layer never occludes the third-party QR overlay.
+      if (option.isQrFallback) {
+        setWalletModalOpen(false);
+      }
+
+      const res = await connectAsync({
+        connector: option.connector,
+        chainId: desiredChainId,
+      });
+
+      if (res.chainId !== desiredChainId) {
+        await switchChainAsync({ chainId: desiredChainId }).catch(() => {});
+      }
+
       setWalletModalOpen(false);
-      await refreshWalletAndPositions(connected, h);
+      if (res.accounts[0]) {
+        await refreshWalletAndPositions(res.accounts[0], h);
+      }
     } catch (err: any) {
-      setWalletErr(err?.message || `Failed to connect ${d.name}`);
+      const msg = extractWalletErrorMessage(
+        err,
+        `Failed to connect ${option.name}`
+      );
+      const code = err?.code ?? err?.cause?.code;
+      const isCancelled =
+        code === 4001 ||
+        code === 100001 ||
+        code === 100002 ||
+        /cancel|closed modal|user rejected/i.test(msg);
+      if (!isCancelled) {
+        setWalletErr(msg);
+        setWalletModalOpen(true);
+      }
     } finally {
       setConnectingId(null);
     }
   };
 
   const handleDisconnect = async () => {
-    await disconnectWalletSession(wallet);
-    setWallet({
-      kind: "NONE",
-      chainId: health?.chainId ?? BSC_TESTNET.chainId,
-      usdtBalance: 0,
-    });
+    await disconnectAsync().catch(() => disconnectWalletSession());
+    setUsdtBalance(0);
     setPositions([]);
   };
 
@@ -249,29 +303,14 @@ export function App() {
   const wrongNetwork =
     wallet.kind !== "NONE" &&
     wallet.walletChainId !== undefined &&
-    wallet.walletChainId !== (health?.chainId ?? BSC_TESTNET.chainId);
+    wallet.walletChainId !== targetChainId;
 
   const handleSwitchNetwork = async () => {
-    setSwitchingChain(true);
     try {
-      const targetId = health?.chainId ?? BSC_TESTNET.chainId;
-      const rpcUrl = health?.rpcUrl ?? BSC_TESTNET.rpcUrl;
-      const switchedId = await switchConnectedWalletChain(
-        wallet,
-        targetId,
-        rpcUrl
-      );
-      const updated = {
-        ...wallet,
-        walletChainId: switchedId,
-        chainId: targetId,
-      };
-      setWallet(updated);
-      await refreshWalletAndPositions(updated);
+      await switchChainAsync({ chainId: targetChainId });
+      await refreshWalletAndPositions(wallet.address);
     } catch {
       // user rejected chain switch
-    } finally {
-      setSwitchingChain(false);
     }
   };
 
@@ -319,9 +358,9 @@ export function App() {
             setWalletErr(undefined);
             setWalletModalOpen(true);
           }}
-          onTxSuccess={() => void refreshWalletAndPositions(wallet)}
+          onTxSuccess={() => void refreshWalletAndPositions(wallet.address)}
           onGoToPositions={() => {
-            void refreshWalletAndPositions(wallet);
+            void refreshWalletAndPositions(wallet.address);
             setActiveTab("POSITIONS");
           }}
         />
@@ -338,7 +377,7 @@ export function App() {
             setWalletModalOpen(true);
           }}
           onGoToTrade={() => setActiveTab("TRADE")}
-          onRefresh={() => void refreshWalletAndPositions(wallet)}
+          onRefresh={() => void refreshWalletAndPositions(wallet.address)}
         />
       )}
 
@@ -346,11 +385,11 @@ export function App() {
         open={walletModalOpen}
         locale={locale}
         wallet={wallet}
-        discoveredWallets={discoveredWallets}
+        walletOptions={walletOptions}
         connectingId={connectingId}
         errorMsg={walletErr}
         onClose={() => setWalletModalOpen(false)}
-        onConnectDiscovered={(w) => void handleConnectDiscovered(w)}
+        onConnectOption={(w) => void handleConnectOption(w)}
         onDisconnect={() => void handleDisconnect()}
       />
     </div>

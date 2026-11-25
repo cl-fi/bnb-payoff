@@ -2,12 +2,19 @@ import {
   createPublicClient,
   defineChain,
   encodeFunctionData,
+  fallback,
   http,
   maxUint256,
   parseUnits,
   type Chain,
   type PublicClient,
 } from "viem";
+import {
+  disconnect as wagmiDisconnect,
+  getAccount,
+  sendTransaction,
+  switchChain,
+} from "wagmi/actions";
 import {
   ATLAS_SETTLEMENT_ORACLE_ABI,
   BSC_TESTNET,
@@ -18,177 +25,35 @@ import {
   type CloseRfqResponse,
   type OpenRfqResponse,
 } from "@payoff/shared";
+import { getBscTestnetRpcUrls, wagmiConfig } from "./wagmi";
 
-export interface Eip1193Provider {
-  request(args: { method: string; params?: unknown[] | object }): Promise<any>;
-  on?(event: string, listener: (...args: any[]) => void): void;
-  removeListener?(event: string, listener: (...args: any[]) => void): void;
-}
-
-export interface DiscoveredWallet {
-  id: string;
-  name: string;
-  icon: string;
-  rdns: string;
-  isBnbFeatured: boolean;
-  priority: number;
-  provider: Eip1193Provider;
-}
-
-export type WalletTransportKind = "NONE" | "INJECTED";
+export type WalletTransportKind = "NONE" | "WAGMI";
 
 export interface ConnectedWallet {
   kind: WalletTransportKind;
   walletName?: string;
   walletIcon?: string;
+  connectorId?: string;
   address?: `0x${string}`;
   /** Target app chain (97 = BNB Smart Chain Testnet) */
   chainId: number;
   /** Wallet's actual currently selected EVM chain ID */
   walletChainId?: number;
   usdtBalance: number;
-  provider?: Eip1193Provider;
-}
-
-function getWalletPriority(rdns: string, name: string): {
-  priority: number;
-  isBnbFeatured: boolean;
-} {
-  const hay = `${rdns} ${name}`.toLowerCase();
-  if (hay.includes("binance")) {
-    return { priority: 1, isBnbFeatured: true };
-  }
-  if (hay.includes("metamask")) {
-    return { priority: 2, isBnbFeatured: true };
-  }
-  if (hay.includes("trust")) {
-    return { priority: 3, isBnbFeatured: true };
-  }
-  if (hay.includes("rabby")) {
-    return { priority: 4, isBnbFeatured: false };
-  }
-  if (hay.includes("coinbase")) {
-    return { priority: 5, isBnbFeatured: false };
-  }
-  return { priority: 10, isBnbFeatured: false };
 }
 
 /**
- * Discovers installed EVM wallets via standard EIP-6963 multi-wallet discovery,
- * with legacy `window.BinanceChain` / `window.ethereum` fallback.
- * Prioritizes BNB-friendly wallets (Binance Web3 Wallet, MetaMask, Trust Wallet)
- * cleanly without vendor lock-in.
+ * BSC Testnet blocks report `baseFeePerGas = 0x0`, and `eth_feeHistory` reward percentiles
+ * intermittently return `0`, causing EIP-1559 wallet estimators to propose `0 tBNB` and
+ * get rejected at the mempool ("Transaction failed").
+ * Enforcing a legacy `gasPrice` with a safe 0.1 Gwei floor avoids zero-fee rejections.
  */
-export function subscribeDiscoveredWallets(
-  onUpdate: (wallets: DiscoveredWallet[]) => void
-): () => void {
-  const map = new Map<string, DiscoveredWallet>();
-
-  const emit = () => {
-    const list = Array.from(map.values()).sort((a, b) => {
-      if (a.priority !== b.priority) return a.priority - b.priority;
-      return a.name.localeCompare(b.name);
-    });
-    onUpdate(list);
-  };
-
-  const handleAnnounce = (event: Event) => {
-    const detail = (event as CustomEvent)?.detail;
-    if (!detail?.info || !detail?.provider) return;
-    const rdns: string = detail.info.rdns || detail.info.name || "unknown";
-    const name: string = detail.info.name || "EVM Wallet";
-    const { priority, isBnbFeatured } = getWalletPriority(rdns, name);
-
-    map.set(rdns, {
-      id: rdns,
-      name,
-      icon: detail.info.icon || "",
-      rdns,
-      isBnbFeatured,
-      priority,
-      provider: detail.provider as Eip1193Provider,
-    });
-    emit();
-  };
-
-  window.addEventListener("eip6963:announceProvider", handleAnnounce);
-  window.dispatchEvent(new Event("eip6963:requestProvider"));
-
-  // Legacy fallback for browsers or extensions that do not announce EIP-6963
-  const timer = setTimeout(() => {
-    const win = window as any;
-    let added = false;
-
-    if (
-      win.BinanceChain &&
-      !Array.from(map.values()).some((w) =>
-        `${w.rdns} ${w.name}`.toLowerCase().includes("binance")
-      )
-    ) {
-      map.set("com.binance.wallet.legacy", {
-        id: "com.binance.wallet.legacy",
-        name: "Binance Wallet",
-        icon: "",
-        rdns: "com.binance.wallet",
-        isBnbFeatured: true,
-        priority: 1,
-        provider: win.BinanceChain as Eip1193Provider,
-      });
-      added = true;
-    }
-
-    if (win.ethereum && map.size === 0) {
-      const isBinance = Boolean(win.ethereum.isBinance || win.ethereum.isBinanceWallet);
-      const isMetaMask = Boolean(win.ethereum.isMetaMask);
-      const isTrust = Boolean(win.ethereum.isTrust || win.ethereum.isTrustWallet);
-      const isRabby = Boolean(win.ethereum.isRabby);
-      const isCoinbase = Boolean(win.ethereum.isCoinbaseWallet);
-
-      const name = isBinance
-        ? "Binance Wallet"
-        : isRabby
-          ? "Rabby Wallet"
-          : isTrust
-            ? "Trust Wallet"
-            : isCoinbase
-              ? "Coinbase Wallet"
-              : isMetaMask
-                ? "MetaMask"
-                : "Browser Wallet";
-
-      const rdns = isBinance
-        ? "com.binance.wallet"
-        : isRabby
-          ? "io.rabby"
-          : isTrust
-            ? "com.trustwallet.app"
-            : isCoinbase
-              ? "com.coinbase.wallet"
-              : isMetaMask
-                ? "io.metamask"
-                : "injected.legacy";
-
-      const { priority, isBnbFeatured } = getWalletPriority(rdns, name);
-      map.set("injected.legacy", {
-        id: "injected.legacy",
-        name,
-        icon: "",
-        rdns,
-        isBnbFeatured,
-        priority,
-        provider: win.ethereum as Eip1193Provider,
-      });
-      added = true;
-    }
-
-    if (added) emit();
-  }, 150);
-
-  return () => {
-    clearTimeout(timer);
-    window.removeEventListener("eip6963:announceProvider", handleAnnounce);
-  };
-}
+const BSC_TESTNET_MIN_GAS_PRICE_WEI = 100_000_000n; // 0.1 Gwei
+const BSC_MAINNET_MIN_GAS_PRICE_WEI = 100_000_000n; // 0.1 Gwei
+const GAS_PRICE_BUFFER_NUM = 120n;
+const GAS_PRICE_BUFFER_DEN = 100n;
+const GAS_LIMIT_BUFFER_NUM = 120n;
+const GAS_LIMIT_BUFFER_DEN = 100n;
 
 export function getChainDef(chainId: number, rpcUrl: string): Chain {
   if (chainId === BSC_TESTNET.chainId) {
@@ -200,7 +65,9 @@ export function getChainDef(chainId: number, rpcUrl: string): Chain {
         symbol: BSC_TESTNET.nativeSymbol,
         decimals: 18,
       },
-      rpcUrls: { default: { http: [rpcUrl || BSC_TESTNET.rpcUrl] } },
+      rpcUrls: {
+        default: { http: getBscTestnetRpcUrls(rpcUrl) },
+      },
       blockExplorers: {
         default: {
           name: "BscScan Testnet",
@@ -225,7 +92,20 @@ export function getExplorerBaseUrl(chainId: number): string | undefined {
   return undefined;
 }
 
-export function createClientForRpc(chainId: number, rpcUrl: string): PublicClient {
+export function createClientForRpc(
+  chainId: number,
+  rpcUrl: string
+): PublicClient {
+  if (chainId === BSC_TESTNET.chainId) {
+    const urls = getBscTestnetRpcUrls(rpcUrl);
+    return createPublicClient({
+      chain: getChainDef(chainId, rpcUrl),
+      transport: fallback(
+        urls.map((u) => http(u)),
+        { rank: false }
+      ),
+    });
+  }
   return createPublicClient({
     chain: getChainDef(chainId, rpcUrl),
     transport: http(rpcUrl),
@@ -256,114 +136,126 @@ export async function readUsdtBalance(
   }
 }
 
-export async function ensureTargetChain(
-  provider: Eip1193Provider,
-  targetChainId: number,
-  rpcUrl: string
-) {
-  const hexChain = `0x${targetChainId.toString(16)}`;
-  try {
-    await provider.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: hexChain }],
-    });
-  } catch (err: any) {
-    const msg = String(err?.message || "").toLowerCase();
-    if (
-      err?.code === 4902 ||
-      msg.includes("4902") ||
-      msg.includes("unrecognized chain") ||
-      msg.includes("unknown chain")
-    ) {
-      const def = getChainDef(targetChainId, rpcUrl);
-      await provider.request({
-        method: "wallet_addEthereumChain",
-        params: [
-          {
-            chainId: hexChain,
-            chainName: def.name,
-            nativeCurrency: def.nativeCurrency,
-            rpcUrls: [rpcUrl || BSC_TESTNET.rpcUrl],
-            blockExplorerUrls: def.blockExplorers?.default?.url
-              ? [def.blockExplorers.default.url]
-              : undefined,
-          },
-        ],
-      });
-    } else {
-      throw err;
-    }
+/**
+ * Extracts a clear, user-readable reason from Wagmi/Viem/EIP-1193 wallet errors
+ * so wallet/RPC rejections are surfaced cleanly instead of opaque fallbacks.
+ */
+export function extractWalletErrorMessage(
+  err: any,
+  fallbackMsg: string
+): string {
+  if (!err) return fallbackMsg;
+  const code = err?.code ?? err?.cause?.code;
+  if (code === 4001 || code === 100001 || code === 100002 || code === 200001) {
+    return "Transaction cancelled in wallet";
   }
+
+  const candidates = [
+    err?.cause?.data?.errorName
+      ? `${err?.shortMessage || fallbackMsg} (${err.cause.data.errorName})`
+      : undefined,
+    err?.data?.errorName
+      ? `${err?.shortMessage || fallbackMsg} (${err.data.errorName})`
+      : undefined,
+    err?.shortMessage,
+    err?.cause?.shortMessage,
+    err?.cause?.details,
+    err?.details,
+    err?.data?.message,
+    err?.cause?.message,
+    err?.message,
+  ].filter((v): v is string => typeof v === "string" && v.trim().length > 0);
+
+  return candidates[0] || fallbackMsg;
 }
 
 export async function switchConnectedWalletChain(
-  wallet: ConnectedWallet,
-  targetChainId: number,
-  rpcUrl: string
+  targetChainId: number
 ): Promise<number> {
-  if (wallet.kind === "INJECTED" && wallet.provider) {
-    await ensureTargetChain(wallet.provider, targetChainId, rpcUrl);
-    const hex = await wallet.provider.request({ method: "eth_chainId" });
-    return parseInt(String(hex), 16);
-  }
-  return targetChainId;
+  const switched = await switchChain(wagmiConfig, { chainId: targetChainId });
+  return switched.id;
 }
 
-export async function connectInjectedWallet(
-  discovered: DiscoveredWallet,
-  targetChainId: number,
-  rpcUrl: string
-): Promise<ConnectedWallet> {
-  const accounts = (await discovered.provider.request({
-    method: "eth_requestAccounts",
-  })) as `0x${string}`[];
-
-  if (!accounts || accounts.length === 0) {
-    throw new Error("No wallet account authorized");
-  }
-
-  await ensureTargetChain(discovered.provider, targetChainId, rpcUrl).catch(
-    () => {}
-  );
-
-  let walletChainId = targetChainId;
-  try {
-    const hex = await discovered.provider.request({ method: "eth_chainId" });
-    walletChainId = parseInt(String(hex), 16);
-  } catch {
-    walletChainId = targetChainId;
-  }
-
-  return {
-    kind: "INJECTED",
-    walletName: discovered.name,
-    walletIcon: discovered.icon,
-    address: accounts[0],
-    chainId: targetChainId,
-    walletChainId,
-    usdtBalance: 0,
-    provider: discovered.provider,
-  };
+export async function disconnectWalletSession() {
+  await wagmiDisconnect(wagmiConfig).catch(() => {});
 }
 
-export async function disconnectWalletSession(_wallet: ConnectedWallet) {
-  // EIP-1193 injected sessions are cleared client-side on disconnect
+async function ensureWalletOnTargetChain(
+  wallet: ConnectedWallet
+): Promise<void> {
+  const account = getAccount(wagmiConfig);
+  const currentChainId = account.chainId ?? wallet.walletChainId;
+  if (currentChainId && currentChainId !== wallet.chainId) {
+    await switchConnectedWalletChain(wallet.chainId);
+  }
+}
+
+async function resolveSafeGasOverrides(params: {
+  publicClient: PublicClient;
+  chainId: number;
+  from: `0x${string}`;
+  to: `0x${string}`;
+  data: `0x${string}`;
+}): Promise<{ gas?: bigint; gasPrice?: bigint }> {
+  const { publicClient, chainId, from, to, data } = params;
+  const isBsc = chainId === BSC_TESTNET.chainId || chainId === 56;
+
+  const [estimatedGas, rawGasPrice] = await Promise.all([
+    publicClient
+      .estimateGas({ account: from, to, data, value: 0n })
+      .catch(() => undefined),
+    isBsc ? publicClient.getGasPrice().catch(() => undefined) : Promise.resolve(undefined),
+  ]);
+
+  const gas = estimatedGas
+    ? (estimatedGas * GAS_LIMIT_BUFFER_NUM) / GAS_LIMIT_BUFFER_DEN
+    : undefined;
+
+  let gasPrice: bigint | undefined;
+  if (isBsc) {
+    const minFloor =
+      chainId === BSC_TESTNET.chainId
+        ? BSC_TESTNET_MIN_GAS_PRICE_WEI
+        : BSC_MAINNET_MIN_GAS_PRICE_WEI;
+    const buffered = rawGasPrice
+      ? (rawGasPrice * GAS_PRICE_BUFFER_NUM) / GAS_PRICE_BUFFER_DEN
+      : minFloor;
+    gasPrice = buffered > minFloor ? buffered : minFloor;
+  }
+
+  return { gas, gasPrice };
 }
 
 async function sendEvmTx(params: {
   wallet: ConnectedWallet;
+  publicClient: PublicClient;
   to: `0x${string}`;
   data: `0x${string}`;
 }): Promise<`0x${string}`> {
-  const { wallet, to, data } = params;
-  if (!wallet.address || wallet.kind !== "INJECTED" || !wallet.provider) {
+  const { wallet, publicClient, to, data } = params;
+  if (!wallet.address || wallet.kind !== "WAGMI") {
     throw new Error("Please connect a wallet first");
   }
 
-  const txHash = (await wallet.provider.request({
-    method: "eth_sendTransaction",
-    params: [{ from: wallet.address, to, data, value: "0x0" }],
-  })) as `0x${string}`;
+  const { gas, gasPrice } = await resolveSafeGasOverrides({
+    publicClient,
+    chainId: wallet.chainId,
+    from: wallet.address,
+    to,
+    data,
+  });
+
+  // Explicitly pass legacy `gasPrice` on BNB Chain (and omit EIP-1559 fields)
+  // so wallets never estimate `0 tBNB` from BSC Testnet's `baseFeePerGas = 0`.
+  const txHash = await sendTransaction(wagmiConfig, {
+    account: wallet.address,
+    chainId: wallet.chainId,
+    to,
+    data,
+    value: 0n,
+    ...(gas ? { gas } : {}),
+    ...(gasPrice ? { gasPrice } : {}),
+  });
   return txHash;
 }
 
@@ -378,13 +270,8 @@ export async function waitForConfirmedReceipt(
   return receipt;
 }
 
-async function ensureWalletOnTargetChain(
-  wallet: ConnectedWallet,
-  rpcUrl: string
-): Promise<void> {
-  if (wallet.walletChainId && wallet.walletChainId !== wallet.chainId) {
-    await switchConnectedWalletChain(wallet, wallet.chainId, rpcUrl);
-  }
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export async function ensureUsdtApproval(params: {
@@ -400,7 +287,7 @@ export async function ensureUsdtApproval(params: {
   const { wallet, rpcUrl, usdtAddress, spender, amountUsdt, onApproving } =
     params;
   if (!wallet.address) throw new Error("Please connect a wallet first");
-  await ensureWalletOnTargetChain(wallet, rpcUrl);
+  await ensureWalletOnTargetChain(wallet);
   const publicClient =
     params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
 
@@ -426,6 +313,7 @@ export async function ensureUsdtApproval(params: {
   });
   const approveHash = await sendEvmTx({
     wallet,
+    publicClient,
     to: usdtAddress,
     data: approveData,
   });
@@ -442,7 +330,7 @@ export async function executeOpenTicketTx(params: {
 }): Promise<`0x${string}`> {
   const { wallet, rpcUrl, rfq, onStage } = params;
   if (!wallet.address) throw new Error("Please connect a wallet first");
-  await ensureWalletOnTargetChain(wallet, rpcUrl);
+  await ensureWalletOnTargetChain(wallet);
   const publicClient =
     params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
 
@@ -464,7 +352,7 @@ export async function executeOpenTicketTx(params: {
 
   // Internal safety check: if pre-approval already succeeded, allowance is sufficient and skips approve immediately
   const payAmt = BigInt(rfq.quote.userPayAmount);
-  await ensureUsdtApproval({
+  const approvalRes = await ensureUsdtApproval({
     wallet,
     rpcUrl,
     usdtAddress: rfq.usdtAddress,
@@ -477,13 +365,31 @@ export async function executeOpenTicketTx(params: {
 
   // Pre-simulate fillOpenQuote so Vault custom errors (e.g. SelfTradeNotAllowed, QuoteExpired)
   // decode cleanly before prompting the wallet to broadcast.
-  await publicClient.simulateContract({
-    account: wallet.address,
-    address: rfq.verifyingContract,
-    abi: PAYOFF_VAULT_ABI,
-    functionName: "fillOpenQuote",
-    args: [quoteArg, rfq.signature],
-  });
+  // Retry briefly if we just mined an approve tx and an RPC load-balancer node lags by 1 block.
+  const maxSimAttempts = approvalRes.approvedNow ? 3 : 1;
+  for (let attempt = 1; attempt <= maxSimAttempts; attempt++) {
+    try {
+      await publicClient.simulateContract({
+        account: wallet.address,
+        address: rfq.verifyingContract,
+        abi: PAYOFF_VAULT_ABI,
+        functionName: "fillOpenQuote",
+        args: [quoteArg, rfq.signature],
+      });
+      break;
+    } catch (err: any) {
+      const msg = `${err?.shortMessage || ""} ${err?.message || ""}`;
+      const isAllowanceLag =
+        approvalRes.approvedNow &&
+        attempt < maxSimAttempts &&
+        /allowance|InsufficientAllowance/i.test(msg);
+      if (isAllowanceLag) {
+        await sleep(1500);
+        continue;
+      }
+      throw err;
+    }
+  }
 
   onStage?.("FILLING");
   const fillData = encodeFunctionData({
@@ -494,6 +400,7 @@ export async function executeOpenTicketTx(params: {
 
   const openHash = await sendEvmTx({
     wallet,
+    publicClient,
     to: rfq.verifyingContract,
     data: fillData,
   });
@@ -509,7 +416,7 @@ export async function executeCloseTicketTx(params: {
 }): Promise<`0x${string}`> {
   const { wallet, rpcUrl, rfq } = params;
   if (!wallet.address) throw new Error("Please connect a wallet first");
-  await ensureWalletOnTargetChain(wallet, rpcUrl);
+  await ensureWalletOnTargetChain(wallet);
   const publicClient =
     params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
 
@@ -543,6 +450,7 @@ export async function executeCloseTicketTx(params: {
 
   const hash = await sendEvmTx({
     wallet,
+    publicClient,
     to: rfq.verifyingContract,
     data: closeData,
   });
@@ -559,7 +467,7 @@ export async function executeRedeemTx(params: {
 }): Promise<`0x${string}`> {
   const { wallet, rpcUrl, vaultAddress, seriesId } = params;
   if (!wallet.address) throw new Error("Please connect a wallet first");
-  await ensureWalletOnTargetChain(wallet, rpcUrl);
+  await ensureWalletOnTargetChain(wallet);
   const publicClient =
     params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
 
@@ -571,6 +479,7 @@ export async function executeRedeemTx(params: {
 
   const hash = await sendEvmTx({
     wallet,
+    publicClient,
     to: vaultAddress,
     data: redeemData,
   });
@@ -593,7 +502,7 @@ export async function executeSettleWithAtlasTwapTx(params: {
 }): Promise<`0x${string}`> {
   const { wallet, rpcUrl, oracleAddress, assetId, expiry, proofs } = params;
   if (!wallet.address) throw new Error("Please connect a wallet first");
-  await ensureWalletOnTargetChain(wallet, rpcUrl);
+  await ensureWalletOnTargetChain(wallet);
   const publicClient =
     params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
 
@@ -613,6 +522,7 @@ export async function executeSettleWithAtlasTwapTx(params: {
 
   const hash = await sendEvmTx({
     wallet,
+    publicClient,
     to: oracleAddress,
     data,
   });
@@ -637,7 +547,7 @@ export async function executeClaimTestUsdtTx(params: {
     throw new Error("Please enter an amount greater than 0");
   }
 
-  await ensureWalletOnTargetChain(wallet, rpcUrl);
+  await ensureWalletOnTargetChain(wallet);
 
   const publicClient =
     params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
@@ -650,6 +560,7 @@ export async function executeClaimTestUsdtTx(params: {
 
   const hash = await sendEvmTx({
     wallet,
+    publicClient,
     to: usdtAddress,
     data,
   });

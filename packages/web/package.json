@@ -10,12 +10,16 @@
     "typecheck": "tsc -b"
   },
   "dependencies": {
+    "@binance/w3w-wagmi-connector-v2": "^1.2.11",
     "@payoff/shared": "workspace:*",
+    "@tanstack/react-query": "^5.108.4",
+    "buffer": "^6.0.3",
     "lightweight-charts": "^5.3.0",
     "lucide-react": "^0.475.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "viem": "^2.23.0"
+    "viem": "^2.23.0",
+    "wagmi": "^2.19.5"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.9",

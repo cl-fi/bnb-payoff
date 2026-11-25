@@ -18,8 +18,10 @@ import {
 } from "../lib/api";
 import { getCopy, type Locale } from "../lib/i18n";
 import {
+  createClientForRpc,
   ensureUsdtApproval,
   executeOpenTicketTx,
+  extractWalletErrorMessage,
   type ConnectedWallet,
 } from "../lib/wallet";
 import { AtlasOracleBadge } from "../components/AtlasOracleBadge";
@@ -230,7 +232,8 @@ export function TradePage({
     const errName = String(
       err?.cause?.data?.errorName || err?.data?.errorName || ""
     );
-    const full = `${errName} ${err?.shortMessage || ""} ${err?.message || ""}`;
+    const extracted = extractWalletErrorMessage(err, fallback);
+    const full = `${errName} ${extracted} ${err?.shortMessage || ""} ${err?.message || ""}`;
     if (
       full.includes("自成交") ||
       full.includes("SelfTradeNotAllowed") ||
@@ -242,13 +245,13 @@ export function TradePage({
     if (full.includes("QuoteExpired") || full.includes("0x8727a7f9")) {
       return t.quoteExpiredError;
     }
-    if (errName) {
-      return `${err?.shortMessage || fallback} (${errName})`;
-    }
-    return String(err?.shortMessage || err?.message || fallback);
+    return extracted;
   };
 
-  const fillOpenRfqOnChain = async (rfq: SlippagePauseState["rfq"]) => {
+  const fillOpenRfqOnChain = async (
+    rfq: SlippagePauseState["rfq"],
+    sharedClient?: ReturnType<typeof createClientForRpc>
+  ) => {
     if (rfq.quote.validUntil <= Math.floor(Date.now() / 1000)) {
       throw new Error("QuoteExpired");
     }
@@ -259,6 +262,7 @@ export function TradePage({
       rpcUrl,
       rfq,
       onStage: (st) => setStage(st === "APPROVING" ? "APPROVING" : "FILLING"),
+      publicClient: sharedClient,
     });
     setSlippagePause(undefined);
     setTxHash(hash);
@@ -283,6 +287,7 @@ export function TradePage({
     const previewMaxPayoutUsdt = activeTicket.maxPayoutUsdt;
 
     try {
+      const publicClient = createClientForRpc(wallet.chainId, rpcUrl);
       let { vaultAddress, usdtAddress } = contractsRef.current;
       if (!vaultAddress || !usdtAddress || usdtAddress === ZERO_ADDRESS) {
         const h = await api.getHealth();
@@ -307,6 +312,7 @@ export function TradePage({
           spender: vaultAddress,
           amountUsdt: stakeUsdt,
           onApproving: () => setStage("APPROVING"),
+          publicClient,
         });
       }
 
@@ -340,7 +346,7 @@ export function TradePage({
         return;
       }
 
-      await fillOpenRfqOnChain(rfq);
+      await fillOpenRfqOnChain(rfq, publicClient);
     } catch (err: any) {
       setStage("IDLE");
       setErrorMsg(formatTradeError(err, "Transaction failed"));
