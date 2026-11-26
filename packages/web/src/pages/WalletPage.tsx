@@ -11,10 +11,8 @@ import {
   Clock,
   Droplets,
   ExternalLink,
-  KeyRound,
   Loader2,
   Lock,
-  LogOut,
   Mail,
   ShieldCheck,
   TrendingUp,
@@ -48,7 +46,6 @@ import {
   type CloseSlippagePauseState,
   type EarlyCloseStage,
 } from "../components/EarlyCloseModal";
-import { CopyAddressButton } from "../components/CopyAddressButton";
 import { DepositModal, WithdrawModal } from "../components/WalletActionModals";
 
 export interface WalletPageProps {
@@ -57,8 +54,6 @@ export interface WalletPageProps {
   health?: HealthResponse;
   positions: PositionView[];
   onLogin: () => void;
-  onExportWallet: () => void;
-  onDisconnect: () => void;
   onGoToTrade: () => void;
   onRefresh: () => void;
   onClaimFaucet: (amountUsdt?: number) => Promise<`0x${string}` | void>;
@@ -114,8 +109,6 @@ export function WalletPage({
   health,
   positions,
   onLogin,
-  onExportWallet,
-  onDisconnect,
   onGoToTrade,
   onRefresh,
   onClaimFaucet,
@@ -616,7 +609,7 @@ export function WalletPage({
   // Disconnected Sign-In State
   if (wallet.kind === "NONE" || !wallet.address) {
     return (
-      <main className="mx-auto max-w-[1160px] bg-black px-4 pt-12 pb-20 sm:px-6">
+      <main className="mx-auto max-w-[860px] bg-black px-4 pt-12 pb-20 sm:px-6">
         <div className="mx-auto max-w-md rounded-3xl bg-[#121417] border border-[#1d2025] p-7 sm:p-8 text-center space-y-5">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#24282f] text-white">
             <Mail className="h-5 w-5" aria-hidden="true" />
@@ -669,20 +662,23 @@ export function WalletPage({
   const activeAndClaimableCount =
     activePositions.length + claimablePositions.length;
   const historyTotalCount = historyTrades.length + transfers.length;
-  const shortAddr = `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`;
+
+  const availableSharePct =
+    totalBalance > 0 ? (wallet.usdtBalance / totalBalance) * 100 : 0;
+  const activePosSharePct =
+    totalBalance > 0 ? (activePositionsValue / totalBalance) * 100 : 0;
+  const claimableSharePct =
+    totalBalance > 0 ? (claimableTotalUsdt / totalBalance) * 100 : 0;
 
   return (
-    <main className="mx-auto max-w-[1160px] bg-black px-4 pt-5 pb-20 sm:px-6">
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-10">
-        {/* LEFT MAIN COLUMN: Balance Hero + Tabs (Active & Claim / History & Stats) */}
-        <div className="min-w-0 space-y-6">
-          {/* Balance Hero */}
-          <section className="flex flex-wrap items-end justify-between gap-4 border-b border-[#1d2025] pb-6">
-            <div>
+    <main className="mx-auto max-w-[860px] bg-black px-4 pt-6 pb-20 sm:px-6">
+      <div className="min-w-0 space-y-6">
+        {/* Balance Hero + Inline Allocation Strip (Option A) */}
+        <section className="space-y-5 border-b border-[#1d2025] pb-6">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0">
               <div className="text-xs font-semibold text-[#7e8690]">
-                {isZh
-                  ? "总资产 · 可用余额 + 持仓现值"
-                  : "Total balance · Available + Positions"}
+                {isZh ? "总资产" : "Total balance"}
               </div>
               <h1 className="mt-1.5 text-[38px] sm:text-[42px] font-bold leading-none tracking-[-0.03em] text-white tabular-nums">
                 $
@@ -715,28 +711,23 @@ export function WalletPage({
                     </span>
                   </>
                 ) : (
-                  <span className="font-medium text-[#7e8690]">
-                    {isZh ? "可用" : "Available"}{" "}
-                    <span className="text-[#b8bec6] font-semibold">
-                      $
-                      {wallet.usdtBalance.toLocaleString("en-US", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}{" "}
-                      tUSDT
-                    </span>{" "}
-                    · BNB Smart Chain Testnet
+                  <span className="inline-flex items-center gap-1.5 font-medium text-[#7e8690]">
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-[#2EC26B]"
+                      aria-hidden="true"
+                    />
+                    <span>BNB Smart Chain Testnet</span>
                   </span>
                 )}
               </div>
             </div>
 
             {/* Primary Wallet Actions: Deposit & Withdraw */}
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
                 onClick={() => setDepositOpen(true)}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full bg-white px-5 py-2 text-xs font-bold text-black hover:bg-white/90 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                className="inline-flex min-h-[40px] [@media(pointer:coarse)]:min-h-[44px] items-center gap-1.5 rounded-full bg-white px-5 py-2 text-xs font-bold text-black hover:bg-white/90 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
               >
                 <ArrowDownLeft className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>{isZh ? "充值" : "Deposit"}</span>
@@ -745,13 +736,119 @@ export function WalletPage({
               <button
                 type="button"
                 onClick={() => setWithdrawOpen(true)}
-                className="inline-flex min-h-[40px] items-center gap-1.5 rounded-full bg-[#24282f] px-5 py-2 text-xs font-bold text-white hover:bg-[#2f343d] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                className="inline-flex min-h-[40px] [@media(pointer:coarse)]:min-h-[44px] items-center gap-1.5 rounded-full bg-[#24282f] px-5 py-2 text-xs font-bold text-white hover:bg-[#2f343d] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
               >
                 <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>{isZh ? "提币" : "Withdraw"}</span>
               </button>
             </div>
-          </section>
+          </div>
+
+          {/* Inline Balance Allocation Bar + Semantic Breakdown */}
+          <div className="space-y-2.5">
+            <div
+              aria-hidden="true"
+              className="flex h-1 w-full gap-[2px] overflow-hidden rounded-full bg-[#1a1e24]"
+            >
+              {wallet.usdtBalance > 0 && (
+                <div
+                  className="h-full min-w-[4px] bg-[#f6f7f5] transition-[width] duration-300"
+                  style={{ width: `${availableSharePct.toFixed(2)}%` }}
+                />
+              )}
+              {activePositionsValue > 0 && (
+                <div
+                  className="h-full min-w-[4px] bg-[#6b7280] transition-[width] duration-300"
+                  style={{ width: `${activePosSharePct.toFixed(2)}%` }}
+                />
+              )}
+              {claimableTotalUsdt > 0 && (
+                <div
+                  className="h-full min-w-[4px] bg-[#2EC26B] transition-[width] duration-300"
+                  style={{ width: `${claimableSharePct.toFixed(2)}%` }}
+                />
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2">
+              <dl className="flex flex-wrap items-center gap-x-6 gap-y-1.5 text-xs tabular-nums">
+                <div className="inline-flex items-center gap-1.5">
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-[#f6f7f5] shrink-0"
+                    aria-hidden="true"
+                  />
+                  <dt className="font-medium text-[#7e8690]">
+                    {isZh ? "可用余额" : "Available"}
+                  </dt>
+                  <dd className="font-semibold text-white">
+                    $
+                    {wallet.usdtBalance.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </dd>
+                </div>
+
+                <div className="inline-flex items-center gap-1.5">
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-[#6b7280] shrink-0"
+                    aria-hidden="true"
+                  />
+                  <dt className="font-medium text-[#7e8690]">
+                    {isZh ? "持仓中" : "In Positions"}
+                  </dt>
+                  <dd className="font-semibold text-white">
+                    $
+                    {activePositionsValue.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </dd>
+                </div>
+
+                <div className="inline-flex items-center gap-1.5">
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                      claimableTotalUsdt > 0 ? "bg-[#2EC26B]" : "bg-[#3a3f47]"
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <dt className="font-medium text-[#7e8690]">
+                    {isZh ? "待领取" : "Ready to Claim"}
+                  </dt>
+                  <dd
+                    className={`font-semibold ${
+                      claimableTotalUsdt > 0
+                        ? "text-[#2EC26B]"
+                        : "text-[#7e8690]"
+                    }`}
+                  >
+                    $
+                    {claimableTotalUsdt.toLocaleString("en-US", {
+                      minimumFractionDigits: 2,
+                      maximumFractionDigits: 2,
+                    })}
+                  </dd>
+                </div>
+              </dl>
+
+              {claimablePositions.length > 0 && selectedTab === "history" && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedTab("active")}
+                  className="inline-flex items-center gap-1 rounded-full bg-[#2EC26B]/14 px-3 py-1 text-xs font-semibold text-[#2EC26B] hover:bg-[#2EC26B]/22 transition cursor-pointer tabular-nums focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                >
+                  <span>
+                    {isZh
+                      ? `去领取 $${claimableTotalUsdt.toFixed(2)}`
+                      : `Claim $${claimableTotalUsdt.toFixed(2)}`}
+                  </span>
+                  <ArrowRight className="h-3 w-3" aria-hidden="true" />
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
 
           {toastMsg && (
             <div
@@ -1663,151 +1760,6 @@ export function WalletPage({
               </div>
             </div>
           </div>
-        </div>
-
-        {/* RIGHT SIDE COLUMN: Account Summary, Breakdown, Address & Security */}
-        <aside className="lg:sticky lg:top-20 self-start">
-          <div className="rounded-3xl bg-[#121417] border border-[#1d2025] p-5 space-y-5">
-            {/* Account Identity */}
-            <div className="min-w-0">
-              <div className="text-[11px] font-semibold text-[#7e8690]">
-                {isZh ? "账户" : "Account"}
-              </div>
-              <div className="mt-0.5 text-sm font-bold text-white truncate">
-                {wallet.email ||
-                  wallet.walletName ||
-                  (isZh ? "邮箱账户" : "Email account")}
-              </div>
-            </div>
-
-            {/* Balance Breakdown */}
-            <div className="rounded-2xl bg-[#0b0c0e] border border-[#1d2025] p-3.5 space-y-2.5 text-xs tabular-nums">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[#7e8690]">
-                  {isZh ? "可用余额 (tUSDT)" : "Available (tUSDT)"}
-                </span>
-                <span className="font-semibold text-white">
-                  $
-                  {wallet.usdtBalance.toLocaleString("en-US", {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[#7e8690]">
-                  {isZh ? "持仓中估值" : "In Active Positions"}
-                </span>
-                <span className="font-semibold text-white">
-                  $
-                  {activePositionsValue.toLocaleString("en-US", {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[#7e8690]">
-                  {isZh ? "待领取结算" : "Ready to Claim"}
-                </span>
-                <span
-                  className={`font-semibold ${
-                    claimableTotalUsdt > 0 ? "text-[#2EC26B]" : "text-[#7e8690]"
-                  }`}
-                >
-                  $
-                  {claimableTotalUsdt.toLocaleString("en-US", {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
-                </span>
-              </div>
-            </div>
-
-            {/* On-chain Wallet Address */}
-            <div className="space-y-2 border-t border-[#1d2025] pt-4">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-[#7e8690]">
-                  {isZh ? "链上钱包地址" : "On-chain Address"}
-                </span>
-                <span className="inline-flex items-center gap-1 text-[#b8bec6]">
-                  <span
-                    className="h-1.5 w-1.5 rounded-full bg-[#2EC26B]"
-                    aria-hidden="true"
-                  />
-                  BSC Testnet
-                </span>
-              </div>
-
-              <div className="flex items-center justify-between gap-2 rounded-xl bg-[#0b0c0e] border border-[#1d2025] px-3 py-2">
-                <span
-                  className="font-mono text-xs text-[#d0d6de] truncate"
-                  title={wallet.address}
-                >
-                  {shortAddr}
-                </span>
-                <CopyAddressButton
-                  value={wallet.address}
-                  label={isZh ? "复制" : "Copy"}
-                  copiedLabel={isZh ? "已复制" : "Copied"}
-                  failedLabel={isZh ? "失败" : "Failed"}
-                  className="!px-2.5 !py-1 !text-[11px]"
-                />
-              </div>
-            </div>
-
-            {/* Security & Account Actions (Zero duplicate Language / Market / Rules) */}
-            <div className="divide-y divide-[#1d2025] border-t border-[#1d2025] pt-1">
-              {explorerBase && (
-                <a
-                  href={`${explorerBase}/address/${wallet.address}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex w-full items-center justify-between gap-2 py-3 text-xs font-semibold text-[#d0d6de] hover:text-white transition"
-                >
-                  <span className="inline-flex items-center gap-2">
-                    <ExternalLink
-                      className="h-3.5 w-3.5 text-[#7e8690]"
-                      aria-hidden="true"
-                    />
-                    <span>{t.viewOnBscScan}</span>
-                  </span>
-                  <span className="text-[#7e8690]" aria-hidden="true">
-                    ↗
-                  </span>
-                </a>
-              )}
-
-              <button
-                type="button"
-                onClick={onExportWallet}
-                className="flex w-full items-center justify-between gap-2 py-3 text-left text-xs font-semibold text-[#d0d6de] hover:text-white transition cursor-pointer"
-              >
-                <span className="inline-flex items-center gap-2">
-                  <KeyRound
-                    className="h-3.5 w-3.5 text-[#7e8690]"
-                    aria-hidden="true"
-                  />
-                  <span>{t.exportPrivateKey}</span>
-                </span>
-                <span className="text-[11px] font-medium text-[#7e8690]">
-                  Privy
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={onDisconnect}
-                className="flex w-full items-center justify-between gap-2 pt-3 pb-0.5 text-left text-xs font-semibold text-[#E85D4A]/90 hover:text-[#E85D4A] transition cursor-pointer"
-              >
-                <span className="inline-flex items-center gap-2">
-                  <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>{t.disconnectWallet}</span>
-                </span>
-              </button>
-            </div>
-          </div>
-        </aside>
       </div>
 
       {/* Deposit & Withdraw Modals */}

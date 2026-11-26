@@ -790,8 +790,6 @@ export function App() {
           health={health}
           positions={positions}
           onLogin={() => login({ loginMethods: ["email"] })}
-          onExportWallet={() => void handleExportWallet()}
-          onDisconnect={() => void handleLogout()}
           onGoToTrade={() => setActiveTab("TRADE")}
           onRefresh={() => void handleRefreshPositions()}
           onClaimFaucet={handleClaimFaucet}
