@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Clock, ShieldCheck } from "lucide-react";
+import { Building2, Clock, ShieldCheck } from "lucide-react";
 import {
+  ASSET_SPECS,
   BSC_TESTNET,
+  SUPPORTED_UNDERLYINGS,
   type AtlasFeedTelemetry,
   type CandleBar,
   type CandlePoint,
   type Direction,
   type ExpiryTenor,
+  type RwaAssetTelemetry,
+  type RwaMarketSession,
   type TicketSummary,
   type UnderlyingSymbol,
 } from "@payoff/shared";
@@ -16,6 +20,11 @@ import {
   type HealthResponse,
   type ShelfResponse,
 } from "../lib/api";
+import {
+  formatSettlementClock,
+  formatStrikePrice,
+  resolveRwaTelemetry,
+} from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 import {
   createClientForRpc,
@@ -41,6 +50,7 @@ interface Props {
   rpcUrl: string;
   liveSpots: Record<UnderlyingSymbol, { spot: number; change24hPct: number }>;
   liveTelemetry: Partial<Record<UnderlyingSymbol, AtlasFeedTelemetry>>;
+  liveRwaTelemetry: Partial<Record<UnderlyingSymbol, RwaAssetTelemetry>>;
   liveCircuitBreaker: Partial<Record<UnderlyingSymbol, ConsensusGuardState>>;
   onOpenWallet: () => void;
   onTxSuccess: () => void;
@@ -52,6 +62,31 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function getTargetKey(t: Pick<TicketSummary, "lowerStrike" | "upperStrike">) {
   return `${t.lowerStrike}-${t.upperStrike}`;
+}
+
+function classifyUsMarketSessionFallback(nowMs: number): RwaMarketSession {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      weekday: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date(nowMs));
+    const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
+    const hour = Number(parts.find((p) => p.type === "hour")?.value ?? "0");
+    const minute = Number(parts.find((p) => p.type === "minute")?.value ?? "0");
+    const mins = hour * 60 + minute;
+    if (weekday === "Sat") return "WEEKEND";
+    if (weekday === "Sun" && mins < 18 * 60) return "WEEKEND";
+    if (weekday === "Fri" && mins >= 20 * 60) return "WEEKEND";
+    if (weekday !== "Sun" && mins >= 9 * 60 + 30 && mins < 16 * 60) {
+      return "RTH";
+    }
+    return "EXTENDED";
+  } catch {
+    return "EXTENDED";
+  }
 }
 
 function formatSettlementCountdown(
@@ -80,6 +115,7 @@ export function TradePage({
   rpcUrl,
   liveSpots,
   liveTelemetry,
+  liveRwaTelemetry,
   liveCircuitBreaker,
   onOpenWallet,
   onTxSuccess,
@@ -365,10 +401,10 @@ export function TradePage({
 
   const isTradeBusy =
     stage === "APPROVING" || stage === "QUOTING" || stage === "FILLING";
+  const assetSpec = ASSET_SPECS[underlying];
+  const isRwaAsset = assetSpec.assetClass === "RWA_EQUITY";
   const displaySpot =
-    liveSpots[underlying]?.spot ||
-    shelf?.spot ||
-    (underlying === "BTC" ? 68000 : 2500);
+    liveSpots[underlying]?.spot || shelf?.spot || assetSpec.defaultSpot;
   const displayChg =
     liveSpots[underlying]?.change24hPct ?? shelf?.change24hPct ?? 0;
   const priceChangeAbs = displaySpot * (displayChg / 100);
@@ -386,18 +422,63 @@ export function TradePage({
     liveTelemetry[underlying] ??
     health?.atlasTelemetry?.[underlying] ??
     shelf?.atlasTelemetry;
+  const activeRwaTelemetry =
+    liveRwaTelemetry[underlying] ??
+    health?.rwaTelemetry?.[underlying] ??
+    resolveRwaTelemetry(shelf?.rwaTelemetry, underlying);
   const activeGuard =
     liveCircuitBreaker[underlying] ??
     health?.settlementCircuitBreaker?.[underlying] ??
     shelf?.quotingGuard;
-  const quotingPaused = activeGuard?.quotingSafe === false;
+  const rwaCircuitBreakerActive = Boolean(
+    isRwaAsset &&
+      activeRwaTelemetry &&
+      (activeRwaTelemetry.splitGuardTriggered ||
+        activeRwaTelemetry.corporateActionBlackout)
+  );
+  const rwaPauseReason = activeRwaTelemetry?.corporateActionBlackout
+    ? activeRwaTelemetry.blackoutReason
+    : activeRwaTelemetry?.splitGuardTriggered
+      ? locale === "zh"
+        ? `份额乘数漂移 ${Math.abs(activeRwaTelemetry.multiplierDriftPct).toFixed(2)}% > 1.0%`
+        : `Share multiplier drift ${Math.abs(activeRwaTelemetry.multiplierDriftPct).toFixed(2)}% > 1.0%`
+      : null;
+  const quotingPaused =
+    activeGuard?.quotingSafe === false || rwaCircuitBreakerActive;
+
+  const rwaSession: RwaMarketSession =
+    activeRwaTelemetry?.session ?? classifyUsMarketSessionFallback(nowSec * 1000);
+  const rwaSessionMeta =
+    rwaSession === "RTH"
+      ? {
+          label: t.rwaSessionRth,
+          pillCls: "border-[#bfe2dc] bg-[#e9f3f1] text-[#0e7c72]",
+          dotCls: "bg-[#0e7c72] animate-pulse",
+        }
+      : rwaSession === "WEEKEND"
+        ? {
+            label: t.rwaSessionWeekend,
+            pillCls: "border-[#d5dbe2] bg-[#eef0f2] text-[#3a4552]",
+            dotCls: "bg-[#667080]",
+          }
+        : {
+            label: t.rwaSessionExtended,
+            pillCls: "border-[#e6cf8b] bg-[#fbf3dd] text-[#8a6410]",
+            dotCls: "bg-[#d97706]",
+          };
+  const rwaSettlementClock = formatSettlementClock(
+    activeRwaTelemetry?.settlementUtcHour ?? assetSpec.settlementUtcHour
+  );
+  const rwaShareMultiplierText = (
+    activeRwaTelemetry?.shareMultiplier ?? 1.0008
+  ).toFixed(4);
 
   return (
     <main className="mx-auto max-w-6xl px-4 pt-5 pb-28 md:pb-12 sm:px-6">
       <div className="grid grid-cols-1 gap-7 lg:grid-cols-12">
         {/* Main Column (8 cols) */}
         <div className="lg:col-span-8 space-y-5">
-          {/* Top Bar: Asset [BTC | ETH] + Tenor [24H Daily | 7D Weekly] + Zero Liquidation Badge */}
+          {/* Top Bar: Asset [BTC | ETH | NVDA RWA] + Dynamic Tenor Pills + Zero Liquidation Badge */}
           <div className="flex flex-wrap items-center justify-between gap-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <div
@@ -405,8 +486,10 @@ export function TradePage({
                 role="group"
                 aria-label="Asset"
               >
-                {(["BTC", "ETH"] as UnderlyingSymbol[]).map((u) => {
+                {SUPPORTED_UNDERLYINGS.map((u) => {
                   const active = underlying === u;
+                  const spec = ASSET_SPECS[u];
+                  const isRwaOption = spec.assetClass === "RWA_EQUITY";
                   return (
                     <button
                       key={u}
@@ -414,13 +497,24 @@ export function TradePage({
                       disabled={isTradeBusy}
                       aria-pressed={active}
                       onClick={() => handleSwitchUnderlying(u)}
-                      className={`min-h-[34px] rounded-md px-3.5 py-1 text-xs font-semibold transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#14202a] ${
+                      className={`min-h-[34px] inline-flex items-center gap-1.5 rounded-md px-3.5 py-1 text-xs font-semibold transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#14202a] ${
                         active
                           ? "bg-white text-[#14202a] shadow-xs"
                           : "text-[#667080] hover:text-[#14202a]"
                       }`}
                     >
-                      {u}
+                      <span>{spec.displaySymbol}</span>
+                      {isRwaOption && (
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider leading-none ${
+                            active
+                              ? "bg-[#0e7c72] text-white"
+                              : "bg-[#e9f3f1] text-[#0e7c72]"
+                          }`}
+                        >
+                          RWA
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -433,8 +527,16 @@ export function TradePage({
               >
                 {(
                   [
-                    { id: "DAILY", label: t.tenorDailyPill },
-                    { id: "WEEKLY", label: t.tenorWeeklyPill },
+                    {
+                      id: "DAILY",
+                      label: isRwaAsset ? t.tenorRwaDailyPill : t.tenorDailyPill,
+                    },
+                    {
+                      id: "WEEKLY",
+                      label: isRwaAsset
+                        ? t.tenorRwaWeeklyPill
+                        : t.tenorWeeklyPill,
+                    },
                   ] as const
                 ).map((item) => {
                   const active = tenor === item.id;
@@ -464,7 +566,7 @@ export function TradePage({
             </span>
           </div>
 
-          {/* Market Event Header: Title, Live Atlas Spot, Start Line, Countdown, & Live Atlas Oracle Shield */}
+          {/* Market Event Header: Title, Live Atlas Spot, Start Line, Countdown, RWA Strip & Live Atlas Oracle Shield */}
           <section className="rounded-2xl border border-[#e2e5e8] bg-white p-4 sm:p-5 shadow-[0_1px_2px_rgba(20,32,42,0.04)] space-y-3.5">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
@@ -509,7 +611,7 @@ export function TradePage({
                       {t.startLineLabel}
                     </span>
                     <span className="text-sm font-bold tabular-nums">
-                      ${startLinePrice.toLocaleString()}
+                      {formatStrikePrice(startLinePrice, underlying)}
                     </span>
                   </div>
                 )}
@@ -525,6 +627,42 @@ export function TradePage({
                 </div>
               </div>
             </div>
+
+            {/* Concise RWA Header Strip (US Session, Live bStock Share Ratio, US Close Clock) */}
+            {isRwaAsset && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#bfe2dc]/80 bg-[#e9f3f1]/45 px-3 py-2 text-[11px]">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 font-semibold ${rwaSessionMeta.pillCls}`}
+                  >
+                    <span
+                      className={`h-1.5 w-1.5 rounded-full shrink-0 ${rwaSessionMeta.dotCls}`}
+                      aria-hidden="true"
+                    />
+                    <span>{rwaSessionMeta.label}</span>
+                  </span>
+                  <span className="inline-flex items-center gap-1 font-semibold text-[#14202a] tabular-nums">
+                    <Building2
+                      className="h-3.5 w-3.5 text-[#0e7c72] shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>{t.rwaShareRatioLabel(rwaShareMultiplierText)}</span>
+                  </span>
+                </div>
+                <span className="inline-flex items-center gap-1 font-medium text-[#3a4552] tabular-nums">
+                  <Clock
+                    className="h-3 w-3 text-[#667080] shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {t.rwaSettlementClockLabel(
+                      rwaSettlementClock.utcLabel,
+                      rwaSettlementClock.utcPlus8Label
+                    )}
+                  </span>
+                </span>
+              </div>
+            )}
 
             {/* Atlas Oracle Live Shield (Enterprise ConsensusScore + ECDSA Verifier) */}
             <AtlasOracleBadge
@@ -571,6 +709,7 @@ export function TradePage({
               ticket={activeTicket}
               grid={shelf.grid}
               atlasTelemetry={activeTelemetry}
+              rwaTelemetry={activeRwaTelemetry}
               consensusGuard={activeGuard}
               signerAddress={health?.atlasSignerAddress}
               oracleAddress={health?.settlementOracleAddress}
@@ -601,6 +740,8 @@ export function TradePage({
               usdtBalance={wallet.usdtBalance}
               isShelfSynced={isShelfSynced}
               quotingPaused={quotingPaused}
+              rwaPaused={rwaCircuitBreakerActive}
+              rwaPauseReason={rwaPauseReason}
               stage={stage}
               slippagePause={slippagePause}
               txHash={txHash}

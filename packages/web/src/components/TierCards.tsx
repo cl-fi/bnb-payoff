@@ -1,5 +1,6 @@
 import { Check } from "lucide-react";
 import type { TicketSummary, TierKind } from "@payoff/shared";
+import { formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 
 interface Props {
@@ -74,8 +75,8 @@ export function TierCards({ locale, tiers, selectedTier, onSelectTier }: Props) 
 
               <div className="mt-2.5 flex items-baseline justify-between">
                 <div className="text-xs font-medium text-[#667080] tabular-nums">
-                  ${tier.startPrice.toLocaleString()} → $
-                  {tier.capPrice.toLocaleString()}
+                  {formatStrikePrice(tier.startPrice, tier.underlying)} →{" "}
+                  {formatStrikePrice(tier.capPrice, tier.underlying)}
                 </div>
                 <div
                   className={`text-2xl font-bold tracking-tight tabular-nums ${dataColor}`}

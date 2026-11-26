@@ -4,6 +4,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { privateKeyToAccount } from "viem/accounts";
 import {
+  ASSET_SPECS,
   ATLAS_FEEDS,
   ATLAS_OFFICIAL_SIGNER,
   BSC_TESTNET,
@@ -55,6 +56,12 @@ export interface ServerConfig {
   atlasApiKey?: string;
   atlasBtcFeedId: string;
   atlasEthFeedId: string;
+  atlasNvdabFeedId: string;
+  nvdabSettlementUtcHour: number;
+  thetaDataApiKey?: string;
+  thetaDataPythonBin?: string;
+  enableRwaFeeds: boolean;
+  nvdabBlackoutDates: string[];
   enableLiveAtlas: boolean;
   enableBinanceKlines: boolean;
   deploymentBlock: number;
@@ -84,6 +91,12 @@ interface DeploymentManifest {
   deploymentBlock?: number;
   protocolOpenFeeBps?: number;
   protocolCloseFeeBps?: number;
+  atlasFeeds?: {
+    NVDAB?: {
+      feedId?: string;
+      settlementUtcHour?: number;
+    };
+  };
 }
 
 function loadDeploymentManifest(chainId: number): DeploymentManifest {
@@ -260,6 +273,31 @@ export function loadConfig(chainIdOverride?: number): ServerConfig {
     process.env.ATLAS_BTC_FEED_ID?.trim() || ATLAS_FEEDS.BTC.feedId;
   const atlasEthFeedId =
     process.env.ATLAS_ETH_FEED_ID?.trim() || ATLAS_FEEDS.ETH.feedId;
+  const atlasNvdabFeedId =
+    process.env.ATLAS_NVDAB_FEED_ID?.trim() ||
+    manifest.atlasFeeds?.NVDAB?.feedId ||
+    ATLAS_FEEDS.NVDAB.feedId;
+
+  const rawNvdabSettlementHour =
+    process.env.NVDAB_SETTLEMENT_UTC_HOUR ??
+    manifest.atlasFeeds?.NVDAB?.settlementUtcHour ??
+    ASSET_SPECS.NVDAB.settlementUtcHour;
+  const parsedNvdabHour = Number(rawNvdabSettlementHour);
+  const nvdabSettlementUtcHour =
+    Number.isInteger(parsedNvdabHour) &&
+    parsedNvdabHour >= 0 &&
+    parsedNvdabHour <= 23
+      ? parsedNvdabHour
+      : ASSET_SPECS.NVDAB.settlementUtcHour;
+
+  const thetaDataApiKey = process.env.THETADATA_API_KEY?.trim() || undefined;
+  const thetaDataPythonBin =
+    process.env.THETADATA_PYTHON_BIN?.trim() || undefined;
+  const enableRwaFeeds = process.env.ENABLE_RWA_FEEDS !== "false";
+  const nvdabBlackoutDates = (process.env.NVDAB_BLACKOUT_DATES || "")
+    .split(",")
+    .map((d) => d.trim())
+    .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
 
   return {
     port: Number(process.env.PORT || 4000),
@@ -275,6 +313,12 @@ export function loadConfig(chainIdOverride?: number): ServerConfig {
     atlasApiKey,
     atlasBtcFeedId,
     atlasEthFeedId,
+    atlasNvdabFeedId,
+    nvdabSettlementUtcHour,
+    thetaDataApiKey,
+    thetaDataPythonBin,
+    enableRwaFeeds,
+    nvdabBlackoutDates,
     enableLiveAtlas: process.env.ENABLE_LIVE_ATLAS !== "false",
     enableBinanceKlines: process.env.ENABLE_BINANCE_KLINES !== "false",
     deploymentBlock: Number(

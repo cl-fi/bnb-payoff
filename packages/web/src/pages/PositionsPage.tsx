@@ -14,11 +14,14 @@ import {
   Wallet,
 } from "lucide-react";
 import {
+  ASSET_SPECS,
   BSC_TESTNET,
+  formatSettlementLabel,
   type CloseRfqResponse,
   type PositionView,
 } from "@payoff/shared";
 import { api, type HealthResponse } from "../lib/api";
+import { formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 import {
   executeClaimTestUsdtTx,
@@ -296,8 +299,10 @@ export function PositionsPage({
       await api.ingestTx(hash).catch(() => api.syncChain());
       setToastMsg(
         t.settleTwapSuccess(
-          pos.underlying,
-          bundle.twapPriceUsd ? `$${bundle.twapPriceUsd.toLocaleString()}` : "--"
+          ASSET_SPECS[pos.underlying].displaySymbol,
+          bundle.twapPriceUsd
+            ? formatStrikePrice(bundle.twapPriceUsd, pos.underlying)
+            : "--"
         )
       );
       onRefresh();
@@ -579,13 +584,20 @@ export function PositionsPage({
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <span
-                        className={`rounded px-2 py-0.5 text-[11px] font-semibold ${
+                        className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold ${
                           isBull
                             ? "bg-[#e9f3f1] text-[#0e7c72]"
                             : "bg-[#fbeeea] text-[#b54134]"
                         }`}
                       >
-                        {pos.underlying} {isBull ? t.bull : t.bear}
+                        <span>{ASSET_SPECS[pos.underlying].displaySymbol}</span>
+                        {ASSET_SPECS[pos.underlying].assetClass ===
+                          "RWA_EQUITY" && (
+                          <span className="rounded bg-[#0e7c72] px-1 py-0.25 text-[9px] font-bold uppercase tracking-wider text-white leading-tight">
+                            RWA
+                          </span>
+                        )}
+                        <span>{isBull ? t.bull : t.bear}</span>
                       </span>
                       <span
                         className={`rounded px-2 py-0.5 text-[11px] font-medium ${statusPill.cls}`}
@@ -605,8 +617,8 @@ export function PositionsPage({
                       )}
                     </div>
                     <h2 className="mt-2 text-lg font-bold text-[#14202a] tabular-nums">
-                      ${pos.startPrice.toLocaleString()} → $
-                      {pos.capPrice.toLocaleString()}
+                      {formatStrikePrice(pos.startPrice, pos.underlying)} →{" "}
+                      {formatStrikePrice(pos.capPrice, pos.underlying)}
                     </h2>
                   </div>
 
@@ -681,7 +693,7 @@ export function PositionsPage({
                   <div>
                     <div className="text-[#667080]">{t.numBreakeven}</div>
                     <div className="mt-0.5 font-semibold text-[#14202a] tabular-nums">
-                      ${pos.breakevenPrice.toLocaleString()}
+                      {formatStrikePrice(pos.breakevenPrice, pos.underlying)}
                     </div>
                   </div>
                   <div>
@@ -697,12 +709,12 @@ export function PositionsPage({
                   </div>
                   <div>
                     <div className="text-[#667080]">{t.numExpiry}</div>
-                    <div className="mt-0.5 flex items-center gap-1 font-medium text-[#3a4552] tabular-nums">
+                    <div className="mt-0.5 flex items-center gap-1 font-medium text-[#3a4552] tabular-nums leading-tight">
                       <Clock
-                        className="h-3 w-3 text-[#667080]"
+                        className="h-3 w-3 shrink-0 text-[#667080]"
                         aria-hidden="true"
                       />
-                      {pos.expiryIso.slice(5, 16).replace("T", " ")} UTC
+                      <span>{formatSettlementLabel(pos.expiry)}</span>
                     </div>
                   </div>
                 </div>

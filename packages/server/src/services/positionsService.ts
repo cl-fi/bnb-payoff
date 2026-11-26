@@ -14,6 +14,7 @@ import type {
   OnChainActivePosition,
 } from "./chainService.js";
 import type { MarketDataService } from "./marketData.js";
+import type { RwaRiskService } from "./rwaRiskService.js";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as const;
 
@@ -25,7 +26,8 @@ export class PositionsService {
   constructor(
     private db: PayoffDatabase,
     private marketData: MarketDataService,
-    private chain: ChainService
+    private chain: ChainService,
+    private rwaRisk?: RwaRiskService
   ) {}
 
   async getPositionsForAddress(address: string): Promise<PositionView[]> {
@@ -163,6 +165,11 @@ export class PositionsService {
 
     let indicativeExitUsdt = 0;
     if (status === "ACTIVE" && !awaitingSettlement && oc.balanceUsdt > 0) {
+      const rwaTelemetry =
+        this.rwaRisk?.getTelemetry(oc.underlying, {
+          expiry: oc.expiry,
+          nowSec: effNow,
+        }) ?? snap.rwaTelemetry;
       const est = estimatePositionExitUsdt({
         book,
         isCall: oc.isUp,
@@ -171,6 +178,7 @@ export class PositionsService {
         remainingLongUsdt: oc.balanceUsdt,
         hoursRemaining,
         atlasTelemetry: snap.atlasTelemetry,
+        rwaTelemetry,
       });
       indicativeExitUsdt = est.bestBidUsdt;
     }
@@ -297,6 +305,11 @@ export class PositionsService {
 
     let indicativeExitUsdt = 0;
     if (t.status === "ACTIVE" && !awaitingSettlement && t.remainingBalance > 0) {
+      const rwaTelemetry =
+        this.rwaRisk?.getTelemetry(t.underlying, {
+          expiry: t.expiry,
+          nowSec: effNow,
+        }) ?? snap.rwaTelemetry;
       const est = estimatePositionExitUsdt({
         book,
         isCall: isUp,
@@ -305,6 +318,7 @@ export class PositionsService {
         remainingLongUsdt: t.remainingBalance,
         hoursRemaining,
         atlasTelemetry: snap.atlasTelemetry,
+        rwaTelemetry,
       });
       indicativeExitUsdt = est.bestBidUsdt;
     }

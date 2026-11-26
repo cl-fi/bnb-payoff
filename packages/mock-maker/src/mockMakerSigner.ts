@@ -11,11 +11,13 @@ import {
   type CloseExecutionMode,
   type CloseQuoteStruct,
   type OpenQuoteStruct,
+  type RwaAssetTelemetry,
   type VenueName,
 } from "@payoff/shared";
 import {
-  computeConsensusRiskAdjustments,
+  computeCombinedRiskAdjustments,
   DEFAULT_MM_OPEN_MARKUP_BPS,
+  type CombinedRiskAdjustment,
   type ConsensusRiskAdjustment,
 } from "./shelfEngine.js";
 
@@ -74,6 +76,7 @@ export interface CloseQuoteSignInput {
 export interface SignOpenQuoteParams {
   quote: OpenQuoteSignInput;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
   chainId?: number;
   verifyingContract?: `0x${string}`;
 }
@@ -91,6 +94,7 @@ export interface SignedOpenQuoteResult {
 export interface SignCloseQuoteParams {
   quote: CloseQuoteSignInput;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
   chainId?: number;
   verifyingContract?: `0x${string}`;
 }
@@ -111,6 +115,7 @@ export interface ComputeCloseBidParams {
   baseBidUsdt: number;
   closeCompetitivenessBps: number;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
 }
 
 export interface CloseBidComputation {
@@ -275,16 +280,19 @@ export class MockMakerSigner {
   }
 
   /**
-   * Evaluates whether new OpenQuote signing is permitted under current Atlas telemetry.
+   * Evaluates whether new OpenQuote signing is permitted under current Atlas & RWA telemetry.
    */
-  isOpenQuotingAllowed(telemetry?: AtlasFeedTelemetry): ConsensusRiskAdjustment {
-    return computeConsensusRiskAdjustments(telemetry);
+  isOpenQuotingAllowed(
+    telemetry?: AtlasFeedTelemetry,
+    rwaTelemetry?: RwaAssetTelemetry
+  ): CombinedRiskAdjustment {
+    return computeCombinedRiskAdjustments(telemetry, rwaTelemetry);
   }
 
   /**
    * Computes a competitive reverse-RFQ early-exit buyback bid incorporating
    * atomic-merge unlock edge (`UP + DOWN -> 1 USDT` instant collateral release)
-   * and conservative spread adjustment when Atlas ConsensusScore is degraded/critical.
+   * and conservative spread adjustment when Atlas ConsensusScore or RWA risk is elevated.
    */
   computeCloseBid(params: ComputeCloseBidParams): CloseBidComputation {
     const {
@@ -293,9 +301,13 @@ export class MockMakerSigner {
       baseBidUsdt,
       closeCompetitivenessBps,
       atlasTelemetry,
+      rwaTelemetry,
     } = params;
 
-    const consensusRisk = computeConsensusRiskAdjustments(atlasTelemetry);
+    const consensusRisk = computeCombinedRiskAdjustments(
+      atlasTelemetry,
+      rwaTelemetry
+    );
     const amountUsdt = unitsToUsdt(amountUnits);
     const mergeUnits =
       amountUnits <= makerCompBalanceUnits ? amountUnits : makerCompBalanceUnits;
@@ -341,12 +353,15 @@ export class MockMakerSigner {
   /**
    * Signs an EIP-712 `OpenQuote` for a configured mock maker.
    * Refuses to sign (throws `ConsensusCircuitBreakerError`) if Atlas `consensusStatus`
-   * is `CRITICAL` or `SPLIT_MARKET`.
+   * is `CRITICAL` / `SPLIT_MARKET`, or if RWA `splitGuardTriggered` / `corporateActionBlackout` is active.
    */
   async signOpenQuote(
     params: SignOpenQuoteParams
   ): Promise<SignedOpenQuoteResult> {
-    const consensusRisk = computeConsensusRiskAdjustments(params.atlasTelemetry);
+    const consensusRisk = computeCombinedRiskAdjustments(
+      params.atlasTelemetry,
+      params.rwaTelemetry
+    );
     if (!consensusRisk.quotingAllowed) {
       throw new ConsensusCircuitBreakerError(
         params.atlasTelemetry?.consensusStatus ?? "CRITICAL",
@@ -434,13 +449,16 @@ export class MockMakerSigner {
 
   /**
    * Signs an EIP-712 `CloseQuote` for a configured mock maker.
-   * Intentionally remains available during `CRITICAL` / `SPLIT_MARKET` so existing ticket
-   * holders can still exit early (with conservative spreads applied in pricing).
+   * Intentionally remains available during `CRITICAL` / `SPLIT_MARKET` and RWA split/blackout
+   * circuit breakers so existing ticket holders can still exit early (with conservative spreads).
    */
   async signCloseQuote(
     params: SignCloseQuoteParams
   ): Promise<SignedCloseQuoteResult> {
-    const consensusRisk = computeConsensusRiskAdjustments(params.atlasTelemetry);
+    const consensusRisk = computeCombinedRiskAdjustments(
+      params.atlasTelemetry,
+      params.rwaTelemetry
+    );
     const q = params.quote;
 
     if (q.taker.toLowerCase() === q.maker.toLowerCase()) {

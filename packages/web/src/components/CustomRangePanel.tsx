@@ -1,5 +1,6 @@
 import { AlertTriangle, ChevronDown, ChevronUp, SlidersHorizontal } from "lucide-react";
 import type { TicketSummary } from "@payoff/shared";
+import { formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 
 interface Props {
@@ -78,7 +79,10 @@ export function CustomRangePanel({
                   {t.lowerBound}
                 </span>
                 <span className="text-base font-bold text-[#14202a] tabular-nums">
-                  ${(availableStrikes[lowerIdx] ?? lowerStrike).toLocaleString()}
+                  {formatStrikePrice(
+                    availableStrikes[lowerIdx] ?? lowerStrike,
+                    customTicket?.underlying
+                  )}
                 </span>
               </div>
               <input
@@ -116,7 +120,10 @@ export function CustomRangePanel({
                   {t.upperBound}
                 </span>
                 <span className="text-base font-bold text-[#14202a] tabular-nums">
-                  ${(availableStrikes[upperIdx] ?? upperStrike).toLocaleString()}
+                  {formatStrikePrice(
+                    availableStrikes[upperIdx] ?? upperStrike,
+                    customTicket?.underlying
+                  )}
                 </span>
               </div>
               <input

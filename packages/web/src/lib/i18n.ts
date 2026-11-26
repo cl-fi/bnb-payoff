@@ -193,8 +193,14 @@ const dict = {
     rulesBadge:
       "Atlas 30m 链上 TWAP 验签结算 + 健康分争议保护 · BNB Chain 100% 全额托管",
     rulesItem1Title: "1. Atlas 30 分钟确定性 TWAP 无许可链上结算（对齐 OKX/Deribit）",
-    rulesItem1Body: (underlying: string, feedId: string, expiryUtc: string) =>
-      `本合约严格以 Atlas Oracle Feed #${feedId} (${underlying}/USD) 在 ${fmtUtc(expiryUtc)} 前 30 分钟（每分钟 1 点，共 30 个整分钟签名，07:31–08:00 UTC）的等权算术均值作为结算价。AtlasPullSettlementOracle 在链上逐点验证官方 ECDSA 签名（到期后前 15 分钟内 0 秒精确锚定，之后放宽 ±10 秒兜底），全市场只计算 1 次即可开放所有人领奖；到期前 30 分钟锁定早平。`,
+    rulesItem1TitleRwa: "1. Atlas 30 分钟确定性 TWAP 无许可链上结算（对齐美股收盘）",
+    rulesItem1Body: (
+      underlying: string,
+      feedId: string,
+      expiryUtc: string,
+      windowLabel = "07:31–08:00 UTC"
+    ) =>
+      `本合约严格以 Atlas Oracle Feed #${feedId} (${underlying}/USD) 在 ${fmtUtc(expiryUtc)} 前 30 分钟（每分钟 1 点，共 30 个整分钟签名，${windowLabel}）的等权算术均值作为结算价。AtlasPullSettlementOracle 在链上逐点验证官方 ECDSA 签名（到期后前 15 分钟内 0 秒精确锚定，之后放宽 ±10 秒兜底），全市场只计算 1 次即可开放所有人领奖；到期前 30 分钟锁定早平。`,
     rulesItem2Title: "2. 线性赔付边界与公式",
     rulesItem2Body: (
       start: string,
@@ -208,6 +214,9 @@ const dict = {
     rulesItem3Title: "3. ConsensusScore 健康度争议冻结与 100% 链上全额抵押",
     rulesItem3Body:
       "成交瞬间买方本金与做市商封顶赔付金 100% 锁入 BNB Chain 智能合约金库，盘中剧烈插针绝不强平。系统实时监控 Atlas ConsensusScore：交易期间极端分歧触发报价熔断；若结算窗口 30 分钟平均健康分低于 40%，系统将自动放弃脏数据并在链上冻结该期，交由管理员附公开审计理由透明裁决。",
+    rulesItem4Title: "4. RWA bStock 乘数与公司行动保护机制",
+    rulesItem4Body: (shareMultiplier: string, feedId: string) =>
+      `本市场锚定币安 bStocks BEP-677 资产 NVDAB/USD（Atlas Feed #${feedId}）。当前链上份额乘数为 1 NVDAB = ${shareMultiplier} NVDA，自动计入股息再投资并保持拆股前后价格连续。拆股切换哨兵实时监控份额乘数漂移与公司行动窗口：若单期乘数漂移超过 1.0% 或处于公司行动保护期，系统将自动触发新开仓熔断并冻结受影响的到期窗口，待校验通过后再安全结算。`,
     // Atlas Oracle Badge copy
     atlasBadgeTitle: "Atlas Oracle 实时共识护盾",
     atlasFeedLabel: "数据源 Feed",
@@ -225,8 +234,23 @@ const dict = {
     zeroLiqBadge: "0 爆仓",
     tenorDailyPill: "24H 日度",
     tenorWeeklyPill: "7D 周度",
+    tenorRwaDailyPill: "近期收盘 (一/三/五)",
+    tenorRwaWeeklyPill: "周五周度",
+    rwaSessionRth: "美股盘中",
+    rwaSessionExtended: "美股盘前/盘后",
+    rwaSessionWeekend: "周末 · 24/7 RWA",
+    rwaShareRatioLabel: (mult: string) => `1 NVDAB = ${mult} NVDA`,
+    rwaSettlementClockLabel: (utc: string, utc8: string) =>
+      `美股收盘 ${utc} · ${utc8}`,
+    rwaQuotingPausedCta: "RWA 保护熔断中 · 暂停新开仓",
+    rwaBlackoutPausedNotice: (reason?: string | null) =>
+      reason
+        ? `RWA 公司行动或拆股切换保护已触发（${reason}），已自动暂停新开仓（现有持仓仍可安全平仓或到期结算）。`
+        : "检测到 RWA 拆股切换或公司行动保护窗口，已自动暂停新开仓（现有持仓仍可安全平仓或到期结算）。",
     eventTitle: (underlying: string, isDaily: boolean) =>
-      `${underlying} ${isDaily ? "24h" : "7D"} 涨跌 · 线性预测市场`,
+      underlying === "NVDAB"
+        ? "NVDA (NVDAB · RWA) · 美股收盘连续赔付预测市场"
+        : `${underlying} ${isDaily ? "24h" : "7D"} 涨跌 · 连续赔付预测市场`,
     startLineLabel: "起赚线 (Start Line)",
     settlesCountdownLabel: "距离结算",
     settledNow: "结算中",
@@ -446,8 +470,14 @@ const dict = {
     rulesBadge:
       "Atlas 30m On-Chain TWAP Settlement + Health Dispute Guard · 100% On-Chain Collateral on BNB Chain",
     rulesItem1Title: "1. Permissionless 30-Minute Atlas TWAP Settlement (OKX / Deribit Standard)",
-    rulesItem1Body: (underlying: string, feedId: string, expiryUtc: string) =>
-      `Settles against the equal-weighted arithmetic mean of 30 deterministic 1-minute signed Atlas Oracle Feed #${feedId} (${underlying}/USD) prices over the final 30 minutes before ${fmtUtc(expiryUtc)} (07:31–08:00 UTC). AtlasPullSettlementOracle verifies all 30 official ECDSA signatures on-chain (0s exact match within 15m after expiry, ±10s fallback thereafter), computed once and reused for all redemptions. Early close locks 30m prior to expiry.`,
+    rulesItem1TitleRwa: "1. Permissionless 30-Minute Atlas TWAP Settlement (US Market Close)",
+    rulesItem1Body: (
+      underlying: string,
+      feedId: string,
+      expiryUtc: string,
+      windowLabel = "07:31–08:00 UTC"
+    ) =>
+      `Settles against the equal-weighted arithmetic mean of 30 deterministic 1-minute signed Atlas Oracle Feed #${feedId} (${underlying}/USD) prices over the final 30 minutes before ${fmtUtc(expiryUtc)} (${windowLabel}). AtlasPullSettlementOracle verifies all 30 official ECDSA signatures on-chain (0s exact match within 15m after expiry, ±10s fallback thereafter), computed once and reused for all redemptions. Early close locks 30m prior to expiry.`,
     rulesItem2Title: "2. Linear Payoff Bounds & Formula",
     rulesItem2Body: (
       start: string,
@@ -462,6 +492,9 @@ const dict = {
       "3. ConsensusScore Health Dispute Freeze & 100% On-Chain Collateral",
     rulesItem3Body:
       "Full max payout is 100% locked in the BNB Chain vault at fill—intraday wicks never liquidate your ticket. Live Atlas Enterprise ConsensusScore halts quoting during extreme divergence or stale feeds; if the 30-minute settlement window averages below 40% health score, the expiry is automatically frozen on-chain for transparent admin resolution with a public audit reason.",
+    rulesItem4Title: "4. RWA bStock & Corporate Action Protection",
+    rulesItem4Body: (shareMultiplier: string, feedId: string) =>
+      `Tracks Binance bStocks BEP-677 NVDAB/USD via Atlas Feed #${feedId}. Each NVDAB token currently represents ${shareMultiplier} NVDA shares (live shareMultiplier), automatically compounding dividends and keeping Atlas pricing continuous across stock splits. A live Split-Cutover Sentinel monitors multiplier drift and corporate action blackouts: if multiplier drift exceeds 1.0% or a blackout window is active, new opens halt automatically and affected expiries pause for verified settlement.`,
     // Atlas Oracle Badge copy
     atlasBadgeTitle: "Atlas Oracle Live Shield",
     atlasFeedLabel: "Oracle Feed",
@@ -479,8 +512,23 @@ const dict = {
     zeroLiqBadge: "Zero Liquidation",
     tenorDailyPill: "24H Daily",
     tenorWeeklyPill: "7D Weekly",
+    tenorRwaDailyPill: "Next Close (M/W/F)",
+    tenorRwaWeeklyPill: "Weekly Fri",
+    rwaSessionRth: "US Market Open",
+    rwaSessionExtended: "Extended Hours",
+    rwaSessionWeekend: "Weekend · 24/7 RWA",
+    rwaShareRatioLabel: (mult: string) => `1 NVDAB = ${mult} NVDA`,
+    rwaSettlementClockLabel: (utc: string, utc8: string) =>
+      `US Close ${utc} · ${utc8}`,
+    rwaQuotingPausedCta: "RWA protection pause · New opens paused",
+    rwaBlackoutPausedNotice: (reason?: string | null) =>
+      reason
+        ? `RWA split-cutover or corporate action protection active (${reason}). New opens are paused while existing tickets remain safe for early exit or settlement.`
+        : "RWA split-cutover or corporate action protection active. New opens are paused while existing tickets remain safe for early exit or settlement.",
     eventTitle: (underlying: string, isDaily: boolean) =>
-      `${underlying} ${isDaily ? "24h" : "7D"} Direction · Linear Prediction Market`,
+      underlying === "NVDAB"
+        ? "NVDA (NVDAB · RWA) · US Close Continuous-Payout Prediction Market"
+        : `${underlying} ${isDaily ? "24h" : "7D"} Direction · Continuous-Payout Prediction Market`,
     startLineLabel: "Start Line",
     settlesCountdownLabel: "Settles in",
     settledNow: "Settling",

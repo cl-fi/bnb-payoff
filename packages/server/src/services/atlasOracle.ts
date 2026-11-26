@@ -2,6 +2,7 @@ import WebSocket, { type RawData } from "ws";
 import { concatHex, keccak256, padHex, recoverAddress, type Hex } from "viem";
 import { sign } from "viem/accounts";
 import {
+  ASSET_SPECS,
   ATLAS_FEEDS,
   ATLAS_MAGIC_MARKER,
   ATLAS_OFFICIAL_SIGNER,
@@ -9,6 +10,7 @@ import {
   SETTLEMENT_FALLBACK_TOLERANCE_SEC,
   SETTLEMENT_TWAP_INTERVAL_SEC,
   SETTLEMENT_TWAP_SAMPLE_COUNT,
+  SUPPORTED_UNDERLYINGS,
   type AtlasConsensusStatus,
   type AtlasFeedConfig,
   type AtlasFeedTelemetry,
@@ -430,6 +432,7 @@ export interface AtlasOracleServiceOptions {
   apiKey?: string;
   btcFeedId?: string;
   ethFeedId?: string;
+  nvdabFeedId?: string;
   authorizedSigner?: Hex;
   enableLiveAtlas?: boolean;
   pollIntervalMs?: number;
@@ -437,11 +440,6 @@ export interface AtlasOracleServiceOptions {
   onTelemetryUpdate?: (telemetry: AtlasFeedTelemetry) => void;
   httpFetcher?: AtlasHttpFetcher;
 }
-
-const DEFAULT_FALLBACK_PRICES: Record<UnderlyingSymbol, number> = {
-  BTC: 61500,
-  ETH: 1750,
-};
 
 export class AtlasOracleService {
   private readonly apiKey?: string;
@@ -478,22 +476,23 @@ export class AtlasOracleService {
 
   constructor(opts: AtlasOracleServiceOptions = {}) {
     this.apiKey = opts.apiKey?.trim() || undefined;
-    const btcId = opts.btcFeedId?.trim() || ATLAS_FEEDS.BTC.feedId;
-    const ethId = opts.ethFeedId?.trim() || ATLAS_FEEDS.ETH.feedId;
-    this.feeds = {
-      BTC: {
-        feedId: btcId,
-        feedIdHex: feedIdToHex(btcId),
-        pair: "BTC/USD",
-      },
-      ETH: {
-        feedId: ethId,
-        feedIdHex: feedIdToHex(ethId),
-        pair: "ETH/USD",
-      },
-    };
-    this.feedIdToUnderlying.set(btcId, "BTC");
-    this.feedIdToUnderlying.set(ethId, "ETH");
+    const feedIdOverrides: Partial<Record<UnderlyingSymbol, string | undefined>> =
+      {
+        BTC: opts.btcFeedId?.trim(),
+        ETH: opts.ethFeedId?.trim(),
+        NVDAB: opts.nvdabFeedId?.trim(),
+      };
+    const feedsInit = {} as Record<UnderlyingSymbol, AtlasFeedConfig>;
+    for (const sym of SUPPORTED_UNDERLYINGS) {
+      const feedId = feedIdOverrides[sym] || ATLAS_FEEDS[sym].feedId;
+      feedsInit[sym] = {
+        feedId,
+        feedIdHex: feedIdToHex(feedId),
+        pair: ATLAS_FEEDS[sym].pair,
+      };
+      this.feedIdToUnderlying.set(feedId, sym);
+    }
+    this.feeds = feedsInit;
 
     this.authorizedSigner = opts.authorizedSigner ?? ATLAS_OFFICIAL_SIGNER;
     this.enableLiveAtlas = opts.enableLiveAtlas ?? true;
@@ -503,13 +502,13 @@ export class AtlasOracleService {
     this.httpFetcher = opts.httpFetcher;
 
     const nowSec = Math.floor(Date.now() / 1000);
-    for (const sym of ["BTC", "ETH"] as UnderlyingSymbol[]) {
+    for (const sym of SUPPORTED_UNDERLYINGS) {
       const cfg = this.feeds[sym];
       this.telemetry.set(sym, {
         underlying: sym,
         feedId: cfg.feedId,
         feedIdHex: cfg.feedIdHex,
-        price: DEFAULT_FALLBACK_PRICES[sym],
+        price: ASSET_SPECS[sym].defaultSpot,
         timestampSeconds: nowSec,
         consensusScore: null,
         consensusStatus: "UNKNOWN",
@@ -531,10 +530,11 @@ export class AtlasOracleService {
   }
 
   getFeedsConfig(): Record<UnderlyingSymbol, AtlasFeedConfig> {
-    return {
-      BTC: { ...this.feeds.BTC },
-      ETH: { ...this.feeds.ETH },
-    };
+    const out = {} as Record<UnderlyingSymbol, AtlasFeedConfig>;
+    for (const sym of SUPPORTED_UNDERLYINGS) {
+      out[sym] = { ...this.feeds[sym] };
+    }
+    return out;
   }
 
   isWsConnected(): boolean {
@@ -566,9 +566,8 @@ export class AtlasOracleService {
       if (!tel || !(tel.timestampSeconds > 0)) return false;
       return nowSec - tel.timestampSeconds <= maxOracleLagSec;
     }
-    return (
-      this.isLiveDataAvailable("BTC", maxAgeMs) ||
-      this.isLiveDataAvailable("ETH", maxAgeMs)
+    return SUPPORTED_UNDERLYINGS.some((sym) =>
+      this.isLiveDataAvailable(sym, maxAgeMs)
     );
   }
 
@@ -577,10 +576,11 @@ export class AtlasOracleService {
   }
 
   getAllTelemetry(): Record<UnderlyingSymbol, AtlasFeedTelemetry> {
-    return {
-      BTC: this.getTelemetry("BTC"),
-      ETH: this.getTelemetry("ETH"),
-    };
+    const out = {} as Record<UnderlyingSymbol, AtlasFeedTelemetry>;
+    for (const sym of SUPPORTED_UNDERLYINGS) {
+      out[sym] = this.getTelemetry(sym);
+    }
+    return out;
   }
 
   /** Test & local simulation helper for injecting ConsensusScore / telemetry states. */
@@ -621,10 +621,11 @@ export class AtlasOracleService {
   }
 
   getAllConsensusGuards(): Record<UnderlyingSymbol, ConsensusGuardState> {
-    return {
-      BTC: this.getConsensusGuard("BTC"),
-      ETH: this.getConsensusGuard("ETH"),
-    };
+    const out = {} as Record<UnderlyingSymbol, ConsensusGuardState>;
+    for (const sym of SUPPORTED_UNDERLYINGS) {
+      out[sym] = this.getConsensusGuard(sym);
+    }
+    return out;
   }
 
   start() {
@@ -668,9 +669,10 @@ export class AtlasOracleService {
           }
         }
       }
-      const btcAge = now - (this.lastLiveUpdateMs.get("BTC") ?? 0);
-      const ethAge = now - (this.lastLiveUpdateMs.get("ETH") ?? 0);
-      if (!this.wsConnected || btcAge > 15_000 || ethAge > 15_000) {
+      const anyStale = SUPPORTED_UNDERLYINGS.some(
+        (sym) => now - (this.lastLiveUpdateMs.get(sym) ?? 0) > 15_000
+      );
+      if (!this.wsConnected || anyStale) {
         void this.refreshLatest();
       }
     }, this.pollIntervalMs);
@@ -726,10 +728,9 @@ export class AtlasOracleService {
       this.reconnectAttempts = 0;
       const subPayload = {
         method: "SUBSCRIPTION",
-        params: [
-          `modix@auth.price@${this.feeds.BTC.feedId}`,
-          `modix@auth.price@${this.feeds.ETH.feedId}`,
-        ],
+        params: SUPPORTED_UNDERLYINGS.map(
+          (sym) => `modix@auth.price@${this.feeds[sym].feedId}`
+        ),
       };
       try {
         socket.send(JSON.stringify(subPayload));
@@ -924,7 +925,7 @@ export class AtlasOracleService {
 
     try {
       const data = await this.postAtlasApi("/v1/price/latest", {
-        feedIds: [this.feeds.BTC.feedId, this.feeds.ETH.feedId],
+        feedIds: SUPPORTED_UNDERLYINGS.map((sym) => this.feeds[sym].feedId),
         signed: true,
       });
       const updated = this.ingestAtlasPayloadData(data);
@@ -941,7 +942,7 @@ export class AtlasOracleService {
     const ts24hAgo = Math.floor(Date.now() / 1000) - 86400;
     try {
       const data = await this.postAtlasApi("/v1/price/history", {
-        feedIds: [this.feeds.BTC.feedId, this.feeds.ETH.feedId],
+        feedIds: SUPPORTED_UNDERLYINGS.map((sym) => this.feeds[sym].feedId),
         timestamp: ts24hAgo,
         signed: false,
       });
@@ -953,7 +954,10 @@ export class AtlasOracleService {
           this.baseline24hPrice.set(sym, { price: px, fetchedAtMs: nowMs });
         }
       }
-      if (this.baseline24hPrice.size < 2 && data.parsedPayload) {
+      if (
+        this.baseline24hPrice.size < SUPPORTED_UNDERLYINGS.length &&
+        data.parsedPayload
+      ) {
         for (const p of parseParsedPayloadJson(data.parsedPayload)) {
           const sym = this.feedIdToUnderlying.get(p.feedId);
           if (sym && !this.baseline24hPrice.has(sym) && p.price18 > 0n) {

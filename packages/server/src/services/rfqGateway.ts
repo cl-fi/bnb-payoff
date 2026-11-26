@@ -30,6 +30,7 @@ import type { PayoffDatabase } from "../db/database.js";
 import type { AtlasOracleService } from "./atlasOracle.js";
 import type { ChainService } from "./chainService.js";
 import type { MarketDataService } from "./marketData.js";
+import type { RwaRiskService } from "./rwaRiskService.js";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as const;
 
@@ -43,7 +44,8 @@ export class RfqGateway {
     private atlasOracle: AtlasOracleService,
     private marketData: MarketDataService,
     private chain: ChainService,
-    private shelfEngine: ShelfEngine
+    private shelfEngine: ShelfEngine,
+    private rwaRisk?: RwaRiskService
   ) {
     this.makerSigner = new MockMakerSigner({
       chainId: config.chainId,
@@ -110,16 +112,25 @@ export class RfqGateway {
       throw new Error("Stake must be between 1 and 50,000 USDT");
     }
 
-    // Enforce live Atlas freshness (fail-closed) & Enterprise ConsensusScore quoting guard
+    // Enforce live Atlas freshness (fail-closed) & Enterprise ConsensusScore + RWA quoting guard
     this.assertLiveAtlasFresh(underlying);
+    const book = this.marketData.getExpiryBook(underlying, tenor);
     const atlasTelemetry = this.atlasOracle.getTelemetry(underlying);
+    const rwaTelemetry =
+      this.rwaRisk?.getTelemetry(underlying, { expiry: book.expiry }) ??
+      book.rwaTelemetry;
     const guard = this.atlasOracle.getConsensusGuard(underlying);
-    const risk = this.makerSigner.isOpenQuotingAllowed(atlasTelemetry);
+    const risk = this.makerSigner.isOpenQuotingAllowed(
+      atlasTelemetry,
+      rwaTelemetry
+    );
     if (!guard.quotingSafe || !risk.quotingAllowed) {
       throw new ConsensusCircuitBreakerError(
         atlasTelemetry.consensusStatus,
         atlasTelemetry.consensusScore,
-        guard.reason || risk.reason
+        (!risk.quotingAllowed ? risk.reason : null) ||
+          guard.reason ||
+          "RFQ quoting temporarily paused by circuit breaker"
       );
     }
 
@@ -136,7 +147,6 @@ export class RfqGateway {
     const onChainFees = await this.chain.getOnChainProtocolFees();
     const protocolFeeBps = Math.min(MAX_OPEN_FEE_BPS, onChainFees.openFeeBps);
 
-    const book = this.marketData.getExpiryBook(underlying, tenor);
     const tierLabel =
       tierKind === "CONSERVATIVE"
         ? "Protected Tier"
@@ -169,6 +179,7 @@ export class RfqGateway {
           maker.openMarkupBps + (idx === 1 && tenor === "WEEKLY" ? -18 : 0),
         venue: maker.venue,
         atlasTelemetry,
+        rwaTelemetry,
       });
 
       const maxPayoutUnits = usdtToUnits(primary.summary.maxPayoutUsdt);
@@ -247,6 +258,7 @@ export class RfqGateway {
         nonce,
       },
       atlasTelemetry,
+      rwaTelemetry,
     });
 
     const competingQuotes: CompetingOpenQuote[] = sorted.map((item, idx) => ({
@@ -419,6 +431,11 @@ export class RfqGateway {
 
     const snap = this.marketData.getSnapshot(ticket.underlying);
     const atlasTelemetry = this.atlasOracle.getTelemetry(ticket.underlying);
+    const rwaTelemetry =
+      this.rwaRisk?.getTelemetry(ticket.underlying, {
+        expiry: ticket.expiry,
+        nowSec: effNow,
+      }) ?? snap.rwaTelemetry;
     const book =
       hoursRemaining > 42 && snap.weekly ? snap.weekly : snap.daily!;
 
@@ -430,6 +447,7 @@ export class RfqGateway {
       remainingLongUsdt: amountUsdt,
       hoursRemaining,
       atlasTelemetry,
+      rwaTelemetry,
     });
 
     const onChainFees = await this.chain.getOnChainProtocolFees();
@@ -464,6 +482,7 @@ export class RfqGateway {
         baseBidUsdt: est.mockMakerBidUsdt,
         closeCompetitivenessBps: maker.closeCompetitivenessBps,
         atlasTelemetry,
+        rwaTelemetry,
       });
 
       const state = makerStates[idx];
@@ -542,6 +561,7 @@ export class RfqGateway {
         nonce,
       },
       atlasTelemetry,
+      rwaTelemetry,
     });
 
     const closeFeeUnits = (buybackUnits * BigInt(closeFeeBps)) / 10_000n;

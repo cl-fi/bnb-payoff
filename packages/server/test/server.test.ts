@@ -12,6 +12,7 @@ import {
 import {
   ASSET_BTC_ID,
   ASSET_ETH_ID,
+  ASSET_NVDAB_ID,
   ATLAS_FEEDS,
   ATLAS_MAGIC_MARKER,
   ATLAS_OFFICIAL_SIGNER,
@@ -38,7 +39,16 @@ import {
   evaluateConsensusGuard,
   verifyAtlasSignedPayload,
 } from "../src/services/atlasOracle.js";
-import { anchorCandlesToSpot } from "../src/services/marketData.js";
+import {
+  anchorCandlesToSpot,
+  buildSyntheticStrikeQuote,
+} from "../src/services/marketData.js";
+import {
+  MULTIPLIER_SYNC_STATE_PREFIX,
+  SPLIT_PAUSED_SYNC_STATE_PREFIX,
+  THETADATA_SYNC_STATE_KEY,
+  classifyUsEquitySession,
+} from "../src/services/rwaRiskService.js";
 
 /**
  * Public production signed Atlas Oracle fixtures captured from
@@ -72,6 +82,7 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
   let services: Awaited<ReturnType<typeof buildApp>>["services"];
 
   const SECRET_SENTINEL = "atlas-unit-test-secret-never-expose";
+  const THETA_SECRET_SENTINEL = "thetadata-unit-test-secret-never-expose";
 
   beforeAll(async () => {
     const built = await buildApp({
@@ -80,7 +91,9 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       rpcUrl: "http://127.0.0.1:8545",
       enableLiveAtlas: false,
       enableBinanceKlines: false,
+      enableRwaFeeds: false,
       atlasApiKey: SECRET_SENTINEL,
+      thetaDataApiKey: THETA_SECRET_SENTINEL,
       vaultAddress: "0x1111111111111111111111111111111111111111",
       settlementOracleAddress: "0x3333333333333333333333333333333333333333",
       lensAddress: "0x4444444444444444444444444444444444444444",
@@ -1621,6 +1634,753 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       nowSpy.mockRestore();
       syncSpy.mockRestore();
       readSpy.mockRestore();
+    }
+  });
+
+  it("NVDAB RWA: exposes 3-asset /api/health & /api/oracle/consensus, scales NVDABUSDT K-lines by shareMultiplier, uses equity tick floor & Sticky-Delta IV, and signs 21:00 UTC OpenQuotes", async () => {
+    resetFixedGridCache();
+    const rwaApp = await buildApp({
+      databaseUrl: undefined,
+      dbPath: ":memory:",
+      rpcUrl: "http://127.0.0.1:8545",
+      enableLiveAtlas: false,
+      enableBinanceKlines: false,
+      enableRwaFeeds: false,
+      atlasApiKey: SECRET_SENTINEL,
+      thetaDataApiKey: THETA_SECRET_SENTINEL,
+      nvdabSettlementUtcHour: 21,
+      vaultAddress: "0x1111111111111111111111111111111111111111",
+      settlementOracleAddress: "0x3333333333333333333333333333333333333333",
+      lensAddress: "0x4444444444444444444444444444444444444444",
+      usdtAddress: "0x2222222222222222222222222222222222222222",
+      chainId: 31337,
+    });
+
+    try {
+      // 1. Ingest Atlas #1005 (NVDAB) live telemetry
+      rwaApp.services.atlasOracle.ingestAtlasPayloadData({
+        consensusScores: [
+          {
+            feedId: "1005",
+            consensusScore: 0.9,
+            consensusStatus: "HEALTHY",
+            twapPrice: "153.41",
+            medianPrice: "153.42",
+            priceChangePct: 1.85,
+            priceVolatility: 0.0018,
+          },
+        ],
+        priceDetails: [
+          { feedId: "1005", timestampSeconds: "1795667668", price: 153.42 },
+        ],
+      });
+
+      // 2. Inject Atlas feed-detail (shareMultiplier) + Binance NVDAUSDT perp + ThetaData chain
+      const liveMultiplier = 1.00077822;
+      rwaApp.services.rwaRisk.setAtlasFeedDetailFetcher(async (feedId) => {
+        expect(feedId).toBe(1005);
+        return {
+          data: {
+            id: 1005,
+            symbol: "NVDAB",
+            sourceMarkets: [
+              {
+                exchangeName: "Binance",
+                selected: 1,
+                exclude: 0,
+                volumeUsd: 94_678_106,
+                shareMultiplier: liveMultiplier,
+              },
+              {
+                exchangeName: "Ourbit",
+                selected: 1,
+                exclude: 0,
+                volumeUsd: 7_816_925,
+                shareMultiplier: 1.0,
+              },
+              {
+                exchangeName: "Hotcoin",
+                selected: 0,
+                status: 3,
+              },
+            ],
+          },
+        };
+      });
+      rwaApp.services.rwaRisk.setBinancePerpFetcher(async (symbol) => {
+        expect(symbol).toBe("NVDAUSDT");
+        return { symbol: "NVDAUSDT", price: "153.56" };
+      });
+      rwaApp.services.rwaRisk.setThetaDataFetcher(async () => ({
+        symbol: "NVDA",
+        expirations: ["2026-11-27", "2026-11-30", "2026-12-02", "2026-12-04"],
+        nearestExp: "2026-11-27",
+        weeklyExp: "2026-12-04",
+        strikes: [
+          135, 138, 140, 142, 144, 146, 148, 149, 150, 152.5, 155, 157.5, 160,
+          162.5, 165, 167.5, 170, 175,
+        ],
+        atmIv: 0.54,
+        strikeIvs: {
+          "145": 0.58,
+          "150": 0.56,
+          "152.5": 0.54,
+          "155": 0.52,
+          "160": 0.5,
+        },
+        syntheticForward: 153.3,
+        fetchedAtMs: Date.now(),
+      }));
+
+      expect(await rwaApp.services.rwaRisk.refreshShareMultiplier()).toBe(true);
+      expect(await rwaApp.services.rwaRisk.refreshPerpPrice()).toBe(true);
+      expect(await rwaApp.services.rwaRisk.refreshThetaDataIfDue(true)).toBe(
+        true
+      );
+
+      // 3. Verify /api/health and /api/oracle/consensus expose NVDAB + rwaTelemetry and leak zero secrets
+      const healthRes = await rwaApp.app.inject({
+        method: "GET",
+        url: "/api/health",
+      });
+      expect(healthRes.statusCode).toBe(200);
+      expect(healthRes.body).not.toContain(SECRET_SENTINEL);
+      expect(healthRes.body).not.toContain(THETA_SECRET_SENTINEL);
+      const health = healthRes.json();
+      expect(health.spots.NVDAB).toBeCloseTo(153.42, 2);
+      expect(health.atlasTelemetry.NVDAB.feedId).toBe("1005");
+      expect(health.atlasTelemetry.NVDAB.consensusStatus).toBe("HEALTHY");
+      expect(health.twapWindowHealth.NVDAB.expiry % 86400).toBe(21 * 3600);
+      expect(health.twapWindowHealth.BTC.expiry % 86400).toBe(8 * 3600);
+      expect(health.rwaTelemetry.NVDAB.shareMultiplier).toBeCloseTo(
+        liveMultiplier,
+        6
+      );
+      expect(health.rwaTelemetry.NVDAB.crossVenueMultiplierGapPct).toBeCloseTo(
+        0.0778,
+        3
+      );
+      expect(health.rwaTelemetry.NVDAB.perpSymbol).toBe("NVDAUSDT");
+      expect(health.rwaTelemetry.NVDAB.perpPriceUsd).toBeCloseTo(153.56, 2);
+      // Expected basis: |(153.42 / 1.00077822) - 153.56| / 153.56 * 10000 ≈ 16.89 bps
+      const expectedBasisBps =
+        (Math.abs(153.42 / liveMultiplier - 153.56) / 153.56) * 10_000;
+      expect(health.rwaTelemetry.NVDAB.spotPerpBasisBps).toBeCloseTo(
+        expectedBasisBps,
+        1
+      );
+      expect(health.rwaTelemetry.NVDAB.ivSource).toBe("THETADATA_LIVE");
+      expect(health.rwaTelemetry.NVDAB.thetaAtmIv).toBe(0.54);
+      expect(health.rwaTelemetry.NVDAB.settlementUtcHour).toBe(21);
+
+      const consensusRes = await rwaApp.app.inject({
+        method: "GET",
+        url: "/api/oracle/consensus",
+      });
+      expect(consensusRes.statusCode).toBe(200);
+      expect(consensusRes.body).not.toContain(SECRET_SENTINEL);
+      expect(consensusRes.body).not.toContain(THETA_SECRET_SENTINEL);
+      const consensus = consensusRes.json();
+      expect(consensus.feeds.NVDAB.feedId).toBe("1005");
+      expect(consensus.feeds.NVDAB.feedIdHex).toBe("0x000003ed");
+      expect(consensus.telemetry.NVDAB.price).toBeCloseTo(153.42, 2);
+      expect(consensus.rwaTelemetry.NVDAB.splitGuardTriggered).toBe(false);
+
+      // 4. Verify /api/market/candles?underlying=NVDAB scales Binance NVDABUSDT bars by shareMultiplier BEFORE anchoring
+      let queriedSymbol = "";
+      rwaApp.services.marketData.setBinanceKlinesFetcher(async (sym) => {
+        queriedSymbol = sym;
+        return [
+          [1795600000000, "150.00", "151.50", "149.50", "151.00"],
+          [1795600900000, "151.00", "153.10", "150.80", "153.00"],
+        ];
+      });
+      const candlesRes = await rwaApp.app.inject({
+        method: "GET",
+        url: "/api/market/candles?underlying=NVDAB&bar=15m&limit=40",
+      });
+      expect(candlesRes.statusCode).toBe(200);
+      expect(queriedSymbol).toBe("NVDABUSDT");
+      const candlesBody = candlesRes.json();
+      expect(candlesBody.source).toBe("BINANCE_KLINES");
+      expect(candlesBody.candles[0].open).toBeCloseTo(
+        150.0 * liveMultiplier,
+        3
+      );
+      expect(candlesBody.candles[0].high).toBeCloseTo(
+        151.5 * liveMultiplier,
+        3
+      );
+      expect(candlesBody.candles[0].low).toBeCloseTo(
+        149.5 * liveMultiplier,
+        3
+      );
+      expect(candlesBody.candles[0].close).toBeCloseTo(
+        151.0 * liveMultiplier,
+        3
+      );
+      // Latest bar anchored to live Atlas #1005 spot ($153.42)
+      expect(candlesBody.candles[1].close).toBe(153.42);
+      expect(candlesBody.candles[1].high).toBe(153.42);
+
+      // 5. Verify equity option tick floor ($0.01/$0.02, NOT $0.50/$1.00) & Sticky-Delta IV mapping
+      const otmEquityQuote = buildSyntheticStrikeQuote({
+        underlying: "NVDAB",
+        expirySec: 1795813200,
+        strike: 175,
+        spot: 153.42,
+        iv: 0.54,
+        hoursToExpiry: 24,
+      });
+      expect(otmEquityQuote.call.bidUsd).toBeGreaterThanOrEqual(0.01);
+      expect(otmEquityQuote.call.bidUsd).toBeLessThan(0.5);
+      expect(otmEquityQuote.call.askUsd).toBeGreaterThanOrEqual(0.02);
+      expect(otmEquityQuote.call.askUsd).toBeLessThan(1.0);
+
+      // Sticky-Delta: at K_nvdab = 155 * M, S_atlas = 153.30 * M -> K_share = 155, S_share = 153.30 -> IV = 0.52
+      const stickyIv = rwaApp.services.rwaRisk.resolveStrikeIv(
+        155 * liveMultiplier,
+        153.3 * liveMultiplier,
+        "DAILY"
+      );
+      expect(stickyIv).toBeCloseTo(0.52, 3);
+
+      // 6. Verify /api/market/shelf?underlying=NVDAB returns OCC $2.50 grid + 21:00 UTC expiry
+      const shelfRes = await rwaApp.app.inject({
+        method: "GET",
+        url: "/api/market/shelf?underlying=NVDAB&direction=BULL&tenor=DAILY&stake=20",
+      });
+      expect(shelfRes.statusCode).toBe(200);
+      const shelf = shelfRes.json() as {
+        expiry: number;
+        grid: FixedGridMeta;
+        tiers: TicketSummary[];
+        rwaTelemetry: { shareMultiplier: number; settlementUtcHour: number };
+      };
+      expect(shelf.expiry % 86400).toBe(21 * 3600);
+      expect(shelf.grid.gridStep).toBe(2.5);
+      expect(shelf.grid.hysteresisBuffer).toBe(0.625);
+      expect(shelf.tiers).toHaveLength(4);
+      expect(shelf.rwaTelemetry.settlementUtcHour).toBe(21);
+      for (const tier of shelf.tiers) {
+        expect(tier.guardrails.valid).toBe(true);
+        expect(tier.settlementLabel).toContain("21:00 UTC (05:00 UTC+8)");
+      }
+
+      // 7. Verify POST /api/rfq/open signs valid EIP-712 OpenQuote for NVDAB at 21:00 UTC
+      const taker = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65" as const;
+      const makerStateSpy = vi
+        .spyOn(rwaApp.services.chain, "getMakerOnChainState")
+        .mockResolvedValue({
+          whitelisted: true,
+          marginUnits: 500_000_000_000n,
+          epoch: 1n,
+        });
+      try {
+        const tier = shelf.tiers[1]!;
+        const openRes = await rwaApp.app.inject({
+          method: "POST",
+          url: "/api/rfq/open",
+          payload: {
+            taker,
+            underlying: "NVDAB",
+            direction: "BULL",
+            tenor: "DAILY",
+            tierKind: tier.tierKind,
+            lowerStrike: tier.lowerStrike,
+            upperStrike: tier.upperStrike,
+            stakeUsdt: 20,
+          },
+        });
+        expect(openRes.statusCode).toBe(200);
+        const openBody = openRes.json() as OpenRfqResponse;
+        expect(openBody.quote.assetId).toBe(ASSET_NVDAB_ID);
+        expect(openBody.quote.expiry % 86400).toBe(21 * 3600);
+
+        const recovered = await recoverTypedDataAddress({
+          domain: getPayoffEip712Domain(
+            openBody.chainId,
+            openBody.verifyingContract
+          ),
+          types: OPEN_QUOTE_TYPES,
+          primaryType: "OpenQuote",
+          message: {
+            taker: openBody.quote.taker,
+            maker: openBody.quote.maker,
+            assetId: openBody.quote.assetId,
+            isUp: openBody.quote.isUp,
+            lowerStrike: BigInt(openBody.quote.lowerStrike),
+            upperStrike: BigInt(openBody.quote.upperStrike),
+            expiry: BigInt(openBody.quote.expiry),
+            userPayAmount: BigInt(openBody.quote.userPayAmount),
+            maxPayout: BigInt(openBody.quote.maxPayout),
+            maxProtocolFeeBps: openBody.quote.maxProtocolFeeBps,
+            makerEpoch: BigInt(openBody.quote.makerEpoch),
+            validUntil: BigInt(openBody.quote.validUntil),
+            nonce: BigInt(openBody.quote.nonce),
+          },
+          signature: openBody.signature,
+        });
+        expect(recovered.toLowerCase()).toBe(
+          openBody.quote.maker.toLowerCase()
+        );
+      } finally {
+        makerStateSpy.mockRestore();
+      }
+    } finally {
+      await rwaApp.app.close();
+    }
+  });
+
+  it("RwaRiskService: classifies DST sessions, blocks opens (503) & pauses NVDAB expiry on >1% shareMultiplier jump, enforces blackout dates, and fails soft without Python", async () => {
+    // 1. DST-aware US market session classifier (EST vs EDT + holidays + weekend)
+    // Tue 2026-01-13 15:30 UTC = 10:30 EST -> RTH
+    expect(classifyUsEquitySession(new Date("2026-01-13T15:30:00Z"))).toBe(
+      "RTH"
+    );
+    // Tue 2026-01-13 21:30 UTC = 16:30 EST -> EXTENDED
+    expect(classifyUsEquitySession(new Date("2026-01-13T21:30:00Z"))).toBe(
+      "EXTENDED"
+    );
+    // Tue 2026-07-14 14:00 UTC = 10:00 EDT -> RTH (DST shifted 1h earlier in UTC)
+    expect(classifyUsEquitySession(new Date("2026-07-14T14:00:00Z"))).toBe(
+      "RTH"
+    );
+    // Tue 2026-07-14 20:15 UTC = 16:15 EDT -> EXTENDED
+    expect(classifyUsEquitySession(new Date("2026-07-14T20:15:00Z"))).toBe(
+      "EXTENDED"
+    );
+    // Fri 2026-01-16 20:30 EST = Sat 01:30 UTC -> WEEKEND
+    expect(classifyUsEquitySession(new Date("2026-01-17T01:30:00Z"))).toBe(
+      "WEEKEND"
+    );
+    // Sun 2026-01-18 17:00 UTC = 12:00 EST -> WEEKEND; Sun 23:30 UTC = 18:30 EST -> EXTENDED
+    expect(classifyUsEquitySession(new Date("2026-01-18T17:00:00Z"))).toBe(
+      "WEEKEND"
+    );
+    expect(classifyUsEquitySession(new Date("2026-01-18T23:30:00Z"))).toBe(
+      "EXTENDED"
+    );
+    // Thanksgiving Thu 2026-11-26 16:00 UTC = 11:00 EST -> market holiday -> EXTENDED (never RTH)
+    expect(classifyUsEquitySession(new Date("2026-11-26T16:00:00Z"))).toBe(
+      "EXTENDED"
+    );
+
+    const rwaApp = await buildApp({
+      databaseUrl: undefined,
+      dbPath: ":memory:",
+      rpcUrl: "http://127.0.0.1:8545",
+      enableLiveAtlas: false,
+      enableBinanceKlines: false,
+      enableRwaFeeds: false,
+      nvdabSettlementUtcHour: 21,
+      thetaDataPythonBin: "/nonexistent/python3-docker-alpine",
+      thetaDataApiKey: THETA_SECRET_SENTINEL,
+      vaultAddress: "0x1111111111111111111111111111111111111111",
+      settlementOracleAddress: "0x3333333333333333333333333333333333333333",
+      lensAddress: "0x4444444444444444444444444444444444444444",
+      usdtAddress: "0x2222222222222222222222222222222222222222",
+      chainId: 31337,
+    });
+
+    try {
+      // 2. Fail-soft ThetaData bridge without Python -> SYNTHETIC_BASELINE (0.52)
+      expect(await rwaApp.services.rwaRisk.refreshThetaDataIfDue(true)).toBe(
+        false
+      );
+      const baselineTel = rwaApp.services.rwaRisk.getTelemetry("NVDAB")!;
+      expect(baselineTel.ivSource).toBe("SYNTHETIC_BASELINE");
+      expect(rwaApp.services.rwaRisk.getEffectiveAtmIv("DAILY")).toBe(0.52);
+
+      // Persist a cached ThetaData snapshot in sync_state and verify fail-soft downgrades to THETADATA_CACHED
+      await rwaApp.services.db.setSyncState(
+        THETADATA_SYNC_STATE_KEY,
+        JSON.stringify({
+          expirations: ["2026-11-27", "2026-12-04"],
+          nearestExp: "2026-11-27",
+          weeklyExp: "2026-12-04",
+          strikes: [150, 152.5, 155, 157.5, 160],
+          atmIv: 0.61,
+          strikeIvs: { "152.5": 0.61 },
+          fetchedAtMs: Date.now() - 60_000,
+        })
+      );
+      await rwaApp.services.rwaRisk.init();
+      expect(rwaApp.services.rwaRisk.getTelemetry("NVDAB")!.ivSource).toBe(
+        "THETADATA_CACHED"
+      );
+      expect(rwaApp.services.rwaRisk.getEffectiveAtmIv("DAILY")).toBe(0.61);
+
+      // 3. Initial multiplier baseline (1.0008) persisted to sync_state, then >1% jump (1.025) triggers split guard
+      let currentMult = 1.0008;
+      rwaApp.services.rwaRisk.setAtlasFeedDetailFetcher(async () => ({
+        data: {
+          id: 1005,
+          sourceMarkets: [
+            {
+              exchangeName: "Binance",
+              selected: 1,
+              exclude: 0,
+              shareMultiplier: currentMult,
+            },
+          ],
+        },
+      }));
+      await rwaApp.services.rwaRisk.refreshShareMultiplier();
+
+      const shelfBefore = await rwaApp.app.inject({
+        method: "GET",
+        url: "/api/market/shelf?underlying=NVDAB&direction=BULL&tenor=DAILY&stake=20",
+      });
+      const nvdabExpiry = shelfBefore.json().expiry as number;
+      const tier = (shelfBefore.json().tiers as TicketSummary[])[1]!;
+      const savedBaseline = await rwaApp.services.db.getSyncState(
+        `${MULTIPLIER_SYNC_STATE_PREFIX}${nvdabExpiry}`
+      );
+      expect(Number(savedBaseline)).toBeCloseTo(1.0008, 4);
+
+      // Seed an active NVDAB ticket for nvdabExpiry so keeper + early-close can both be tested
+      const taker = "0x6666666666666666666666666666666666666666" as const;
+      const nvdabSid = computeSeriesId(
+        ASSET_NVDAB_ID,
+        BigInt(Math.round(tier.lowerStrike * 1e8)),
+        BigInt(Math.round(tier.upperStrike * 1e8)),
+        nvdabExpiry
+      );
+      await rwaApp.services.db.upsertTicketOnOpen({
+        seriesId: nvdabSid,
+        isUp: 1,
+        taker,
+        maker: rwaApp.services.config.makers[0]!.address,
+        tierKind: tier.tierKind,
+        underlying: "NVDAB",
+        direction: "BULL",
+        lowerStrike: tier.lowerStrike,
+        upperStrike: tier.upperStrike,
+        expiry: nvdabExpiry,
+        maxPayout: 48,
+        stakeUsdt: 20,
+        protocolFeeUsdt: 0.77,
+        openTxHash: "0x" + "b1".repeat(32),
+        timestamp: Math.floor(Date.now() / 1000) - 60,
+      });
+
+      // Jump multiplier by +2.4% (> 1.0% threshold)
+      currentMult = 1.025;
+      await rwaApp.services.rwaRisk.refreshShareMultiplier();
+      expect(
+        await rwaApp.services.rwaRisk.isSplitGuardTriggeredForExpiry(
+          nvdabExpiry
+        )
+      ).toBe(true);
+
+      // Shelf reflects quoting pause
+      const shelfPaused = await rwaApp.app.inject({
+        method: "GET",
+        url: "/api/market/shelf?underlying=NVDAB&direction=BULL&tenor=DAILY&stake=20",
+      });
+      expect(shelfPaused.json().rwaTelemetry.splitGuardTriggered).toBe(true);
+      expect(shelfPaused.json().quotingGuard.quotingSafe).toBe(false);
+
+      // /api/rfq/open MUST reject with 503 circuitBreaker
+      const blockedOpen = await rwaApp.app.inject({
+        method: "POST",
+        url: "/api/rfq/open",
+        payload: {
+          taker,
+          underlying: "NVDAB",
+          direction: "BULL",
+          tenor: "DAILY",
+          tierKind: tier.tierKind,
+          lowerStrike: tier.lowerStrike,
+          upperStrike: tier.upperStrike,
+          stakeUsdt: 20,
+        },
+      });
+      expect(blockedOpen.statusCode).toBe(503);
+      expect(blockedOpen.json().circuitBreaker).toBe(true);
+      expect(blockedOpen.json().error).toMatch(/split-cutover/i);
+
+      // /api/rfq/close MUST stay operational so holders are never trapped
+      const makerStateSpy = vi
+        .spyOn(rwaApp.services.chain, "getMakerOnChainState")
+        .mockResolvedValue({
+          whitelisted: true,
+          marginUnits: 500_000_000_000n,
+          epoch: 1n,
+        });
+      const readBalSpy = vi
+        .spyOn(rwaApp.services.chain.publicClient, "readContract")
+        .mockImplementation(async (req: any) => {
+          if (req.functionName === "balanceOf") {
+            const [account] = req.args as [string, bigint];
+            if (account.toLowerCase() === taker.toLowerCase()) {
+              return 48_000_000n;
+            }
+          }
+          return 0n;
+        });
+      try {
+        const closeRes = await rwaApp.app.inject({
+          method: "POST",
+          url: "/api/rfq/close",
+          payload: { taker, seriesId: nvdabSid, isUp: true },
+        });
+        expect(closeRes.statusCode).toBe(200);
+        expect(closeRes.json().netProceedsUsdt).toBeGreaterThan(0);
+      } finally {
+        readBalSpy.mockRestore();
+        makerStateSpy.mockRestore();
+      }
+
+      // Settlement Keeper Pass 1 MUST proactively call pauseExpiryOnChain("NVDAB", nvdabExpiry)
+      const readSettleSpy = vi
+        .spyOn(rwaApp.services.chain, "readOnChainSettlement")
+        .mockResolvedValue({
+          settlementPrice: 0,
+          settledAt: 0,
+          settled: false,
+          feedIdHex: null,
+          oracleTimestamp: null,
+          submitter: null,
+          sampleCount: null,
+          isManualOverride: false,
+          overrideReason: null,
+        });
+      const isPausedSpy = vi
+        .spyOn(rwaApp.services.chain, "isExpiryPausedOnChain")
+        .mockResolvedValue(false);
+      const pauseSpy = vi
+        .spyOn(rwaApp.services.chain, "pauseExpiryOnChain")
+        .mockResolvedValue(("0x" + "77".repeat(32)) as Hex);
+      const submitSpy = vi
+        .spyOn(rwaApp.services.chain, "submitAtlasTwapSettlementOnChain")
+        .mockResolvedValue(("0x" + "88".repeat(32)) as Hex);
+      const nowSpy = vi
+        .spyOn(rwaApp.services.chain, "getEffectiveNow")
+        .mockResolvedValue(nvdabExpiry + 120);
+      try {
+        const keeperRes = await rwaApp.services.chain.runSettlementKeeper();
+        expect(pauseSpy).toHaveBeenCalledWith("NVDAB", nvdabExpiry);
+        expect(pauseSpy).toHaveBeenCalledTimes(1);
+        expect(submitSpy).not.toHaveBeenCalled();
+        const pausedItem = keeperRes.find(
+          (r) => r.underlying === "NVDAB" && r.expiry === nvdabExpiry
+        );
+        expect(pausedItem?.txHash).toBe("PAUSED_FOR_ADMIN");
+        expect(pausedItem?.disputed).toBe(true);
+        // Marker persisted so admin unpauseExpiry wins on subsequent ticks
+        expect(
+          await rwaApp.services.db.getSyncState(
+            `${SPLIT_PAUSED_SYNC_STATE_PREFIX}${nvdabExpiry}`
+          )
+        ).toBeTruthy();
+
+        // Simulate admin calling unpauseExpiry on-chain (isExpiryPausedOnChain remains false while
+        // multiplier stays permanently shifted post-split): next keeper tick must NOT pause again!
+        const keeperAfterUnpause =
+          await rwaApp.services.chain.runSettlementKeeper();
+        expect(pauseSpy).toHaveBeenCalledTimes(1);
+        expect(
+          keeperAfterUnpause.find(
+            (r) =>
+              r.underlying === "NVDAB" &&
+              r.expiry === nvdabExpiry &&
+              r.txHash === "PAUSED_FOR_ADMIN"
+          )
+        ).toBeUndefined();
+      } finally {
+        readSettleSpy.mockRestore();
+        isPausedSpy.mockRestore();
+        pauseSpy.mockRestore();
+        submitSpy.mockRestore();
+        nowSpy.mockRestore();
+      }
+
+      // 4. Corporate action blackout date blocks /api/rfq/open with 503 even when multiplier is clean
+      currentMult = 1.0008;
+      await rwaApp.services.rwaRisk.refreshShareMultiplier();
+      const expiryYmd = new Date(nvdabExpiry * 1000).toISOString().slice(0, 10);
+      rwaApp.services.rwaRisk.setBlackoutDates([expiryYmd]);
+      const blackoutOpen = await rwaApp.app.inject({
+        method: "POST",
+        url: "/api/rfq/open",
+        payload: {
+          taker,
+          underlying: "NVDAB",
+          direction: "BULL",
+          tenor: "DAILY",
+          tierKind: tier.tierKind,
+          lowerStrike: tier.lowerStrike,
+          upperStrike: tier.upperStrike,
+          stakeUsdt: 20,
+        },
+      });
+      expect(blackoutOpen.statusCode).toBe(503);
+      expect(blackoutOpen.json().circuitBreaker).toBe(true);
+      expect(blackoutOpen.json().error).toMatch(/blackout/i);
+    } finally {
+      await rwaApp.app.close();
+    }
+  });
+
+  it("enforces per-asset TWAP window (20:31-21:00 UTC for NVDAB, 07:31-08:00 UTC for BTC) in recordTwapHealthTick, /api/oracle/settlement-proof, and settlement-history backfill", async () => {
+    const testnetApp = await buildApp({
+      databaseUrl: undefined,
+      dbPath: ":memory:",
+      rpcUrl: "http://127.0.0.1:8545",
+      enableLiveAtlas: false,
+      enableBinanceKlines: false,
+      enableRwaFeeds: false,
+      nvdabSettlementUtcHour: 21,
+      vaultAddress: "0x1111111111111111111111111111111111111111",
+      settlementOracleAddress: "0x3333333333333333333333333333333333333333",
+      lensAddress: "0x4444444444444444444444444444444444444444",
+      usdtAddress: "0x2222222222222222222222222222222222222222",
+      chainId: 97, // BSC Testnet strict alignment check
+    });
+
+    const nvdab21Utc = Math.floor(Date.UTC(2026, 10, 25, 21, 0, 0) / 1000);
+    const btc08Utc = Math.floor(Date.UTC(2026, 10, 25, 8, 0, 0) / 1000);
+
+    try {
+      // 1. Per-asset TWAP health recording: 20:45 UTC tick recorded for NVDAB, 07:45 UTC ignored for NVDAB
+      await testnetApp.services.chain.recordTwapHealthTick({
+        underlying: "NVDAB",
+        feedId: "1005",
+        feedIdHex: "0x000003ed",
+        price: 153.4,
+        timestampSeconds: nvdab21Utc - 15 * 60, // 20:45 UTC
+        consensusScore: 0.9,
+        consensusStatus: "HEALTHY",
+        twapPrice: null,
+        medianPrice: null,
+        priceChangePct: null,
+        priceVolatility: null,
+        updatedAtMs: Date.now(),
+      });
+      await testnetApp.services.chain.recordTwapHealthTick({
+        underlying: "NVDAB",
+        feedId: "1005",
+        feedIdHex: "0x000003ed",
+        price: 153.1,
+        timestampSeconds: btc08Utc - 15 * 60, // 07:45 UTC (wrong window for NVDAB)
+        consensusScore: 0.9,
+        consensusStatus: "HEALTHY",
+        twapPrice: null,
+        medianPrice: null,
+        priceChangePct: null,
+        priceVolatility: null,
+        updatedAtMs: Date.now(),
+      });
+
+      const nvdabSamples = await testnetApp.services.db.getTwapHealthSamples(
+        "NVDAB",
+        nvdab21Utc
+      );
+      expect(nvdabSamples).toHaveLength(1);
+      const wrongWindowSamples =
+        await testnetApp.services.db.getTwapHealthSamples("NVDAB", btc08Utc);
+      expect(wrongWindowSamples).toHaveLength(0);
+
+      // 2. /api/oracle/settlement-proof enforces per-asset settlementUtcHour on chainId 97
+      const nowSpy = vi
+        .spyOn(testnetApp.services.chain, "getEffectiveNow")
+        .mockResolvedValue(nvdab21Utc + 30);
+      const readSpy = vi
+        .spyOn(testnetApp.services.chain, "readOnChainSettlement")
+        .mockResolvedValue({
+          settlementPrice: 0,
+          settledAt: 0,
+          settled: false,
+          feedIdHex: null,
+          oracleTimestamp: null,
+          submitter: null,
+          sampleCount: null,
+          isManualOverride: false,
+          overrideReason: null,
+        });
+      const pausedSpy = vi
+        .spyOn(testnetApp.services.chain, "isExpiryPausedOnChain")
+        .mockResolvedValue(false);
+
+      try {
+        // NVDAB at 08:00 UTC -> 400 misaligned
+        const badNvdab = await testnetApp.app.inject({
+          method: "GET",
+          url: `/api/oracle/settlement-proof?underlying=NVDAB&expiry=${btc08Utc}`,
+        });
+        expect(badNvdab.statusCode).toBe(400);
+        expect(badNvdab.json().error).toContain("21:00 UTC");
+
+        // BTC at 21:00 UTC -> 400 misaligned
+        const badBtc = await testnetApp.app.inject({
+          method: "GET",
+          url: `/api/oracle/settlement-proof?underlying=BTC&expiry=${nvdab21Utc}`,
+        });
+        expect(badBtc.statusCode).toBe(400);
+        expect(badBtc.json().error).toContain("08:00 UTC");
+
+        // NVDAB at 21:00 UTC (30s post-expiry) -> 200 WAITING_DELAY
+        const okNvdab = await testnetApp.app.inject({
+          method: "GET",
+          url: `/api/oracle/settlement-proof?underlying=NVDAB&expiry=${nvdab21Utc}`,
+        });
+        expect(okNvdab.statusCode).toBe(200);
+        expect(okNvdab.json().status).toBe("WAITING_DELAY");
+
+        // 3. Settlement history backfill for NVDAB checks 21:00 UTC expiries & preserves exact Atlas #1005 price (no double multiply)
+        const syncSpy = vi
+          .spyOn(testnetApp.services.chain, "syncEvents")
+          .mockResolvedValue(undefined);
+        readSpy.mockImplementation(async (sym, exp) => {
+          if (sym === "NVDAB" && exp === nvdab21Utc) {
+            return {
+              settlementPrice: 153.418076,
+              settledAt: nvdab21Utc + 65,
+              settled: true,
+              feedIdHex: ATLAS_FEEDS.NVDAB.feedIdHex,
+              oracleTimestamp: nvdab21Utc,
+              submitter: "0x000000000000000000000000000000000000dEaD",
+              sampleCount: 30,
+              isManualOverride: false,
+              overrideReason: null,
+            };
+          }
+          return {
+            settlementPrice: 0,
+            settledAt: 0,
+            settled: false,
+            feedIdHex: null,
+            oracleTimestamp: null,
+            submitter: null,
+            sampleCount: null,
+            isManualOverride: false,
+            overrideReason: null,
+          };
+        });
+        try {
+          const histRes = await testnetApp.app.inject({
+            method: "GET",
+            url: "/api/market/settlement-history?underlying=NVDAB&limit=5",
+          });
+          expect(histRes.statusCode).toBe(200);
+          const hist = histRes.json();
+          expect(hist.underlying).toBe("NVDAB");
+          expect(hist.feedId).toBe("1005");
+          expect(hist.records).toHaveLength(1);
+          expect(hist.records[0].expiry).toBe(nvdab21Utc);
+          expect(hist.records[0].priceUsd).toBeCloseTo(153.418076, 6);
+        } finally {
+          syncSpy.mockRestore();
+        }
+      } finally {
+        nowSpy.mockRestore();
+        readSpy.mockRestore();
+        pausedSpy.mockRestore();
+      }
+    } finally {
+      await testnetApp.app.close();
     }
   });
 });

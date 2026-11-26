@@ -15,6 +15,7 @@ import {
 import {
   FEED_ID_BTC,
   FEED_ID_ETH,
+  buildSignedAtlasTwapProofs,
   settleExpiryWithCustomAtlasTwap,
 } from "./helpers/atlasProof";
 
@@ -1385,5 +1386,156 @@ describe("PayoffSpreadVault (Core), PayoffVaultLens & AtlasPullSettlementOracle"
     await vault.connect(mm2).withdrawMakerMargin(await vault.makerMargin(mm2.address));
     expect(await usdt.balanceOf(vaultAddr)).to.equal(0n);
     await assertStrictInvariants(false);
+  });
+
+  it("registers NVDAB RWA (21:00 UTC + Atlas #1005 0x000003ed), opens a $152.50 -> $157.50 spread, settles via 30-pt 20:31-21:00 UTC TWAP, and redeems USDT", async function () {
+    const { admin, mm1, taker, keeper, atlasSigner, usdt, vault, oracle, domain } =
+      await deployFixture();
+
+    const ASSET_NVDAB = symbolToAssetId("NVDAB");
+    expect(ASSET_NVDAB).to.equal(ethers.keccak256(ethers.toUtf8Bytes("NVDAB")));
+    const FEED_ID_NVDAB = "0x000003ed"; // Atlas feed #1005 (NVDAB/USD)
+    const NVDAB_OFFSET_SEC = 21 * 3600; // 75600s (21:00 UTC US EST close)
+    const NVDAB_INTERVAL_SEC = 86400;
+
+    // 1. Before registration: asset disabled on vault, feed unset on oracle
+    expect((await vault.assetConfigs(ASSET_NVDAB)).enabled).to.equal(false);
+    expect(await oracle.assetFeedIds(ASSET_NVDAB)).to.equal("0x00000000");
+
+    // 2. Register NVDAB on deployed Vault & Oracle without redeployment
+    await expect(
+      vault
+        .connect(admin)
+        .setAssetConfig(ASSET_NVDAB, true, true, NVDAB_OFFSET_SEC, NVDAB_INTERVAL_SEC)
+    )
+      .to.emit(vault, "AssetConfigUpdated")
+      .withArgs(ASSET_NVDAB, true, true, NVDAB_OFFSET_SEC, NVDAB_INTERVAL_SEC);
+
+    await expect(oracle.connect(admin).setAssetFeedId(ASSET_NVDAB, FEED_ID_NVDAB))
+      .to.emit(oracle, "AssetFeedIdUpdated")
+      .withArgs(ASSET_NVDAB, FEED_ID_NVDAB);
+
+    const cfg = await vault.assetConfigs(ASSET_NVDAB);
+    expect(cfg.enabled).to.equal(true);
+    expect(cfg.enforceStandardExpiry).to.equal(true);
+    expect(cfg.settlementUtcOffset).to.equal(75600n);
+    expect(cfg.expiryInterval).to.equal(86400n);
+    expect((await oracle.assetFeedIds(ASSET_NVDAB)).toLowerCase()).to.equal(FEED_ID_NVDAB);
+
+    // 3. Reject 08:00 UTC expiry on NVDAB (enforces per-asset 21:00 UTC offset)
+    const now = await time.latest();
+    const wrongExpiry08Utc = next08Utc(now, 2);
+    const lowerStrike = 152_50000000n; // $152.50
+    const upperStrike = 157_50000000n; // $157.50
+    const userPayAmount = ethers.parseUnits("25", 6);
+    const maxPayout = ethers.parseUnits("50", 6);
+
+    const badExpiryQuote = {
+      taker: taker.address,
+      maker: mm1.address,
+      assetId: ASSET_NVDAB,
+      isUp: true,
+      lowerStrike,
+      upperStrike,
+      expiry: wrongExpiry08Utc,
+      userPayAmount,
+      maxPayout,
+      maxProtocolFeeBps: 400,
+      makerEpoch: 0n,
+      validUntil: now + 300,
+      nonce: 2001n,
+    };
+    await expect(
+      vault
+        .connect(taker)
+        .fillOpenQuote(badExpiryQuote, await mm1.signTypedData(domain, OPEN_TYPES, badExpiryQuote))
+    ).to.be.revertedWithCustomError(vault, "InvalidExpiry");
+
+    // 4. Open $152.50 -> $157.50 UP spread at 21:00 UTC expiry
+    const expiry = nextUtcAtOffset(now, 2, NVDAB_OFFSET_SEC);
+    const expiryDate = new Date(expiry * 1000);
+    expect(expiryDate.getUTCHours()).to.equal(21);
+    expect(expiryDate.getUTCMinutes()).to.equal(0);
+    expect(expiryDate.getUTCSeconds()).to.equal(0);
+
+    const openQuote = {
+      ...badExpiryQuote,
+      expiry,
+      nonce: 2002n,
+    };
+    const openSig = await mm1.signTypedData(domain, OPEN_TYPES, openQuote);
+    await expect(vault.connect(taker).fillOpenQuote(openQuote, openSig)).to.emit(
+      vault,
+      "TicketOpened"
+    );
+
+    const sid = computeSeriesId(ASSET_NVDAB, lowerStrike, upperStrike, expiry);
+    expect(await vault.balanceOf(taker.address, computeUpTokenId(sid))).to.equal(maxPayout);
+    expect(await vault.balanceOf(mm1.address, computeDownTokenId(sid))).to.equal(maxPayout);
+
+    // 5. Verify 30-point Atlas TWAP window spans exact 20:31 - 21:00 UTC
+    const schedule = await oracle.getTwapSampleTimestamps(expiry);
+    expect(schedule.length).to.equal(30);
+    const firstDate = new Date(Number(schedule[0]) * 1000);
+    const lastDate = new Date(Number(schedule[29]) * 1000);
+    expect(firstDate.getUTCHours()).to.equal(20);
+    expect(firstDate.getUTCMinutes()).to.equal(31);
+    expect(firstDate.getUTCSeconds()).to.equal(0);
+    expect(lastDate.getUTCHours()).to.equal(21);
+    expect(lastDate.getUTCMinutes()).to.equal(0);
+    expect(lastDate.getUTCSeconds()).to.equal(0);
+
+    // 6. Settle via 30-point Atlas TWAP (15 x $155.00 + 15 x $156.00 => exact $155.50 TWAP)
+    await time.increaseTo(expiry + 65);
+    const prices18 = Array.from({ length: 30 }, (_, i) =>
+      i < 15 ? 155_00000000_0000000000n : 156_00000000_0000000000n
+    );
+    const { extraDatas, expectedPrice8 } = buildSignedAtlasTwapProofs({
+      signerPrivateKey: atlasSigner.privateKey,
+      feedId: FEED_ID_NVDAB,
+      expiry,
+      prices18,
+    });
+    expect(expectedPrice8).to.equal(155_50000000n); // $155.50
+
+    await expect(oracle.connect(keeper).settleWithAtlasTwap(ASSET_NVDAB, expiry, extraDatas))
+      .to.emit(oracle, "ExpirySettled")
+      .withArgs(
+        ASSET_NVDAB,
+        expiry,
+        expectedPrice8,
+        keeper.address,
+        FEED_ID_NVDAB,
+        schedule[0],
+        schedule[29],
+        30
+      );
+
+    const settled = await oracle.getSettlement(ASSET_NVDAB, expiry);
+    expect(settled.settled).to.equal(true);
+    expect(settled.price).to.equal(155_50000000n);
+    const meta = await oracle.getSettlementMeta(ASSET_NVDAB, expiry);
+    expect(meta.feedId.toLowerCase()).to.equal(FEED_ID_NVDAB);
+    expect(meta.sampleCount).to.equal(30n);
+    expect(meta.windowStartTimestamp).to.equal(schedule[0]);
+    expect(meta.windowEndTimestamp).to.equal(schedule[29]);
+    expect(meta.isManualOverride).to.equal(false);
+
+    // 7. Redeem USDT: ($155.50 - $152.50) / ($157.50 - $152.50) = 60% -> 30 USDT taker / 20 USDT maker
+    const takerUsdtBefore = await usdt.balanceOf(taker.address);
+    await vault.connect(taker).redeem(sid);
+    expect((await usdt.balanceOf(taker.address)) - takerUsdtBefore).to.equal(
+      ethers.parseUnits("30", 6)
+    );
+    expect(await vault.getUserActiveTokenCount(taker.address)).to.equal(0n);
+
+    const mm1MarginBefore = await vault.makerMargin(mm1.address);
+    await vault.connect(mm1).redeem(sid);
+    expect((await vault.makerMargin(mm1.address)) - mm1MarginBefore).to.equal(
+      ethers.parseUnits("20", 6)
+    );
+
+    expect(await vault.totalLockedUsdt()).to.equal(0n);
+    await assertVaultSolvent(vault);
   });
 });

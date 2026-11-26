@@ -10,6 +10,7 @@ import {
   type FixedGridMeta,
   type HedgeEvaluation,
   type OptionLegQuote,
+  type RwaAssetTelemetry,
   type TicketSummary,
   type TierKind,
   type UnderlyingSymbol,
@@ -53,6 +54,18 @@ export const GRID_CONFIG: Record<
     offsets: [1, 2, 3, 4],
     defaultSlot: 1,
   },
+  "NVDAB:DAILY": {
+    step: 2.5,
+    hysteresis: 0.625,
+    offsets: [1, 2, 3, 4],
+    defaultSlot: 1,
+  },
+  "NVDAB:WEEKLY": {
+    step: 5,
+    hysteresis: 1.25,
+    offsets: [1, 2, 3, 4],
+    defaultSlot: 1,
+  },
 };
 
 export interface ConsensusRiskAdjustment {
@@ -60,6 +73,20 @@ export interface ConsensusRiskAdjustment {
   spreadMultiplier: number;
   ivFloorBoost: number;
   reason: string;
+}
+
+export interface RwaRiskAdjustment {
+  quotingAllowed: boolean;
+  spreadMultiplier: number;
+  ivFloorBoost: number;
+  varianceTimeScale: number;
+  basisSpreadMultiplier: number;
+  reason: string;
+}
+
+export interface CombinedRiskAdjustment extends ConsensusRiskAdjustment {
+  varianceTimeScale: number;
+  rwaRisk?: RwaRiskAdjustment;
 }
 
 const fixedGridCache = new Map<string, { gridLow: number; gridHigh: number }>();
@@ -71,6 +98,16 @@ export function resetFixedGridCache(): void {
 
 function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
+}
+
+function formatStrikeLabel(strike: number): string {
+  const isWhole = Math.abs(strike - Math.round(strike)) < 1e-6;
+  return isWhole
+    ? Math.round(strike).toLocaleString("en-US")
+    : strike.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
 }
 
 function validIv(iv: number | undefined): number | null {
@@ -208,6 +245,164 @@ export function computeConsensusRiskAdjustments(
 }
 
 /**
+ * Translates live RWA telemetry (US market session, spot-perp hedge basis,
+ * split-cutover guard, and corporate action blackout) into deterministic risk
+ * adjustments for 24/7 RWA quoting:
+ *
+ * - Hard circuit breakers (`splitGuardTriggered` or `corporateActionBlackout`):
+ *   sets `quotingAllowed = false` on OpenQuote while keeping CloseQuote open conservatively.
+ * - 24/7 session regimes + variance-time scaling:
+ *   - `RTH`: `spreadMultiplier = 1.0`, `ivFloorBoost = 0`, `varianceTimeScale = 1.0`
+ *   - `EXTENDED`: `spreadMultiplier = 1.25`, `ivFloorBoost = 0.04`, `varianceTimeScale = 0.85`
+ *   - `WEEKEND`: `spreadMultiplier = 1.50`, `ivFloorBoost = 0.08`, `varianceTimeScale = 0.70`
+ * - Spot-perp basis buffer:
+ *   - If `spotPerpBasisBps > 30`, multiplies spread by `1 + clamp((basisBps - 30) / 200, 0, 0.5)`.
+ */
+export function computeRwaRiskAdjustments(
+  rwaTelemetry?: RwaAssetTelemetry
+): RwaRiskAdjustment {
+  if (!rwaTelemetry) {
+    return {
+      quotingAllowed: true,
+      spreadMultiplier: 1.0,
+      ivFloorBoost: 0,
+      varianceTimeScale: 1.0,
+      basisSpreadMultiplier: 1.0,
+      reason: "No RWA telemetry supplied; baseline risk parameters active",
+    };
+  }
+
+  let sessionSpreadMult = 1.0;
+  let sessionIvBoost = 0;
+  let varianceTimeScale = 1.0;
+
+  switch (rwaTelemetry.session) {
+    case "WEEKEND":
+      sessionSpreadMult = 1.5;
+      sessionIvBoost = 0.08;
+      varianceTimeScale = 0.7;
+      break;
+    case "EXTENDED":
+      sessionSpreadMult = 1.25;
+      sessionIvBoost = 0.04;
+      varianceTimeScale = 0.85;
+      break;
+    case "RTH":
+    default:
+      sessionSpreadMult = 1.0;
+      sessionIvBoost = 0;
+      varianceTimeScale = 1.0;
+      break;
+  }
+
+  const rawBasisBps =
+    rwaTelemetry.spotPerpBasisBps !== null &&
+    Number.isFinite(rwaTelemetry.spotPerpBasisBps) &&
+    rwaTelemetry.spotPerpBasisBps > 0
+      ? rwaTelemetry.spotPerpBasisBps
+      : 0;
+
+  const basisSpreadMultiplier =
+    rawBasisBps > 30
+      ? Number((1 + clamp((rawBasisBps - 30) / 200, 0, 0.5)).toFixed(4))
+      : 1.0;
+
+  const normalSpreadMult = Number(
+    (sessionSpreadMult * basisSpreadMultiplier).toFixed(4)
+  );
+
+  if (rwaTelemetry.splitGuardTriggered) {
+    const driftStr = Number.isFinite(rwaTelemetry.multiplierDriftPct)
+      ? ` (${rwaTelemetry.multiplierDriftPct.toFixed(2)}% drift)`
+      : "";
+    return {
+      quotingAllowed: false,
+      spreadMultiplier: Math.max(normalSpreadMult, 2.5),
+      ivFloorBoost: Math.max(sessionIvBoost, 0.15),
+      varianceTimeScale,
+      basisSpreadMultiplier,
+      reason: `RWA split-cutover guard triggered${driftStr} — new OpenQuote signing halted by circuit breaker`,
+    };
+  }
+
+  if (rwaTelemetry.corporateActionBlackout) {
+    const detail = rwaTelemetry.blackoutReason
+      ? ` (${rwaTelemetry.blackoutReason})`
+      : "";
+    return {
+      quotingAllowed: false,
+      spreadMultiplier: Math.max(normalSpreadMult, 2.0),
+      ivFloorBoost: Math.max(sessionIvBoost, 0.1),
+      varianceTimeScale,
+      basisSpreadMultiplier,
+      reason: `RWA corporate action blackout active${detail} — new OpenQuote signing halted by circuit breaker`,
+    };
+  }
+
+  const basisNote =
+    basisSpreadMultiplier > 1.0
+      ? ` + spot-perp basis ${rawBasisBps.toFixed(1)} bps (${basisSpreadMultiplier}x)`
+      : "";
+
+  return {
+    quotingAllowed: true,
+    spreadMultiplier: normalSpreadMult,
+    ivFloorBoost: sessionIvBoost,
+    varianceTimeScale,
+    basisSpreadMultiplier,
+    reason: `RWA ${rwaTelemetry.session} session (${sessionSpreadMult}x spread, +${(sessionIvBoost * 100).toFixed(0)}% IV floor, ${varianceTimeScale}x var-time)${basisNote}`,
+  };
+}
+
+/**
+ * Combines Atlas ConsensusScore risk adjustments with RWA risk adjustments cleanly
+ * while preserving baseline behavior when `rwaTelemetry` is omitted.
+ */
+export function computeCombinedRiskAdjustments(
+  atlasTelemetry?: AtlasFeedTelemetry,
+  rwaTelemetry?: RwaAssetTelemetry
+): CombinedRiskAdjustment {
+  const atlasRisk = computeConsensusRiskAdjustments(atlasTelemetry);
+  if (!rwaTelemetry) {
+    return {
+      ...atlasRisk,
+      varianceTimeScale: 1.0,
+    };
+  }
+
+  const rwaRisk = computeRwaRiskAdjustments(rwaTelemetry);
+  const quotingAllowed = atlasRisk.quotingAllowed && rwaRisk.quotingAllowed;
+  const spreadMultiplier = Number(
+    (atlasRisk.spreadMultiplier * rwaRisk.spreadMultiplier).toFixed(4)
+  );
+  const ivFloorBoost = Number(
+    (atlasRisk.ivFloorBoost + rwaRisk.ivFloorBoost).toFixed(4)
+  );
+
+  let reason: string;
+  if (!atlasRisk.quotingAllowed && !rwaRisk.quotingAllowed) {
+    reason = `${atlasRisk.reason}; ${rwaRisk.reason}`;
+  } else if (!rwaRisk.quotingAllowed) {
+    reason = rwaRisk.reason;
+  } else if (!atlasRisk.quotingAllowed) {
+    reason = atlasRisk.reason;
+  } else if (atlasRisk.spreadMultiplier === 1.0 && atlasRisk.ivFloorBoost === 0) {
+    reason = rwaRisk.reason;
+  } else {
+    reason = `${atlasRisk.reason}; ${rwaRisk.reason}`;
+  }
+
+  return {
+    quotingAllowed,
+    spreadMultiplier,
+    ivFloorBoost,
+    varianceTimeScale: rwaRisk.varianceTimeScale,
+    reason,
+    rwaRisk,
+  };
+}
+
+/**
  * Computes the no-arbitrage fair mid price per 1.0 unit of spread `[lowerStrike, upperStrike]`
  * using European Black-Scholes anchored on live Atlas Oracle spot and synthetic reference quotes.
  *
@@ -221,13 +416,19 @@ export function computeFairSpreadUnitUsd(
   lowerStrike: number,
   upperStrike: number,
   hoursRemainingOverride?: number,
-  atlasTelemetry?: AtlasFeedTelemetry
+  atlasTelemetry?: AtlasFeedTelemetry,
+  rwaTelemetry?: RwaAssetTelemetry | null
 ): number {
   const width = upperStrike - lowerStrike;
   if (width <= 0) return 0;
 
+  const effectiveRwa =
+    rwaTelemetry === null ? undefined : (rwaTelemetry ?? book.rwaTelemetry);
+  const risk = computeCombinedRiskAdjustments(atlasTelemetry, effectiveRwa);
+
   const hours = hoursRemainingOverride ?? book.hoursToExpiry;
-  const T = Math.max(hours, 0.25) / (365 * 24);
+  const effectiveHours = Math.max(hours * risk.varianceTimeScale, 0.25);
+  const T = effectiveHours / (365 * 24);
   const useReferenceBook =
     hoursRemainingOverride === undefined ||
     Math.abs(book.hoursToExpiry - hoursRemainingOverride) < 4;
@@ -254,7 +455,6 @@ export function computeFairSpreadUnitUsd(
       ? strikeIvs.reduce((a, b) => a + b, 0) / strikeIvs.length
       : book.atmIv;
 
-  const risk = computeConsensusRiskAdjustments(atlasTelemetry);
   const effectiveIv = clamp(
     Math.max(baseIv, book.atmIv + risk.ivFloorBoost),
     0.1,
@@ -267,8 +467,8 @@ export function computeFairSpreadUnitUsd(
 
   let rawCallFair = bsCallSpread;
 
-  // Anchor with tight reference book mids only under calm baseline IV
-  if (lq && uq && risk.ivFloorBoost === 0) {
+  // Anchor with tight reference book mids only under calm baseline IV and unscaled variance-time
+  if (lq && uq && risk.ivFloorBoost === 0 && risk.varianceTimeScale === 1.0) {
     const candidates: Array<{ callEqMid: number; avgSpreadRatio: number }> = [];
 
     const lc = legMidAndSpreadRatio(lq.call);
@@ -357,6 +557,7 @@ export interface PricedSpreadResult {
   hedge: HedgeEvaluation;
   mmMarginBps: number;
   consensusRisk: ConsensusRiskAdjustment;
+  rwaRisk?: RwaRiskAdjustment;
 }
 
 export interface PriceSpreadParams {
@@ -371,11 +572,12 @@ export interface PriceSpreadParams {
   mmOpenMarkupBps: number;
   venue?: VenueName;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
 }
 
 /**
  * Prices a vertical spread `[lowerStrike, upperStrike]` for a given `stakeUsdt`, `protocolFeeBps`,
- * and `mmOpenMarkupBps` using Put-Call Parity fair mid + Atlas ConsensusScore risk adjustments,
+ * and `mmOpenMarkupBps` using Put-Call Parity fair mid + Atlas ConsensusScore & RWA risk adjustments,
  * while computing Direct vs Put-Call Parity hedge route analytics for `/ops`.
  */
 export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResult {
@@ -391,6 +593,7 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
     mmOpenMarkupBps,
     venue = "MOCK_MAKER",
     atlasTelemetry,
+    rwaTelemetry,
   } = params;
 
   const isCall = direction === "BULL";
@@ -398,7 +601,11 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
   const lowerQuote = strikeMap[lowerStrike];
   const upperQuote = strikeMap[upperStrike];
   const width = upperStrike - lowerStrike;
-  const consensusRisk = computeConsensusRiskAdjustments(atlasTelemetry);
+  const effectiveRwa = rwaTelemetry ?? book.rwaTelemetry;
+  const consensusRisk = computeCombinedRiskAdjustments(
+    atlasTelemetry,
+    effectiveRwa
+  );
   const effectiveMmMarginBps = Math.round(
     mmOpenMarkupBps * consensusRisk.spreadMultiplier
   );
@@ -443,6 +650,7 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
       hedge: dummyHedge,
       mmMarginBps: effectiveMmMarginBps,
       consensusRisk,
+      rwaRisk: consensusRisk.rwaRisk,
       summary: computeTicketNumbers({
         tierKind,
         tierLabel,
@@ -464,24 +672,29 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
     };
   }
 
-  // Fixed-grid inventory MM open price anchored on Put-Call Parity fair mid + Atlas risk adjustments.
-  // When Atlas telemetry triggers an IV floor boost, use the conservative upper fair bound across
-  // [baseIv, boostedIv] so vol spikes never underprice ITM spreads while preserving UP_ask + DOWN_ask > width.
+  // Fixed-grid inventory MM open price anchored on Put-Call Parity fair mid + Atlas/RWA risk adjustments.
+  // When telemetry triggers an IV floor boost or off-hours variance-time scaling, use the conservative
+  // upper fair bound across [baseline, adjusted] so vol/session shifts never underprice ITM spreads
+  // while strictly preserving UP_ask + DOWN_ask > width.
   const baseFairMidUsd = computeFairSpreadUnitUsd(
     book,
     isCall,
     lowerStrike,
-    upperStrike
+    upperStrike,
+    undefined,
+    undefined,
+    null
   );
   const adjustedFairMidUsd =
-    consensusRisk.ivFloorBoost > 0
+    consensusRisk.ivFloorBoost > 0 || consensusRisk.varianceTimeScale !== 1.0
       ? computeFairSpreadUnitUsd(
           book,
           isCall,
           lowerStrike,
           upperStrike,
           undefined,
-          atlasTelemetry
+          atlasTelemetry,
+          effectiveRwa
         )
       : baseFairMidUsd;
   const conservativeAskFairUsd = Math.max(baseFairMidUsd, adjustedFairMidUsd);
@@ -525,6 +738,7 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
     remainingLongUsdt: maxPayoutUsdt,
     hoursRemaining: book.hoursToExpiry,
     atlasTelemetry,
+    rwaTelemetry: effectiveRwa,
   });
 
   const effectiveIv = clamp(
@@ -573,6 +787,7 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
     hedge,
     mmMarginBps: effectiveMmMarginBps,
     consensusRisk,
+    rwaRisk: consensusRisk.rwaRisk,
   };
 }
 
@@ -584,17 +799,19 @@ export interface EstimatePositionExitParams {
   remainingLongUsdt: number;
   hoursRemaining: number;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
 }
 
 export interface PositionExitEstimate {
   mockMakerBidUsdt: number;
   bestBidUsdt: number;
   consensusRisk: ConsensusRiskAdjustment;
+  rwaRisk?: RwaRiskAdjustment;
 }
 
 /**
  * Computes real-time indicative early-close value for an existing open position
- * from Put-Call Parity fair mid and Atlas ConsensusScore risk spread multiplier.
+ * from Put-Call Parity fair mid and Atlas ConsensusScore / RWA risk spread multiplier.
  */
 export function estimatePositionExitUsdt(
   params: EstimatePositionExitParams
@@ -607,11 +824,21 @@ export function estimatePositionExitUsdt(
     remainingLongUsdt,
     hoursRemaining,
     atlasTelemetry,
+    rwaTelemetry,
   } = params;
-  const consensusRisk = computeConsensusRiskAdjustments(atlasTelemetry);
+  const effectiveRwa = rwaTelemetry ?? book.rwaTelemetry;
+  const consensusRisk = computeCombinedRiskAdjustments(
+    atlasTelemetry,
+    effectiveRwa
+  );
   const width = upperStrike - lowerStrike;
   if (width <= 0 || remainingLongUsdt <= 0) {
-    return { mockMakerBidUsdt: 0, bestBidUsdt: 0, consensusRisk };
+    return {
+      mockMakerBidUsdt: 0,
+      bestBidUsdt: 0,
+      consensusRisk,
+      rwaRisk: consensusRisk.rwaRisk,
+    };
   }
   const notional = remainingLongUsdt / width;
 
@@ -620,20 +847,23 @@ export function estimatePositionExitUsdt(
     isCall,
     lowerStrike,
     upperStrike,
-    hoursRemaining
+    hoursRemaining,
+    undefined,
+    null
   );
   const adjustedFairMidUsd =
-    consensusRisk.ivFloorBoost > 0
+    consensusRisk.ivFloorBoost > 0 || consensusRisk.varianceTimeScale !== 1.0
       ? computeFairSpreadUnitUsd(
           book,
           isCall,
           lowerStrike,
           upperStrike,
           hoursRemaining,
-          atlasTelemetry
+          atlasTelemetry,
+          effectiveRwa
         )
       : baseFairMidUsd;
-  // On early exits during elevated vol / degraded consensus, anchor bid to the conservative lower fair bound
+  // On early exits during elevated vol / degraded consensus / off-hours RWA, anchor bid to the conservative lower fair bound
   const conservativeBidFairUsd = Math.min(baseFairMidUsd, adjustedFairMidUsd);
   const mmCloseUnitUsd = computeMmCloseUnitUsd(
     conservativeBidFairUsd,
@@ -649,6 +879,7 @@ export function estimatePositionExitUsdt(
     mockMakerBidUsdt,
     bestBidUsdt: mockMakerBidUsdt,
     consensusRisk,
+    rwaRisk: consensusRisk.rwaRisk,
   };
 }
 
@@ -749,12 +980,14 @@ export interface FixedGridShelfParams {
   protocolFeeBps: number;
   mmOpenMarkupBps?: number;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
 }
 
 export interface FixedGridShelfResult {
   grid: FixedGridMeta;
   tiers: TicketSummary[];
   consensusRisk: ConsensusRiskAdjustment;
+  rwaRisk?: RwaRiskAdjustment;
 }
 
 const TARGET_TIER_COUNT = 4;
@@ -774,13 +1007,18 @@ export function buildFixedGridShelf(
     protocolFeeBps,
     mmOpenMarkupBps = DEFAULT_MM_OPEN_MARKUP_BPS,
     atlasTelemetry,
+    rwaTelemetry,
   } = params;
 
   const isCall = direction === "BULL";
   const cfgKey = `${book.underlying}:${book.tenor}` as const;
   const cfg = GRID_CONFIG[cfgKey];
   const sortedStrikes = [...book.availableStrikes].sort((a, b) => a - b);
-  const consensusRisk = computeConsensusRiskAdjustments(atlasTelemetry);
+  const effectiveRwa = rwaTelemetry ?? book.rwaTelemetry;
+  const consensusRisk = computeCombinedRiskAdjustments(
+    atlasTelemetry,
+    effectiveRwa
+  );
 
   const { gridLow, gridHigh } = resolveFixedGridBounds(book, cfg);
   const anchorStartPrice = isCall ? gridLow : gridHigh;
@@ -810,7 +1048,7 @@ export function buildFixedGridShelf(
     const priced = priceSpreadOnVenue({
       book,
       tierKind: "STANDARD",
-      tierLabel: `Target $${capStrike.toLocaleString("en-US")}`,
+      tierLabel: `Target $${formatStrikeLabel(capStrike)}`,
       direction,
       lowerStrike,
       upperStrike,
@@ -819,6 +1057,7 @@ export function buildFixedGridShelf(
       mmOpenMarkupBps,
       venue: "MOCK_MAKER",
       atlasTelemetry,
+      rwaTelemetry: effectiveRwa,
     });
     return priced.summary;
   };
@@ -972,7 +1211,7 @@ export function buildFixedGridShelf(
       return {
         ...item.summary,
         tierKind: slotKinds[idx] ?? "BREAKOUT",
-        tierLabel: `Target $${item.capStrike.toLocaleString("en-US")}`,
+        tierLabel: `Target $${formatStrikeLabel(item.capStrike)}`,
         isSharedCenterPool,
         stepSteps,
       };
@@ -987,7 +1226,7 @@ export function buildFixedGridShelf(
     defaultIndex: Math.min(cfg.defaultSlot, Math.max(0, tiers.length - 1)),
   };
 
-  return { grid, tiers, consensusRisk };
+  return { grid, tiers, consensusRisk, rwaRisk: consensusRisk.rwaRisk };
 }
 
 /** Convenience wrapper returning only the fixed-grid shelf tiers. */
@@ -1021,13 +1260,27 @@ export class ShelfEngine {
     return computeConsensusRiskAdjustments(telemetry);
   }
 
+  computeRwaRiskAdjustments(
+    rwaTelemetry?: RwaAssetTelemetry
+  ): RwaRiskAdjustment {
+    return computeRwaRiskAdjustments(rwaTelemetry);
+  }
+
+  computeCombinedRiskAdjustments(
+    atlasTelemetry?: AtlasFeedTelemetry,
+    rwaTelemetry?: RwaAssetTelemetry
+  ): CombinedRiskAdjustment {
+    return computeCombinedRiskAdjustments(atlasTelemetry, rwaTelemetry);
+  }
+
   computeFairSpreadUnitUsd(
     book: ExpiryBook,
     isCall: boolean,
     lowerStrike: number,
     upperStrike: number,
     hoursRemainingOverride?: number,
-    atlasTelemetry?: AtlasFeedTelemetry
+    atlasTelemetry?: AtlasFeedTelemetry,
+    rwaTelemetry?: RwaAssetTelemetry | null
   ): number {
     return computeFairSpreadUnitUsd(
       book,
@@ -1035,7 +1288,8 @@ export class ShelfEngine {
       lowerStrike,
       upperStrike,
       hoursRemainingOverride,
-      atlasTelemetry
+      atlasTelemetry,
+      rwaTelemetry
     );
   }
 

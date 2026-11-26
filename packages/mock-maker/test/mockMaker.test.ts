@@ -3,27 +3,34 @@ import { recoverTypedDataAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import {
   ASSET_BTC_ID,
+  ASSET_NVDAB_ID,
   ATLAS_FEEDS,
   BSC_TESTNET,
   bsOptionPrice,
   CLOSE_QUOTE_TYPES,
   computeSeriesId,
+  generateOccEquityStrikes,
   getPayoffEip712Domain,
   OPEN_QUOTE_TYPES,
   priceToUnits,
   usdtToUnits,
   type AtlasFeedTelemetry,
   type ExpiryBook,
+  type ExpiryTenor,
   type OptionStrikeQuote,
+  type RwaAssetTelemetry,
 } from "@payoff/shared";
 import {
   buildFixedGridShelf,
+  computeCombinedRiskAdjustments,
   computeConsensusRiskAdjustments,
   computeFairSpreadUnitUsd,
   computeMmCloseUnitUsd,
   computeMmOpenUnitUsd,
+  computeRwaRiskAdjustments,
   ConsensusCircuitBreakerError,
   estimatePositionExitUsdt,
+  GRID_CONFIG,
   MockMakerSigner,
   priceSpreadOnVenue,
   resetFixedGridCache,
@@ -431,6 +438,610 @@ describe("@payoff/mock-maker pricing, Put-Call Parity & Atlas ConsensusScore ris
         nonce: BigInt(signedClose.quote.nonce),
       },
       signature: signedClose.signature,
+    });
+    expect(recoveredClose.toLowerCase()).toBe(makerAccount.address.toLowerCase());
+  });
+});
+
+function buildNvdabTestBook(
+  spot: number,
+  tenor: ExpiryTenor = "DAILY",
+  iv = 0.52,
+  hoursToExpiry = tenor === "DAILY" ? 24 : 144,
+  rwaTelemetry?: RwaAssetTelemetry
+): ExpiryBook {
+  const expiry = 1_795_813_200; // 2026-11-27T21:00:00Z
+  const strikes = generateOccEquityStrikes(spot);
+  const T = hoursToExpiry / (365 * 24);
+  const syntheticStrikes: Record<number, OptionStrikeQuote> = {};
+
+  for (const strike of strikes) {
+    const cFair = bsOptionPrice(true, spot, strike, T, iv);
+    const pFair = bsOptionPrice(false, spot, strike, T, iv);
+    const half = Math.max(0.01, spot * 0.0005);
+    syntheticStrikes[strike] = {
+      strike,
+      call: {
+        strike,
+        instId: `NVDAB-USD-TEST-${strike}-C`,
+        bidUsd: Math.max(0.01, cFair - half),
+        askUsd: Math.max(0.02, cFair + half),
+        markUsd: cFair,
+        iv,
+        bidSize: 100,
+        askSize: 100,
+      },
+      put: {
+        strike,
+        instId: `NVDAB-USD-TEST-${strike}-P`,
+        bidUsd: Math.max(0.01, pFair - half),
+        askUsd: Math.max(0.02, pFair + half),
+        markUsd: pFair,
+        iv,
+        bidSize: 100,
+        askSize: 100,
+      },
+    };
+  }
+
+  return {
+    underlying: "NVDAB",
+    tenor,
+    expiry,
+    expiryIso: new Date(expiry * 1000).toISOString(),
+    hoursToExpiry,
+    spot,
+    atmIv: iv,
+    availableStrikes: strikes,
+    syntheticStrikes,
+    rwaTelemetry,
+  };
+}
+
+function makeRwaTelemetry(
+  overrides: Partial<RwaAssetTelemetry> = {}
+): RwaAssetTelemetry {
+  return {
+    underlying: "NVDAB",
+    session: "RTH",
+    shareMultiplier: 1.00077822,
+    baselineShareMultiplier: 1.00077822,
+    multiplierDriftPct: 0,
+    crossVenueMultiplierGapPct: 0.08,
+    splitGuardTriggered: false,
+    corporateActionBlackout: false,
+    blackoutReason: null,
+    perpSymbol: "NVDAUSDT",
+    perpPriceUsd: 153.35,
+    spotPerpBasisBps: 12,
+    ivSource: "THETADATA_LIVE",
+    thetaAtmIv: 0.52,
+    thetaExpiration: "2026-11-27",
+    thetaStrikeCount: 60,
+    thetaUpdatedAtMs: Date.now(),
+    settlementUtcHour: 21,
+    updatedAtMs: Date.now(),
+    ...overrides,
+  };
+}
+
+function makeNvdabAtlasTelemetry(
+  overrides: Partial<AtlasFeedTelemetry> = {}
+): AtlasFeedTelemetry {
+  return {
+    underlying: "NVDAB",
+    feedId: ATLAS_FEEDS.NVDAB.feedId,
+    feedIdHex: ATLAS_FEEDS.NVDAB.feedIdHex,
+    price: 153.5,
+    timestampSeconds: Math.floor(Date.now() / 1000),
+    consensusScore: 0.9,
+    consensusStatus: "HEALTHY",
+    twapPrice: 153.48,
+    medianPrice: 153.5,
+    priceChangePct: 0.85,
+    priceVolatility: 0.002,
+    updatedAtMs: Date.now(),
+    ...overrides,
+  };
+}
+
+describe("@payoff/mock-maker NVDAB RWA shelf, 24/7 regimes, Put-Call Parity & circuit breakers", () => {
+  it("lands 100% on real OCC strikes at $153.50, $150.80 ($1/$2.50 boundary), and $146.50 ($1 zone) with clean fractional tierLabels", () => {
+    expect(GRID_CONFIG["NVDAB:DAILY"]).toEqual({
+      step: 2.5,
+      hysteresis: 0.625,
+      offsets: [1, 2, 3, 4],
+      defaultSlot: 1,
+    });
+    expect(GRID_CONFIG["NVDAB:WEEKLY"]).toEqual({
+      step: 5,
+      hysteresis: 1.25,
+      offsets: [1, 2, 3, 4],
+      defaultSlot: 1,
+    });
+
+    const cases: Array<{ spot: number; tenor: ExpiryTenor }> = [
+      { spot: 153.5, tenor: "DAILY" },
+      { spot: 153.5, tenor: "WEEKLY" },
+      { spot: 150.8, tenor: "DAILY" },
+      { spot: 150.8, tenor: "WEEKLY" },
+      { spot: 146.5, tenor: "DAILY" },
+      { spot: 146.5, tenor: "WEEKLY" },
+    ];
+
+    for (const { spot, tenor } of cases) {
+      resetFixedGridCache();
+      const book = buildNvdabTestBook(spot, tenor);
+      const occSet = new Set(book.availableStrikes);
+
+      for (const direction of ["BULL", "BEAR"] as const) {
+        const shelf = buildFixedGridShelf({
+          book,
+          direction,
+          stakeUsdt: 20,
+          protocolFeeBps: 400,
+          atlasTelemetry: makeNvdabAtlasTelemetry({ price: spot }),
+          rwaTelemetry: makeRwaTelemetry(),
+        });
+
+        expect(occSet.has(shelf.grid.gridLow)).toBe(true);
+        expect(occSet.has(shelf.grid.gridHigh)).toBe(true);
+        expect(shelf.tiers.length).toBe(4);
+        expect(shelf.tiers[0]?.isSharedCenterPool).toBe(true);
+
+        for (const tier of shelf.tiers) {
+          expect(occSet.has(tier.lowerStrike)).toBe(true);
+          expect(occSet.has(tier.upperStrike)).toBe(true);
+          expect(tier.guardrails.strikeAligned).toBe(true);
+          expect(tier.guardrails.widthWithinCap).toBe(true);
+
+          // Fractional strikes render with 2 decimals ($152.50), whole strikes cleanly ($155)
+          const cap = tier.capPrice;
+          if (Math.abs(cap - Math.round(cap)) < 1e-6) {
+            expect(tier.tierLabel).toBe(`Target $${Math.round(cap)}`);
+          } else {
+            expect(tier.tierLabel).toBe(`Target $${cap.toFixed(2)}`);
+          }
+        }
+      }
+    }
+
+    // Spot $153.50 DAILY BULL exact strikes & labels
+    resetFixedGridCache();
+    const shelf153 = buildFixedGridShelf({
+      book: buildNvdabTestBook(153.5, "DAILY"),
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(shelf153.grid.gridLow).toBe(152.5);
+    expect(shelf153.grid.gridHigh).toBe(155);
+    expect(shelf153.tiers.map((t) => t.capPrice)).toEqual([
+      155, 157.5, 160, 162.5,
+    ]);
+    expect(shelf153.tiers.map((t) => t.tierLabel)).toEqual([
+      "Target $155",
+      "Target $157.50",
+      "Target $160",
+      "Target $162.50",
+    ]);
+
+    // Spot $150.80 DAILY BEAR straddling $1/$2.50 boundary snaps cleanly to $150, $147, $145, $142
+    resetFixedGridCache();
+    const shelf150Bear = buildFixedGridShelf({
+      book: buildNvdabTestBook(150.8, "DAILY"),
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(shelf150Bear.grid.gridLow).toBe(150);
+    expect(shelf150Bear.grid.gridHigh).toBe(152.5);
+    expect(shelf150Bear.tiers.map((t) => t.capPrice)).toEqual([
+      150, 147, 145, 142,
+    ]);
+
+    // Spot $146.50 DAILY ($1 zone) snaps gridHigh=148 & stays 100% OCC-aligned
+    resetFixedGridCache();
+    const shelf146 = buildFixedGridShelf({
+      book: buildNvdabTestBook(146.5, "DAILY"),
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(shelf146.grid.gridLow).toBe(145);
+    expect(shelf146.grid.gridHigh).toBe(148);
+    expect(shelf146.tiers.map((t) => t.capPrice)).toEqual([148, 150, 152.5, 155]);
+  });
+
+  it("enforces RWA 24/7 regimes, spot-perp basis buffer, and strict Put-Call Parity across RTH/EXTENDED/WEEKEND + high basis", () => {
+    const rth = makeRwaTelemetry({ session: "RTH", spotPerpBasisBps: 15 });
+    const extended = makeRwaTelemetry({
+      session: "EXTENDED",
+      spotPerpBasisBps: 20,
+    });
+    const weekend = makeRwaTelemetry({
+      session: "WEEKEND",
+      spotPerpBasisBps: 25,
+    });
+    const rthHighBasis = makeRwaTelemetry({
+      session: "RTH",
+      spotPerpBasisBps: 70, // 1 + (70-30)/200 = 1.20x
+    });
+    const weekendExtremeBasis = makeRwaTelemetry({
+      session: "WEEKEND",
+      spotPerpBasisBps: 250, // clamped to 1.50x basis * 1.50x weekend = 2.25x
+    });
+
+    // Exact session + basis multipliers
+    const adjRth = computeRwaRiskAdjustments(rth);
+    expect(adjRth).toMatchObject({
+      quotingAllowed: true,
+      spreadMultiplier: 1.0,
+      ivFloorBoost: 0,
+      varianceTimeScale: 1.0,
+      basisSpreadMultiplier: 1.0,
+    });
+
+    const adjExt = computeRwaRiskAdjustments(extended);
+    expect(adjExt).toMatchObject({
+      quotingAllowed: true,
+      spreadMultiplier: 1.25,
+      ivFloorBoost: 0.04,
+      varianceTimeScale: 0.85,
+      basisSpreadMultiplier: 1.0,
+    });
+
+    const adjWknd = computeRwaRiskAdjustments(weekend);
+    expect(adjWknd).toMatchObject({
+      quotingAllowed: true,
+      spreadMultiplier: 1.5,
+      ivFloorBoost: 0.08,
+      varianceTimeScale: 0.7,
+      basisSpreadMultiplier: 1.0,
+    });
+
+    const adjBasis = computeRwaRiskAdjustments(rthHighBasis);
+    expect(adjBasis.basisSpreadMultiplier).toBeCloseTo(1.2, 4);
+    expect(adjBasis.spreadMultiplier).toBeCloseTo(1.2, 4);
+
+    const adjExtreme = computeRwaRiskAdjustments(weekendExtremeBasis);
+    expect(adjExtreme.basisSpreadMultiplier).toBeCloseTo(1.5, 4);
+    expect(adjExtreme.spreadMultiplier).toBeCloseTo(2.25, 4);
+
+    // Strict Put-Call Parity across all RWA + Atlas regimes and strike pairs
+    const book = buildNvdabTestBook(153.5, "DAILY", 0.52, 24);
+    const strikePairs: Array<[number, number]> = [
+      [147, 150],
+      [150, 152.5],
+      [152.5, 155],
+      [152.5, 157.5],
+      [155, 160],
+    ];
+    const combos: Array<{
+      atlas: AtlasFeedTelemetry;
+      rwa: RwaAssetTelemetry;
+    }> = [
+      { atlas: makeNvdabAtlasTelemetry(), rwa: rth },
+      { atlas: makeNvdabAtlasTelemetry(), rwa: extended },
+      { atlas: makeNvdabAtlasTelemetry(), rwa: weekend },
+      { atlas: makeNvdabAtlasTelemetry(), rwa: rthHighBasis },
+      { atlas: makeNvdabAtlasTelemetry(), rwa: weekendExtremeBasis },
+      {
+        atlas: makeNvdabAtlasTelemetry({
+          consensusStatus: "DEGRADED",
+          consensusScore: 0.72,
+          priceVolatility: 0.025,
+        }),
+        rwa: weekendExtremeBasis,
+      },
+    ];
+
+    for (const { atlas, rwa } of combos) {
+      const combined = computeCombinedRiskAdjustments(atlas, rwa);
+      for (const [k1, k2] of strikePairs) {
+        const width = k2 - k1;
+        const upFair = computeFairSpreadUnitUsd(
+          book,
+          true,
+          k1,
+          k2,
+          undefined,
+          atlas,
+          rwa
+        );
+        const downFair = computeFairSpreadUnitUsd(
+          book,
+          false,
+          k1,
+          k2,
+          undefined,
+          atlas,
+          rwa
+        );
+
+        // Exact Put-Call Parity fair mid
+        expect(upFair + downFair).toBeCloseTo(width, 8);
+
+        // Strict no-arbitrage ask: UP_ask + DOWN_ask > width
+        const upAsk = computeMmOpenUnitUsd(
+          upFair,
+          width,
+          110,
+          combined.spreadMultiplier
+        );
+        const downAsk = computeMmOpenUnitUsd(
+          downFair,
+          width,
+          110,
+          combined.spreadMultiplier
+        );
+        expect(upAsk).toBeGreaterThan(upFair);
+        expect(downAsk).toBeGreaterThan(downFair);
+        expect(upAsk + downAsk).toBeGreaterThan(width);
+
+        // Strict no-arbitrage bid: UP_bid + DOWN_bid < width
+        const upBid = computeMmCloseUnitUsd(
+          upFair,
+          width,
+          combined.spreadMultiplier
+        );
+        const downBid = computeMmCloseUnitUsd(
+          downFair,
+          width,
+          combined.spreadMultiplier
+        );
+        expect(upBid).toBeLessThan(upFair);
+        expect(downBid).toBeLessThan(downFair);
+        expect(upBid + downBid).toBeLessThan(width);
+
+        // End-to-end priceSpreadOnVenue & estimatePositionExitUsdt no-arbitrage verification
+        const bullOpen = priceSpreadOnVenue({
+          book,
+          tierKind: "STANDARD",
+          tierLabel: `Target $${k2}`,
+          direction: "BULL",
+          lowerStrike: k1,
+          upperStrike: k2,
+          stakeUsdt: 100,
+          protocolFeeBps: 400,
+          mmOpenMarkupBps: 110,
+          atlasTelemetry: atlas,
+          rwaTelemetry: rwa,
+        });
+        const bearOpen = priceSpreadOnVenue({
+          book,
+          tierKind: "STANDARD",
+          tierLabel: `Target $${k1}`,
+          direction: "BEAR",
+          lowerStrike: k1,
+          upperStrike: k2,
+          stakeUsdt: 100,
+          protocolFeeBps: 400,
+          mmOpenMarkupBps: 110,
+          atlasTelemetry: atlas,
+          rwaTelemetry: rwa,
+        });
+        const mmNet = 100 - (100 * 400) / 10_400;
+        const impliedUpAsk = (mmNet / bullOpen.summary.maxPayoutUsdt) * width;
+        const impliedDownAsk = (mmNet / bearOpen.summary.maxPayoutUsdt) * width;
+        expect(impliedUpAsk + impliedDownAsk).toBeGreaterThan(width);
+
+        const bullExit = estimatePositionExitUsdt({
+          book,
+          isCall: true,
+          lowerStrike: k1,
+          upperStrike: k2,
+          remainingLongUsdt: 100,
+          hoursRemaining: 24,
+          atlasTelemetry: atlas,
+          rwaTelemetry: rwa,
+        });
+        const bearExit = estimatePositionExitUsdt({
+          book,
+          isCall: false,
+          lowerStrike: k1,
+          upperStrike: k2,
+          remainingLongUsdt: 100,
+          hoursRemaining: 24,
+          atlasTelemetry: atlas,
+          rwaTelemetry: rwa,
+        });
+        expect(bullExit.bestBidUsdt + bearExit.bestBidUsdt).toBeLessThan(100);
+      }
+    }
+
+    // Spread monotonically widens: RTH -> EXTENDED -> WEEKEND, and low basis -> high basis
+    const baseParams = {
+      book,
+      tierKind: "STANDARD" as const,
+      tierLabel: "Target $157.50",
+      direction: "BULL" as const,
+      lowerStrike: 152.5,
+      upperStrike: 157.5,
+      stakeUsdt: 100,
+      protocolFeeBps: 400,
+      mmOpenMarkupBps: 110,
+      atlasTelemetry: makeNvdabAtlasTelemetry(),
+    };
+    const pRth = priceSpreadOnVenue({ ...baseParams, rwaTelemetry: rth });
+    const pExt = priceSpreadOnVenue({ ...baseParams, rwaTelemetry: extended });
+    const pWknd = priceSpreadOnVenue({ ...baseParams, rwaTelemetry: weekend });
+    const pHighBasis = priceSpreadOnVenue({
+      ...baseParams,
+      rwaTelemetry: rthHighBasis,
+    });
+
+    expect(pExt.summary.maxPayoutUsdt).toBeLessThan(pRth.summary.maxPayoutUsdt);
+    expect(pWknd.summary.maxPayoutUsdt).toBeLessThan(pExt.summary.maxPayoutUsdt);
+    expect(pHighBasis.summary.maxPayoutUsdt).toBeLessThan(
+      pRth.summary.maxPayoutUsdt
+    );
+  });
+
+  it("halts OpenQuote signing on splitGuardTriggered / corporateActionBlackout while keeping CloseQuote operational", async () => {
+    const makerAccount = privateKeyToAccount(TEST_MAKER_PK);
+    const signer = new MockMakerSigner({
+      chainId: BSC_TESTNET.chainId,
+      verifyingContract: TEST_VAULT_ADDR,
+      makers: [
+        {
+          id: "mm1",
+          name: "Payoff Reference MM #1",
+          privateKey: TEST_MAKER_PK,
+          openMarkupBps: 110,
+          closeCompetitivenessBps: 15,
+        },
+      ],
+    });
+
+    const expiry = 1_795_813_200; // 2026-11-27T21:00:00Z
+    const validUntil = expiry - 600;
+    const lowerStrike8 = priceToUnits(152.5);
+    const upperStrike8 = priceToUnits(157.5);
+    const healthyAtlas = makeNvdabAtlasTelemetry();
+
+    const openInput = {
+      taker: TEST_TAKER_ADDR,
+      maker: makerAccount.address,
+      assetId: ASSET_NVDAB_ID,
+      isUp: true,
+      lowerStrike: lowerStrike8,
+      upperStrike: upperStrike8,
+      expiry,
+      userPayAmount: usdtToUnits(20),
+      maxPayout: usdtToUnits(48),
+      maxProtocolFeeBps: 400,
+      makerEpoch: 0n,
+      validUntil,
+      nonce: 2001n,
+    };
+
+    const splitRwa = makeRwaTelemetry({
+      shareMultiplier: 1.05,
+      baselineShareMultiplier: 1.00077822,
+      multiplierDriftPct: 4.92,
+      splitGuardTriggered: true,
+    });
+    const blackoutRwa = makeRwaTelemetry({
+      corporateActionBlackout: true,
+      blackoutReason: "Scheduled NVDA stock split cutover",
+    });
+
+    // 1. isOpenQuotingAllowed flags both RWA breakers even when Atlas consensus is HEALTHY
+    expect(signer.isOpenQuotingAllowed(healthyAtlas, splitRwa).quotingAllowed).toBe(
+      false
+    );
+    expect(
+      signer.isOpenQuotingAllowed(healthyAtlas, blackoutRwa).quotingAllowed
+    ).toBe(false);
+    expect(
+      signer.isOpenQuotingAllowed(healthyAtlas, makeRwaTelemetry()).quotingAllowed
+    ).toBe(true);
+
+    // 2. signOpenQuote throws ConsensusCircuitBreakerError on splitGuardTriggered & corporateActionBlackout
+    await expect(
+      signer.signOpenQuote({
+        quote: openInput,
+        atlasTelemetry: healthyAtlas,
+        rwaTelemetry: splitRwa,
+      })
+    ).rejects.toBeInstanceOf(ConsensusCircuitBreakerError);
+
+    await expect(
+      signer.signOpenQuote({
+        quote: openInput,
+        atlasTelemetry: healthyAtlas,
+        rwaTelemetry: blackoutRwa,
+      })
+    ).rejects.toBeInstanceOf(ConsensusCircuitBreakerError);
+
+    // 3. Normal RTH telemetry signs valid recoverable EIP-712 OpenQuote for NVDAB
+    const signedOpen = await signer.signOpenQuote({
+      quote: openInput,
+      atlasTelemetry: healthyAtlas,
+      rwaTelemetry: makeRwaTelemetry(),
+    });
+    const expectedSeriesId = computeSeriesId(
+      ASSET_NVDAB_ID,
+      lowerStrike8,
+      upperStrike8,
+      expiry
+    );
+    expect(signedOpen.seriesId).toBe(expectedSeriesId);
+
+    // 4. CloseQuote stays operational under BOTH splitGuardTriggered and corporateActionBlackout
+    const calmBid = signer.computeCloseBid({
+      amountUnits: usdtToUnits(48),
+      makerCompBalanceUnits: usdtToUnits(48),
+      baseBidUsdt: 18.0,
+      closeCompetitivenessBps: 15,
+      atlasTelemetry: healthyAtlas,
+      rwaTelemetry: makeRwaTelemetry(),
+    });
+    const splitBid = signer.computeCloseBid({
+      amountUnits: usdtToUnits(48),
+      makerCompBalanceUnits: usdtToUnits(48),
+      baseBidUsdt: 18.0,
+      closeCompetitivenessBps: 15,
+      atlasTelemetry: healthyAtlas,
+      rwaTelemetry: splitRwa,
+    });
+    expect(splitBid.buybackUsdt).toBeLessThan(calmBid.buybackUsdt);
+    expect(splitBid.consensusRisk.quotingAllowed).toBe(false);
+
+    const signedCloseSplit = await signer.signCloseQuote({
+      quote: {
+        taker: TEST_TAKER_ADDR,
+        maker: makerAccount.address,
+        seriesId: expectedSeriesId,
+        isUp: true,
+        amount: usdtToUnits(48),
+        buybackAmount: splitBid.buybackUnits,
+        maxCloseFeeBps: 0,
+        makerEpoch: 0n,
+        validUntil,
+        nonce: 2002n,
+      },
+      atlasTelemetry: healthyAtlas,
+      rwaTelemetry: splitRwa,
+    });
+    expect(signedCloseSplit.conservativeExitApplied).toBe(true);
+
+    const signedCloseBlackout = await signer.signCloseQuote({
+      quote: {
+        taker: TEST_TAKER_ADDR,
+        maker: makerAccount.address,
+        seriesId: expectedSeriesId,
+        isUp: true,
+        amount: usdtToUnits(48),
+        buybackAmount: splitBid.buybackUnits,
+        maxCloseFeeBps: 0,
+        makerEpoch: 0n,
+        validUntil,
+        nonce: 2003n,
+      },
+      atlasTelemetry: healthyAtlas,
+      rwaTelemetry: blackoutRwa,
+    });
+    expect(signedCloseBlackout.conservativeExitApplied).toBe(true);
+
+    const recoveredClose = await recoverTypedDataAddress({
+      domain: getPayoffEip712Domain(BSC_TESTNET.chainId, TEST_VAULT_ADDR),
+      types: CLOSE_QUOTE_TYPES,
+      primaryType: "CloseQuote",
+      message: {
+        taker: signedCloseSplit.quote.taker,
+        maker: signedCloseSplit.quote.maker,
+        seriesId: signedCloseSplit.quote.seriesId,
+        isUp: signedCloseSplit.quote.isUp,
+        amount: BigInt(signedCloseSplit.quote.amount),
+        buybackAmount: BigInt(signedCloseSplit.quote.buybackAmount),
+        maxCloseFeeBps: signedCloseSplit.quote.maxCloseFeeBps,
+        makerEpoch: BigInt(signedCloseSplit.quote.makerEpoch),
+        validUntil: BigInt(signedCloseSplit.quote.validUntil),
+        nonce: BigInt(signedCloseSplit.quote.nonce),
+      },
+      signature: signedCloseSplit.signature,
     });
     expect(recoveredClose.toLowerCase()).toBe(makerAccount.address.toLowerCase());
   });

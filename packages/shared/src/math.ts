@@ -420,8 +420,10 @@ export function formatSettlementLabel(expiry: number): string {
   const d = new Date(expiry * 1000);
   const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(d.getUTCDate()).padStart(2, "0");
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  return `${mm}-${dd} ${hh}:00 UTC (16:00 UTC+8)`;
+  const utcHour = d.getUTCHours();
+  const hh = String(utcHour).padStart(2, "0");
+  const utcPlus8 = String((utcHour + 8) % 24).padStart(2, "0");
+  return `${mm}-${dd} ${hh}:00 UTC (${utcPlus8}:00 UTC+8)`;
 }
 
 /**

@@ -5,6 +5,18 @@ import * as path from "path";
 const ATLAS_API_BASE = "https://api.atlasoracle.io/report";
 const ASSET_BTC = ethers.keccak256(ethers.toUtf8Bytes("BTC"));
 const ASSET_ETH = ethers.keccak256(ethers.toUtf8Bytes("ETH"));
+const ASSET_NVDAB = ethers.keccak256(ethers.toUtf8Bytes("NVDAB"));
+
+type SupportedVerifySymbol = "BTC" | "ETH" | "NVDAB";
+
+interface VerifyAssetConfig {
+  symbol: SupportedVerifySymbol;
+  assetId: string;
+  feedId: string;
+  feedIdHex: string;
+  settlementUtcHour: number;
+  isUsEquityMwf: boolean;
+}
 
 interface AtlasSignedResponse {
   data?: {
@@ -43,15 +55,43 @@ function getExplorerTxUrl(chainId: number, txHash: string): string {
   return txHash;
 }
 
-function computeMostRecent08Utc(nowSec: number): number {
+function parseSettlementUtcHour(raw: string | number | undefined, defaultHour: number): number {
+  if (raw === undefined || raw === null) return defaultHour;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return defaultHour;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`Invalid settlement UTC hour "${trimmed}" (expected integer 0-23)`);
+  }
+  const hour = Number(trimmed);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+    throw new Error(`Settlement UTC hour ${hour} out of range (expected 0-23)`);
+  }
+  return hour;
+}
+
+function computeMostRecentUtcAtOffset(nowSec: number, offsetSec: number): number {
   const daySec = 86400;
-  const offset = 8 * 3600;
-  let expiry = Math.floor((nowSec - offset) / daySec) * daySec + offset;
+  let expiry = Math.floor((nowSec - offsetSec) / daySec) * daySec + offsetSec;
   // Require at least 120s past expiry so settlementDelay (60s) & Atlas history indexing are ready
   if (nowSec - expiry < 120) {
     expiry -= daySec;
   }
   return expiry;
+}
+
+function computeMostRecentMwfUtc(nowSec: number, settlementUtcHour: number): number {
+  const daySec = 86400;
+  const offsetSec = settlementUtcHour * 3600;
+  let candidate = computeMostRecentUtcAtOffset(nowSec, offsetSec);
+  // Walk backwards to most recent Mon (1), Wed (3), or Fri (5) US equity expiry close
+  for (let i = 0; i < 7; i++) {
+    const dow = new Date(candidate * 1000).getUTCDay();
+    if (dow === 1 || dow === 3 || dow === 5) {
+      return candidate;
+    }
+    candidate -= daySec;
+  }
+  return candidate;
 }
 
 async function fetchAtlasSigned(
@@ -156,8 +196,44 @@ async function main() {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
     settlementOracleAddress: string;
     atlasSignerAddress: string;
+    atlasFeeds?: Record<
+      string,
+      { feedId: string; feedIdHex: string; pair: string; settlementUtcHour?: number }
+    >;
   };
   const oracleAddress = manifest.settlementOracleAddress;
+
+  const nvdabSettlementUtcHour = parseSettlementUtcHour(
+    process.env.NVDAB_SETTLEMENT_UTC_HOUR ?? manifest.atlasFeeds?.NVDAB?.settlementUtcHour,
+    21
+  );
+
+  const assetConfigs: Record<SupportedVerifySymbol, VerifyAssetConfig> = {
+    BTC: {
+      symbol: "BTC",
+      assetId: ASSET_BTC,
+      feedId: "626",
+      feedIdHex: "0x00000272",
+      settlementUtcHour: 8,
+      isUsEquityMwf: false,
+    },
+    ETH: {
+      symbol: "ETH",
+      assetId: ASSET_ETH,
+      feedId: "632",
+      feedIdHex: "0x00000278",
+      settlementUtcHour: 8,
+      isUsEquityMwf: false,
+    },
+    NVDAB: {
+      symbol: "NVDAB",
+      assetId: ASSET_NVDAB,
+      feedId: "1005",
+      feedIdHex: "0x000003ed",
+      settlementUtcHour: nvdabSettlementUtcHour,
+      isUsEquityMwf: true,
+    },
+  };
 
   const [signer] = await ethers.getSigners();
   const oracle = await ethers.getContractAt("AtlasPullSettlementOracle", oracleAddress, signer);
@@ -174,12 +250,39 @@ async function main() {
   );
 
   // -------------------------------------------------------------------------
-  // Step 1: Live /v1/price/latest verification via eth_call (BTC #626 & ETH #632)
+  // Step 1: Live /v1/price/latest verification via eth_call (BTC, ETH, and NVDAB when configured)
   // -------------------------------------------------------------------------
-  console.log("\n[1/2] Fetching live signed Atlas prices (/v1/price/latest for #626 & #632)...");
+  const step1Candidates: VerifyAssetConfig[] = [
+    assetConfigs.BTC,
+    assetConfigs.ETH,
+    assetConfigs.NVDAB,
+  ];
+  const configuredFeedIds = await Promise.all(
+    step1Candidates.map((c) => oracle.assetFeedIds(c.assetId))
+  );
+  const step1Assets: VerifyAssetConfig[] = [];
+  for (let i = 0; i < step1Candidates.length; i++) {
+    const candidate = step1Candidates[i]!;
+    const onChainFeed = configuredFeedIds[i]!.toLowerCase();
+    if (onChainFeed !== "0x00000000") {
+      step1Assets.push(candidate);
+    } else {
+      console.log(
+        `  ℹ Skipping ${candidate.symbol} (#${candidate.feedId}) in Step 1: not yet registered on oracle`
+      );
+    }
+  }
+  if (step1Assets.length === 0) {
+    throw new Error("No supported assets configured on oracle");
+  }
+
+  const step1FeedIds = step1Assets.map((a) => a.feedId);
+  console.log(
+    `\n[1/2] Fetching live signed Atlas prices (/v1/price/latest for ${step1Assets.map((a) => `${a.symbol} #${a.feedId}`).join(", ")})...`
+  );
   const latestData = await fetchAtlasSigned(
     "/v1/price/latest",
-    { feedIds: ["626", "632"], signed: true },
+    { feedIds: step1FeedIds, signed: true },
     apiKey
   );
   const latestExtraData = ethers.concat([
@@ -188,12 +291,9 @@ async function main() {
     latestData.magicMarker,
   ]);
 
-  for (const [symbol, assetId, feedNum] of [
-    ["BTC", ASSET_BTC, "626"],
-    ["ETH", ASSET_ETH, "632"],
-  ] as const) {
+  for (const spec of step1Assets) {
     const callData = ethers.concat([
-      oracle.interface.encodeFunctionData("verifyLatestAtlasPrice", [assetId]),
+      oracle.interface.encodeFunctionData("verifyLatestAtlasPrice", [spec.assetId]),
       latestExtraData,
     ]);
     const rawResult = await ethers.provider.call({
@@ -207,9 +307,9 @@ async function main() {
     const price8 = decoded[0] as bigint;
     const aggregatedTimestamp = decoded[2] as bigint;
     const feedIdHex = decoded[3] as string;
-    const cs = latestData.consensusScores?.find((c) => c.feedId === feedNum);
+    const cs = latestData.consensusScores?.find((c) => c.feedId === spec.feedId);
     console.log(
-      `  ✓ ${symbol}/USD (${feedIdHex}): $${ethers.formatUnits(price8, 8)} @ ts=${aggregatedTimestamp}` +
+      `  ✓ ${spec.symbol}/USD (${feedIdHex}): $${ethers.formatUnits(price8, 8)} @ ts=${aggregatedTimestamp}` +
         (cs
           ? ` | ConsensusScore=${(cs.consensusScore * 100).toFixed(2)}% (${cs.consensusStatus})`
           : "")
@@ -217,17 +317,46 @@ async function main() {
   }
 
   // -------------------------------------------------------------------------
-  // Step 2: 30-Point 1-Minute Historical TWAP Settlement on BSC Testnet
+  // Step 2: 30-Point 1-Minute Historical TWAP Settlement on BSC Testnet / Local
   // -------------------------------------------------------------------------
+  const verifyAssetRaw = (process.env.VERIFY_ASSET || "BTC").trim().toUpperCase();
+  if (!(verifyAssetRaw in assetConfigs)) {
+    throw new Error(
+      `Unsupported VERIFY_ASSET="${verifyAssetRaw}". Supported values: BTC, ETH, NVDAB.`
+    );
+  }
+  const targetAsset = assetConfigs[verifyAssetRaw as SupportedVerifySymbol];
+  const targetOnChainFeed = (await oracle.assetFeedIds(targetAsset.assetId)).toLowerCase();
+  if (targetOnChainFeed === "0x00000000") {
+    throw new Error(
+      `VERIFY_ASSET=${targetAsset.symbol} is NOT registered on oracle ${oracleAddress}. Run pnpm register:rwa:${chainId === 31337 ? "local" : "bsc"} first.`
+    );
+  }
+  if (targetOnChainFeed !== targetAsset.feedIdHex.toLowerCase()) {
+    throw new Error(
+      `Oracle feedId mismatch for ${targetAsset.symbol}: on-chain=${targetOnChainFeed}, expected=${targetAsset.feedIdHex}`
+    );
+  }
+
   const latestBlock = await ethers.provider.getBlock("latest");
   const chainNow = latestBlock ? Number(latestBlock.timestamp) : Math.floor(Date.now() / 1000);
-  const expiry = process.env.VERIFY_EXPIRY_TS
-    ? Number(process.env.VERIFY_EXPIRY_TS)
-    : computeMostRecent08Utc(chainNow);
+  let expiry: number;
+  if (process.env.VERIFY_EXPIRY_TS?.trim()) {
+    expiry = Number(process.env.VERIFY_EXPIRY_TS.trim());
+    if (!Number.isInteger(expiry) || expiry <= 0 || expiry >= 1e11) {
+      throw new Error(
+        `Invalid VERIFY_EXPIRY_TS="${process.env.VERIFY_EXPIRY_TS}" (expected unix seconds)`
+      );
+    }
+  } else if (targetAsset.isUsEquityMwf) {
+    expiry = computeMostRecentMwfUtc(chainNow, targetAsset.settlementUtcHour);
+  } else {
+    expiry = computeMostRecentUtcAtOffset(chainNow, targetAsset.settlementUtcHour * 3600);
+  }
 
   const schedule = (await oracle.getTwapSampleTimestamps(expiry)).map((t) => Number(t));
   console.log(
-    `\n[2/2] Fetching ${schedule.length} historical 1-min signed Atlas proofs for BTC expiry=${expiry} (${new Date(expiry * 1000).toISOString()})...`
+    `\n[2/2] Fetching ${schedule.length} historical 1-min signed Atlas proofs for ${targetAsset.symbol} (#${targetAsset.feedId}) expiry=${expiry} (${new Date(expiry * 1000).toISOString()})...`
   );
   console.log(
     `  Window: ${new Date(schedule[0]! * 1000).toISOString()} -> ${new Date(schedule[schedule.length - 1]! * 1000).toISOString()}`
@@ -246,10 +375,10 @@ async function main() {
         const idx = start + offset;
         const data = await fetchAtlasSigned(
           "/v1/price/history",
-          { feedIds: ["626"], timestamp: targetTs, signed: true },
+          { feedIds: [targetAsset.feedId], timestamp: targetTs, signed: true },
           apiKey
         );
-        const entry = extractParsedEntry(data, "626");
+        const entry = extractParsedEntry(data, targetAsset.feedId);
         proofs[idx] = ethers.concat([data.payload, data.signature, data.magicMarker]);
         fetchedEntries[idx] = {
           targetTs,
@@ -275,17 +404,17 @@ async function main() {
     console.warn(`  ⚠ Note: non-zero timestamp diff observed (${maxAbsDiff}s)`);
   }
 
-  const existing = await oracle.getSettlement(ASSET_BTC, expiry);
+  const existing = await oracle.getSettlement(targetAsset.assetId, expiry);
   if (existing.settled) {
     console.log(
-      `  ℹ Expiry ${expiry} is already settled on-chain at $${ethers.formatUnits(existing.price, 8)}`
+      `  ℹ ${targetAsset.symbol} expiry ${expiry} is already settled on-chain at $${ethers.formatUnits(existing.price, 8)}`
     );
   } else {
     console.log(
-      `  Submitting settleWithAtlasTwap(ASSET_BTC, ${expiry}, proofs[${proofs.length}])...`
+      `  Submitting settleWithAtlasTwap(ASSET_${targetAsset.symbol}, ${expiry}, proofs[${proofs.length}])...`
     );
     const tx = await oracle.settleWithAtlasTwap(
-      ASSET_BTC,
+      targetAsset.assetId,
       expiry,
       proofs,
       chainId === 31337 ? {} : { gasPrice: ethers.parseUnits("1", "gwei") }
@@ -300,12 +429,12 @@ async function main() {
     console.log(`  ✓ Explorer TX: ${getExplorerTxUrl(chainId, receipt.hash)}`);
   }
 
-  let settled = await oracle.getSettlement(ASSET_BTC, expiry);
+  let settled = await oracle.getSettlement(targetAsset.assetId, expiry);
   for (let attempt = 0; attempt < 6 && !settled.settled; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
-    settled = await oracle.getSettlement(ASSET_BTC, expiry);
+    settled = await oracle.getSettlement(targetAsset.assetId, expiry);
   }
-  const meta = await oracle.getSettlementMeta(ASSET_BTC, expiry);
+  const meta = await oracle.getSettlementMeta(targetAsset.assetId, expiry);
 
   if (!settled.settled) {
     throw new Error("Verification failed: getSettlement returned settled=false");
@@ -322,7 +451,7 @@ async function main() {
   }
 
   console.log(
-    `  ✓ Verified on-chain getSettlement(BTC, ${expiry}): settled=true, price=$${ethers.formatUnits(settled.price, 8)}, samples=${meta.sampleCount}, window=[${meta.windowStartTimestamp}..${meta.windowEndTimestamp}], isManualOverride=${meta.isManualOverride}`
+    `  ✓ Verified on-chain getSettlement(${targetAsset.symbol}, ${expiry}): settled=true, price=$${ethers.formatUnits(settled.price, 8)}, samples=${meta.sampleCount}, window=[${meta.windowStartTimestamp}..${meta.windowEndTimestamp}], isManualOverride=${meta.isManualOverride}`
   );
 }
 

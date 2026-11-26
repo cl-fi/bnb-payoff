@@ -11,12 +11,14 @@ import {
   SETTLEMENT_HEALTH_MIN_AVG_SCORE,
   SETTLEMENT_TWAP_INTERVAL_SEC,
   SETTLEMENT_TWAP_SAMPLE_COUNT,
-  SETTLEMENT_UTC_HOUR,
+  SUPPORTED_UNDERLYINGS,
+  isSupportedUnderlying,
   symbolToAssetId,
   type CandleBar,
   type Direction,
   type ExpiryTenor,
   type TierKind,
+  type TwapWindowHealthSummary,
   type UnderlyingSymbol,
 } from "@payoff/shared";
 import type { ServerConfig } from "../config.js";
@@ -27,11 +29,16 @@ import type { MarketDataService } from "../services/marketData.js";
 import type { MetricsService } from "../services/metricsService.js";
 import type { PositionsService } from "../services/positionsService.js";
 import type { RfqGateway } from "../services/rfqGateway.js";
+import {
+  SPLIT_PAUSED_SYNC_STATE_PREFIX,
+  type RwaRiskService,
+} from "../services/rwaRiskService.js";
 
 export interface AppServices {
   config: ServerConfig;
   db: PayoffDatabase;
   atlasOracle: AtlasOracleService;
+  rwaRisk: RwaRiskService;
   marketData: MarketDataService;
   chain: ChainService;
   shelfEngine: ShelfEngine;
@@ -39,6 +46,8 @@ export interface AppServices {
   positions: PositionsService;
   metrics: MetricsService;
 }
+
+const UNSUPPORTED_UNDERLYING_ERR = `Only ${SUPPORTED_UNDERLYINGS.join(", ")} underlyings are supported`;
 
 export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
   app.get("/api/health", async () => {
@@ -49,13 +58,30 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
         svc.chain.getSettlementOracleContract(),
         svc.chain.getOnChainProtocolFees(),
       ]);
+
+    const spots = {} as Record<UnderlyingSymbol, number>;
+    for (const sym of SUPPORTED_UNDERLYINGS) {
+      spots[sym] = svc.marketData.getSnapshot(sym).spot;
+    }
     const btc = svc.marketData.getSnapshot("BTC");
-    const eth = svc.marketData.getSnapshot("ETH");
-    const activeExpiry = svc.chain.getActiveTwapWindowExpiry(effectiveNow);
-    const [btcTwapHealth, ethTwapHealth] = await Promise.all([
-      svc.chain.getTwapWindowHealth("BTC", activeExpiry, { checkOnChain: false }),
-      svc.chain.getTwapWindowHealth("ETH", activeExpiry, { checkOnChain: false }),
-    ]);
+
+    const twapEntries = await Promise.all(
+      SUPPORTED_UNDERLYINGS.map(async (sym) => {
+        const activeExpiry = svc.chain.getActiveTwapWindowExpiry(
+          effectiveNow,
+          sym
+        );
+        const health = await svc.chain.getTwapWindowHealth(sym, activeExpiry, {
+          checkOnChain: false,
+        });
+        return [sym, health] as const;
+      })
+    );
+    const twapWindowHealth = Object.fromEntries(twapEntries) as Record<
+      UnderlyingSymbol,
+      TwapWindowHealthSummary
+    >;
+
     return {
       ok: true,
       chainId: svc.config.chainId,
@@ -74,11 +100,9 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       effectiveNow,
       dataSource: btc.dataSource,
       dataSourceStatus: btc.dataSource,
-      spots: {
-        BTC: btc.spot,
-        ETH: eth.spot,
-      },
+      spots,
       atlasTelemetry: svc.atlasOracle.getAllTelemetry(),
+      rwaTelemetry: svc.rwaRisk.getAllTelemetry({ nowSec: effectiveNow }),
       settlementCircuitBreaker: svc.chain.getSettlementCircuitBreaker(),
       twapConfig: {
         sampleCount: SETTLEMENT_TWAP_SAMPLE_COUNT,
@@ -89,10 +113,7 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
         healthMinAvgScore: SETTLEMENT_HEALTH_MIN_AVG_SCORE,
         minCloseLeadTimeSec: MIN_CLOSE_LEAD_TIME_SEC,
       },
-      twapWindowHealth: {
-        BTC: btcTwapHealth,
-        ETH: ethTwapHealth,
-      },
+      twapWindowHealth,
       vaultHealth,
     };
   });
@@ -102,17 +123,30 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       svc.chain.getSettlementOracleContract(),
       svc.chain.getEffectiveNow(),
     ]);
-    const activeExpiry = svc.chain.getActiveTwapWindowExpiry(effectiveNow);
-    const [btcTwapHealth, ethTwapHealth] = await Promise.all([
-      svc.chain.getTwapWindowHealth("BTC", activeExpiry, { checkOnChain: true }),
-      svc.chain.getTwapWindowHealth("ETH", activeExpiry, { checkOnChain: true }),
-    ]);
+    const twapEntries = await Promise.all(
+      SUPPORTED_UNDERLYINGS.map(async (sym) => {
+        const activeExpiry = svc.chain.getActiveTwapWindowExpiry(
+          effectiveNow,
+          sym
+        );
+        const health = await svc.chain.getTwapWindowHealth(sym, activeExpiry, {
+          checkOnChain: true,
+        });
+        return [sym, health] as const;
+      })
+    );
+    const twapWindowHealth = Object.fromEntries(twapEntries) as Record<
+      UnderlyingSymbol,
+      TwapWindowHealthSummary
+    >;
+
     return {
       oracle: "ATLAS_PULL_ORACLE",
       signerAddress: svc.atlasOracle.getAuthorizedSigner(),
       oracleAddress: settlementOracleAddress,
       feeds: svc.atlasOracle.getFeedsConfig(),
       telemetry: svc.atlasOracle.getAllTelemetry(),
+      rwaTelemetry: svc.rwaRisk.getAllTelemetry({ nowSec: effectiveNow }),
       circuitBreaker: svc.chain.getSettlementCircuitBreaker(),
       twapConfig: {
         sampleCount: SETTLEMENT_TWAP_SAMPLE_COUNT,
@@ -123,10 +157,7 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
         healthMinAvgScore: SETTLEMENT_HEALTH_MIN_AVG_SCORE,
         minCloseLeadTimeSec: MIN_CLOSE_LEAD_TIME_SEC,
       },
-      twapWindowHealth: {
-        BTC: btcTwapHealth,
-        ETH: ethTwapHealth,
-      },
+      twapWindowHealth,
       wsConnected: svc.atlasOracle.isWsConnected(),
       updatedAtMs: Date.now(),
     };
@@ -142,14 +173,11 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       expiry?: string;
     };
   }>("/api/oracle/settlement-proof", async (req, reply) => {
-    const underlying = (
-      req.query.underlying || "BTC"
-    ).toUpperCase() as UnderlyingSymbol;
-    if (underlying !== "BTC" && underlying !== "ETH") {
-      return reply
-        .code(400)
-        .send({ error: "Only BTC and ETH underlyings are supported" });
+    const rawUnderlying = (req.query.underlying || "BTC").toUpperCase();
+    if (!isSupportedUnderlying(rawUnderlying)) {
+      return reply.code(400).send({ error: UNSUPPORTED_UNDERLYING_ERR });
     }
+    const underlying: UnderlyingSymbol = rawUnderlying;
     const expiry = Number(req.query.expiry);
     if (!Number.isInteger(expiry) || expiry <= 0) {
       return reply
@@ -163,14 +191,16 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
         .code(400)
         .send({ error: "Expiry has not been reached yet" });
     }
-    const offset = SETTLEMENT_UTC_HOUR * 3600;
-    const isStandard08Utc =
+    const assetSettlementHour = svc.chain.getSettlementUtcHour(underlying);
+    const offset = assetSettlementHour * 3600;
+    const isStandardAligned =
       expiry >= offset && (expiry - offset) % 86400 === 0;
     const maxHistoryAgeSec = 180 * 86400;
-    if (!isStandard08Utc && !svc.config.isLocalDev) {
-      return reply
-        .code(400)
-        .send({ error: "Expiry must be aligned to standard 08:00 UTC schedule" });
+    if (!isStandardAligned && !svc.config.isLocalDev) {
+      const hh = String(assetSettlementHour).padStart(2, "0");
+      return reply.code(400).send({
+        error: `Expiry must be aligned to standard ${hh}:00 UTC schedule for ${underlying}`,
+      });
     }
     if (effNow - expiry > maxHistoryAgeSec) {
       return reply
@@ -178,11 +208,23 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
         .send({ error: "Expiry exceeds Atlas 180-day signed historical retention" });
     }
 
-    const [oracleAddress, onChainSettlement, health] = await Promise.all([
-      svc.chain.getSettlementOracleContract(),
-      svc.chain.readOnChainSettlement(underlying, expiry),
-      svc.chain.getTwapWindowHealth(underlying, expiry, { checkOnChain: true }),
-    ]);
+    const [oracleAddress, onChainSettlement, health, splitGuardRaw, splitHandled] =
+      await Promise.all([
+        svc.chain.getSettlementOracleContract(),
+        svc.chain.readOnChainSettlement(underlying, expiry),
+        svc.chain.getTwapWindowHealth(underlying, expiry, {
+          checkOnChain: true,
+        }),
+        underlying === "NVDAB"
+          ? svc.rwaRisk.isSplitGuardTriggeredForExpiry(expiry)
+          : Promise.resolve(false),
+        underlying === "NVDAB"
+          ? svc.db
+              .getSyncState(`${SPLIT_PAUSED_SYNC_STATE_PREFIX}${expiry}`)
+              .then(Boolean)
+          : Promise.resolve(false),
+      ]);
+    const splitGuard = splitGuardRaw && !splitHandled;
 
     if (onChainSettlement?.settled) {
       return {
@@ -196,7 +238,11 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       };
     }
 
-    if (health.onChainPaused || health.status === "DISPUTED_LOW_HEALTH") {
+    if (
+      health.onChainPaused ||
+      health.status === "DISPUTED_LOW_HEALTH" ||
+      splitGuard
+    ) {
       return {
         status: "DISPUTED_PAUSED" as const,
         underlying,
@@ -204,8 +250,9 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
         oracleAddress,
         assetId: symbolToAssetId(underlying),
         health,
-        reason:
-          "Expiry is frozen due to low 30m Atlas ConsensusScore (< 0.40); awaiting admin emergency settlement",
+        reason: splitGuard
+          ? "Expiry is frozen due to RWA split-cutover guard (>1% shareMultiplier drift); awaiting admin verification"
+          : "Expiry is frozen due to low 30m Atlas ConsensusScore (< 0.40); awaiting admin emergency settlement",
       };
     }
 
@@ -289,14 +336,11 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       limit?: string;
     };
   }>("/api/market/candles", async (req, reply) => {
-    const underlying = (
-      req.query.underlying || "BTC"
-    ).toUpperCase() as UnderlyingSymbol;
-    if (underlying !== "BTC" && underlying !== "ETH") {
-      return reply
-        .code(400)
-        .send({ error: "Only BTC and ETH underlyings are supported" });
+    const rawUnderlying = (req.query.underlying || "BTC").toUpperCase();
+    if (!isSupportedUnderlying(rawUnderlying)) {
+      return reply.code(400).send({ error: UNSUPPORTED_UNDERLYING_ERR });
     }
+    const underlying: UnderlyingSymbol = rawUnderlying;
     const allowedBars: CandleBar[] = ["5m", "15m", "1H", "4H", "1D"];
     const bar = (
       allowedBars.includes(req.query.bar as CandleBar) ? req.query.bar : "15m"
@@ -316,14 +360,11 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       limit?: string;
     };
   }>("/api/market/settlement-history", async (req, reply) => {
-    const underlying = (
-      req.query.underlying || "BTC"
-    ).toUpperCase() as UnderlyingSymbol;
-    if (underlying !== "BTC" && underlying !== "ETH") {
-      return reply
-        .code(400)
-        .send({ error: "Only BTC and ETH underlyings are supported" });
+    const rawUnderlying = (req.query.underlying || "BTC").toUpperCase();
+    if (!isSupportedUnderlying(rawUnderlying)) {
+      return reply.code(400).send({ error: UNSUPPORTED_UNDERLYING_ERR });
     }
+    const underlying: UnderlyingSymbol = rawUnderlying;
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 10)));
     const settlementOracleAddress =
       await svc.chain.getSettlementOracleContract();
@@ -373,14 +414,11 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       stake?: string;
     };
   }>("/api/market/shelf", async (req, reply) => {
-    const underlying = (
-      req.query.underlying || "BTC"
-    ).toUpperCase() as UnderlyingSymbol;
-    if (underlying !== "BTC" && underlying !== "ETH") {
-      return reply
-        .code(400)
-        .send({ error: "Only BTC and ETH underlyings are supported" });
+    const rawUnderlying = (req.query.underlying || "BTC").toUpperCase();
+    if (!isSupportedUnderlying(rawUnderlying)) {
+      return reply.code(400).send({ error: UNSUPPORTED_UNDERLYING_ERR });
     }
+    const underlying: UnderlyingSymbol = rawUnderlying;
     const direction = (req.query.direction || "BULL").toUpperCase() as Direction;
     const tenor = (req.query.tenor || "DAILY").toUpperCase() as ExpiryTenor;
     const stakeUsdt = Math.max(1, Math.min(50_000, Number(req.query.stake || 20)));
@@ -388,15 +426,30 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
     const snap = svc.marketData.getSnapshot(underlying);
     const book = svc.marketData.getExpiryBook(underlying, tenor);
     const atlasTelemetry = svc.atlasOracle.getTelemetry(underlying);
-    const quotingGuard = svc.atlasOracle.getConsensusGuard(underlying);
+    const rwaTelemetry =
+      svc.rwaRisk.getTelemetry(underlying, { expiry: book.expiry }) ??
+      book.rwaTelemetry;
     const onChainFees = await svc.chain.getOnChainProtocolFees();
-    const { grid, tiers, consensusRisk } = svc.shelfEngine.buildFixedGridShelf({
-      book,
-      direction,
-      stakeUsdt,
-      protocolFeeBps: onChainFees.openFeeBps,
-      atlasTelemetry,
-    });
+    const { grid, tiers, consensusRisk, rwaRisk } =
+      svc.shelfEngine.buildFixedGridShelf({
+        book,
+        direction,
+        stakeUsdt,
+        protocolFeeBps: onChainFees.openFeeBps,
+        atlasTelemetry,
+        rwaTelemetry,
+      });
+
+    const atlasGuard = svc.atlasOracle.getConsensusGuard(underlying);
+    const quotingGuard =
+      rwaRisk && !rwaRisk.quotingAllowed
+        ? {
+            ...atlasGuard,
+            quotingSafe: false,
+            paused: true,
+            reason: rwaRisk.reason || atlasGuard.reason,
+          }
+        : atlasGuard;
 
     return {
       underlying,
@@ -407,8 +460,10 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       change24hPct: snap.change24hPct,
       dataSource: snap.dataSource,
       atlasTelemetry,
+      ...(rwaTelemetry ? { rwaTelemetry } : {}),
       quotingGuard,
       consensusRisk,
+      ...(rwaRisk ? { rwaRisk } : {}),
       expiry: book.expiry,
       expiryIso: book.expiryIso,
       hoursToExpiry: book.hoursToExpiry,
@@ -430,7 +485,7 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
     };
   }>("/api/market/preview-custom", async (req, reply) => {
     const {
-      underlying = "BTC",
+      underlying: rawUnderlyingInput = "BTC",
       direction = "BULL",
       tenor = "DAILY",
       lowerStrike,
@@ -439,14 +494,17 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       stake,
     } = req.body || ({} as any);
 
-    if (underlying !== "BTC" && underlying !== "ETH") {
-      return reply
-        .code(400)
-        .send({ error: "Only BTC and ETH underlyings are supported" });
+    const rawUnderlying = String(rawUnderlyingInput || "BTC").toUpperCase();
+    if (!isSupportedUnderlying(rawUnderlying)) {
+      return reply.code(400).send({ error: UNSUPPORTED_UNDERLYING_ERR });
     }
+    const underlying: UnderlyingSymbol = rawUnderlying;
     const resolvedStake = Number(stakeUsdt ?? stake ?? 20);
     const book = svc.marketData.getExpiryBook(underlying, tenor);
     const atlasTelemetry = svc.atlasOracle.getTelemetry(underlying);
+    const rwaTelemetry =
+      svc.rwaRisk.getTelemetry(underlying, { expiry: book.expiry }) ??
+      book.rwaTelemetry;
     const onChainFees = await svc.chain.getOnChainProtocolFees();
     const best = svc.shelfEngine.priceSpread({
       book,
@@ -460,12 +518,15 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       mmOpenMarkupBps: 110,
       venue: "MOCK_MAKER",
       atlasTelemetry,
+      rwaTelemetry,
     });
     return {
       ticket: best.summary,
       availableStrikes: book.availableStrikes,
       atlasTelemetry,
+      ...(rwaTelemetry ? { rwaTelemetry } : {}),
       consensusRisk: best.consensusRisk,
+      ...(best.rwaRisk ? { rwaRisk: best.rwaRisk } : {}),
     };
   });
 
@@ -486,14 +547,13 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       if (!b?.taker) {
         return reply.code(400).send({ error: "Missing taker wallet address" });
       }
-      if (b.underlying !== "BTC" && b.underlying !== "ETH") {
-        return reply
-          .code(400)
-          .send({ error: "Only BTC and ETH underlyings are supported" });
+      const rawUnderlying = String(b.underlying || "").toUpperCase();
+      if (!isSupportedUnderlying(rawUnderlying)) {
+        return reply.code(400).send({ error: UNSUPPORTED_UNDERLYING_ERR });
       }
       const res = await svc.rfq.requestOpenRfq({
         taker: b.taker,
-        underlying: b.underlying,
+        underlying: rawUnderlying,
         direction: b.direction,
         tenor: b.tenor,
         tierKind: b.tierKind || "CUSTOM",

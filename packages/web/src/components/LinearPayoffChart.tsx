@@ -1,5 +1,6 @@
 import { useId, useMemo, useState, type JSX, type PointerEvent } from "react";
 import {
+  ASSET_SPECS,
   computeSpreadPayoffFraction,
   type Direction,
   type TicketSummary,
@@ -129,7 +130,9 @@ export function LinearPayoffChart({
   const maxMult = Math.max(1.01, ticket.maxMultiplier);
 
   const step =
-    gridStep && gridStep > 0 ? gridStep : underlying === "BTC" ? 500 : 25;
+    gridStep && gridStep > 0
+      ? gridStep
+      : ASSET_SPECS[underlying].defaultDailyStep;
   const deltaUsdPerStep = (step / width) * maxPayout;
   const deltaMultPerStep = deltaUsdPerStep / stake;
 

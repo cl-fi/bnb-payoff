@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { SUPPORTED_UNDERLYINGS, type UnderlyingSymbol } from "@payoff/shared";
 import type { AppServices } from "../routes/api.js";
 
 interface WsLike {
@@ -44,8 +45,15 @@ export function registerWsStream(app: FastifyInstance, svc: AppServices) {
 
   async function pushToClient(sub: ClientSub) {
     if (sub.ws.readyState !== 1) return;
+    const spots = {} as Record<
+      UnderlyingSymbol,
+      { spot: number; change24hPct: number }
+    >;
+    for (const sym of SUPPORTED_UNDERLYINGS) {
+      const snap = svc.marketData.getSnapshot(sym);
+      spots[sym] = { spot: snap.spot, change24hPct: snap.change24hPct };
+    }
     const btc = svc.marketData.getSnapshot("BTC");
-    const eth = svc.marketData.getSnapshot("ETH");
     const positions = sub.address
       ? await svc.positions.getPositionsForAddress(sub.address)
       : undefined;
@@ -54,11 +62,9 @@ export function registerWsStream(app: FastifyInstance, svc: AppServices) {
         type: "TICK",
         ts: Date.now(),
         dataSource: btc.dataSource,
-        spots: {
-          BTC: { spot: btc.spot, change24hPct: btc.change24hPct },
-          ETH: { spot: eth.spot, change24hPct: eth.change24hPct },
-        },
+        spots,
         atlasTelemetry: svc.atlasOracle.getAllTelemetry(),
+        rwaTelemetry: svc.rwaRisk.getAllTelemetry(),
         settlementCircuitBreaker: svc.chain.getSettlementCircuitBreaker(),
         positions,
       })

@@ -11,12 +11,14 @@ import {
   ShieldCheck,
   Wallet,
 } from "lucide-react";
-import type {
-  Direction,
-  FixedGridMeta,
-  OpenRfqResponse,
-  TicketSummary,
+import {
+  ASSET_SPECS,
+  type Direction,
+  type FixedGridMeta,
+  type OpenRfqResponse,
+  type TicketSummary,
 } from "@payoff/shared";
+import { formatStrikeNumber, formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 import { UsdtIcon } from "./PayoffMark";
 
@@ -50,6 +52,8 @@ interface Props {
   usdtBalance: number;
   isShelfSynced?: boolean;
   quotingPaused?: boolean;
+  rwaPaused?: boolean;
+  rwaPauseReason?: string | null;
   stage: InstantBuyStage;
   slippagePause?: SlippagePauseState;
   txHash?: string;
@@ -83,6 +87,8 @@ export function OrderTicketPanel({
   usdtBalance,
   isShelfSynced = true,
   quotingPaused = false,
+  rwaPaused = false,
+  rwaPauseReason = null,
   stage,
   slippagePause,
   txHash,
@@ -183,7 +189,8 @@ export function OrderTicketPanel({
       className="rounded-2xl border border-[#e2e5e8] bg-white p-5 shadow-[0_4px_12px_rgba(20,32,42,0.06)] space-y-5 lg:sticky lg:top-20"
     >
       <h2 id={formHeadingId} className="sr-only">
-        {activeTicket.underlying} {isBull ? t.bull : t.bear}
+        {ASSET_SPECS[activeTicket.underlying].displaySymbol}{" "}
+        {isBull ? t.bull : t.bear}
       </h2>
 
       {/* 1. Large Top UP / DOWN Toggle */}
@@ -253,7 +260,7 @@ export function OrderTicketPanel({
                 }`}
               >
                 <span className="text-sm font-bold tabular-nums tracking-tight whitespace-nowrap">
-                  {capArrow} ${item.capPrice.toLocaleString()}
+                  {capArrow} {formatStrikePrice(item.capPrice, item.underlying)}
                 </span>
                 <div className="mt-1 flex w-full items-center justify-between gap-1.5">
                   <span
@@ -285,7 +292,10 @@ export function OrderTicketPanel({
         </div>
 
         <p className="text-[11px] leading-snug text-[#667080] tabular-nums">
-          {t.fixedStartLineHint(anchorStartPrice.toLocaleString(), isBull)}
+          {t.fixedStartLineHint(
+            formatStrikeNumber(anchorStartPrice, activeTicket.underlying),
+            isBull
+          )}
         </p>
       </div>
 
@@ -374,8 +384,11 @@ export function OrderTicketPanel({
         <div className="flex items-center justify-between">
           <span className="text-[#667080]">{t.breakevenCompactLabel}</span>
           <span className="font-semibold text-[#14202a] tabular-nums">
-            ${activeTicket.breakevenPrice.toLocaleString()} (
-            {activeTicket.breakevenPct >= 0 ? "+" : ""}
+            {formatStrikePrice(
+              activeTicket.breakevenPrice,
+              activeTicket.underlying
+            )}{" "}
+            ({activeTicket.breakevenPct >= 0 ? "+" : ""}
             {activeTicket.breakevenPct.toFixed(2)}%)
           </span>
         </div>
@@ -396,8 +409,11 @@ export function OrderTicketPanel({
               {t.toWinLabel}
             </div>
             <div className="text-[11px] text-[#667080] tabular-nums">
-              {activeTicket.maxMultiplier.toFixed(2)}x · $
-              {activeTicket.fullPayoutPrice.toLocaleString()}
+              {activeTicket.maxMultiplier.toFixed(2)}x ·{" "}
+              {formatStrikePrice(
+                activeTicket.fullPayoutPrice,
+                activeTicket.underlying
+              )}
             </div>
           </div>
           <div
@@ -416,7 +432,11 @@ export function OrderTicketPanel({
           className="flex items-start gap-2 rounded-lg border border-[#f1ccc6] bg-[#fbeeea] px-3.5 py-2.5 text-xs font-medium text-[#b54134]"
         >
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>{t.quotingPausedNotice}</span>
+          <span>
+            {rwaPaused
+              ? t.rwaBlackoutPausedNotice(rwaPauseReason)
+              : t.quotingPausedNotice}
+          </span>
         </div>
       )}
 
@@ -560,7 +580,11 @@ export function OrderTicketPanel({
                 <span>{t.openingWallet}</span>
               </>
             ) : quotingPaused ? (
-              t.quotingPausedCta
+              rwaPaused ? (
+                t.rwaQuotingPausedCta
+              ) : (
+                t.quotingPausedCta
+              )
             ) : insufficientBalance ? (
               t.insufficientUsdt
             ) : !activeTicket.guardrails.valid ? (

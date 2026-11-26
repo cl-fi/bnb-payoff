@@ -22,8 +22,9 @@ import {
   SETTLEMENT_HEALTH_MIN_OBSERVED_MINUTES,
   SETTLEMENT_TWAP_INTERVAL_SEC,
   SETTLEMENT_TWAP_SAMPLE_COUNT,
-  SETTLEMENT_UTC_HOUR,
+  SUPPORTED_UNDERLYINGS,
   assetIdToSymbol,
+  getAssetSettlementUtcHour,
   priceToUnits,
   symbolToAssetId,
   unitsToPrice,
@@ -45,6 +46,10 @@ import {
   type ConsensusGuardState,
 } from "./atlasOracle.js";
 import type { MarketDataService } from "./marketData.js";
+import {
+  SPLIT_PAUSED_SYNC_STATE_PREFIX,
+  type RwaRiskService,
+} from "./rwaRiskService.js";
 
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as const;
 const BSC_TESTNET_FALLBACK_RPC = "https://bsc-testnet-rpc.publicnode.com";
@@ -149,7 +154,8 @@ export class ChainService {
     private config: ServerConfig,
     private db: PayoffDatabase,
     private atlasOracle: AtlasOracleService,
-    private marketData?: MarketDataService
+    private marketData?: MarketDataService,
+    private rwaRisk?: RwaRiskService
   ) {
     if (this.config.chainId === BSC_TESTNET.chainId) {
       const primary = http(this.config.rpcUrl);
@@ -199,9 +205,18 @@ export class ChainService {
     return http(this.config.rpcUrl);
   }
 
+  /** Returns the configured settlement UTC hour for `underlying` (08 for BTC/ETH, 21/20 for NVDAB). */
+  getSettlementUtcHour(underlying: UnderlyingSymbol): number {
+    if (underlying === "NVDAB") {
+      return this.config.nvdabSettlementUtcHour;
+    }
+    return getAssetSettlementUtcHour(underlying);
+  }
+
   /**
-   * Records 1-minute bucketed `consensusScore` health observations during the
-   * 30-minute TWAP window (`07:31..08:00 UTC`) so each minute carries equal weight.
+   * Records 1-minute bucketed `consensusScore` health observations during the asset's
+   * 30-minute TWAP window (`07:31..08:00 UTC` for BTC/ETH, `20:31..21:00 UTC` for NVDAB)
+   * so each minute carries equal weight.
    */
   async recordTwapHealthTick(telemetry: AtlasFeedTelemetry): Promise<void> {
     if (
@@ -216,7 +231,7 @@ export class ChainService {
         ? telemetry.timestampSeconds
         : Math.floor(Date.now() / 1000);
     const daySec = 86400;
-    const offset = SETTLEMENT_UTC_HOUR * 3600;
+    const offset = this.getSettlementUtcHour(telemetry.underlying) * 3600;
     const dayIdx = Math.floor((ts - offset) / daySec);
     const currExpiry = dayIdx * daySec + offset;
     const nextExpiry = (dayIdx + 1) * daySec + offset;
@@ -258,14 +273,17 @@ export class ChainService {
     }
   }
 
-  getActiveTwapWindowExpiry(effNow: number): number {
+  getActiveTwapWindowExpiry(
+    effNow: number,
+    underlying: UnderlyingSymbol = "BTC"
+  ): number {
     const daySec = 86400;
-    const offset = SETTLEMENT_UTC_HOUR * 3600;
+    const offset = this.getSettlementUtcHour(underlying) * 3600;
     const dayIdx = Math.floor((effNow - offset) / daySec);
     const recentExpiry = dayIdx * daySec + offset;
     const nextExpiry = (dayIdx + 1) * daySec + offset;
-    // Show the most recent 08:00 UTC window for 1h post-expiry (e.g. during settlement/dispute review),
-    // otherwise track the upcoming 08:00 UTC expiry.
+    // Show the most recent settlement window for 1h post-expiry (e.g. during settlement/dispute review),
+    // otherwise track the upcoming settlement expiry for this asset.
     if (effNow - recentExpiry <= 3600) {
       return recentExpiry;
     }
@@ -445,6 +463,10 @@ export class ChainService {
 
   setMarketData(md: MarketDataService) {
     this.marketData = md;
+  }
+
+  setRwaRisk(rwaRisk?: RwaRiskService) {
+    this.rwaRisk = rwaRisk;
   }
 
   isConfigured(): boolean {
@@ -1489,22 +1511,23 @@ export class ChainService {
 
     const effNow = await this.getEffectiveNow();
     const daySec = 86400;
-    const offset = SETTLEMENT_UTC_HOUR * 3600;
-    const latestDayIdx = Math.floor((effNow - offset) / daySec);
-    const expiries: number[] = [];
-    for (let i = 0; i < days; i++) {
-      const exp = (latestDayIdx - i) * daySec + offset;
-      if (exp > 0 && exp <= effNow) {
-        expiries.push(exp);
-      }
-    }
 
     const targets: UnderlyingSymbol[] = underlying
       ? [underlying]
-      : ["BTC", "ETH"];
+      : [...SUPPORTED_UNDERLYINGS];
     let backfilled = 0;
 
     for (const sym of targets) {
+      const offset = this.getSettlementUtcHour(sym) * 3600;
+      const latestDayIdx = Math.floor((effNow - offset) / daySec);
+      const expiries: number[] = [];
+      for (let i = 0; i < days; i++) {
+        const exp = (latestDayIdx - i) * daySec + offset;
+        if (exp > 0 && exp <= effNow) {
+          expiries.push(exp);
+        }
+      }
+
       for (const expiry of expiries) {
         const existing = await this.db.getSettlement(sym, expiry);
         if (existing && /^0x[0-9a-fA-F]{64}$/.test(existing.txHash)) {
@@ -1657,8 +1680,12 @@ export class ChainService {
 
       const candidates: Array<{ underlying: UnderlyingSymbol; expiry: number }> =
         [];
+      const nvdabSplitActive = Boolean(this.rwaRisk?.isSplitGuardActive());
       const consider = (underlying: UnderlyingSymbol, expiry: number) => {
-        if (expiry <= effNow + 1800) {
+        if (
+          expiry <= effNow + 1800 ||
+          (underlying === "NVDAB" && nvdabSplitActive)
+        ) {
           candidates.push({ underlying, expiry });
         }
       };
@@ -1700,10 +1727,21 @@ export class ChainService {
         if (await this.db.getSettlement(c.underlying, c.expiry)) continue;
 
         const health = await this.getTwapWindowHealth(c.underlying, c.expiry);
+        const splitPausedKey = `${SPLIT_PAUSED_SYNC_STATE_PREFIX}${c.expiry}`;
+        const splitPauseAlreadyHandled =
+          c.underlying === "NVDAB"
+            ? Boolean(await this.db.getSyncState(splitPausedKey))
+            : false;
+        const rawSplitGuard =
+          c.underlying === "NVDAB" && this.rwaRisk
+            ? await this.rwaRisk.isSplitGuardTriggeredForExpiry(c.expiry)
+            : false;
+        const splitGuardTriggered = rawSplitGuard && !splitPauseAlreadyHandled;
 
-        // Pre-expiry proactive sentinel: only freeze before expiry when mathematically irrecoverable
+        // Pre-expiry proactive sentinel: freeze before expiry when RWA split-cutover guard fires
+        // or 30m ConsensusScore health is mathematically irrecoverable.
         if (effNow < c.expiry) {
-          if (health.mathematicallyIrrecoverable) {
+          if (splitGuardTriggered || health.mathematicallyIrrecoverable) {
             const alreadyPaused = await this.isExpiryPausedOnChain(
               c.underlying,
               c.expiry
@@ -1715,14 +1753,29 @@ export class ChainService {
                   c.expiry
                 );
                 console.warn(
-                  `[SettlementSentinel] Pre-expiry froze ${c.underlying} expiry=${c.expiry} (mathematically irrecoverable, avgScore=${health.avgConsensusScore}) tx=${txHash}`
+                  splitGuardTriggered
+                    ? `[SettlementSentinel] Pre-expiry froze ${c.underlying} expiry=${c.expiry} (RWA split-cutover guard >1% shareMultiplier drift) tx=${txHash}`
+                    : `[SettlementSentinel] Pre-expiry froze ${c.underlying} expiry=${c.expiry} (mathematically irrecoverable, avgScore=${health.avgConsensusScore}) tx=${txHash}`
                 );
+                if (splitGuardTriggered) {
+                  await this.db.setSyncState(splitPausedKey, txHash);
+                  results.push({
+                    underlying: c.underlying,
+                    expiry: c.expiry,
+                    priceUsd: 0,
+                    txHash: "PAUSED_FOR_ADMIN",
+                    source: "ATLAS_TWAP_30M",
+                    disputed: true,
+                  });
+                }
               } catch (err: any) {
                 console.warn(
                   `[SettlementSentinel] Failed to pre-freeze ${c.underlying} expiry=${c.expiry}:`,
                   err?.shortMessage || err?.message || err
                 );
               }
+            } else if (splitGuardTriggered) {
+              await this.db.setSyncState(splitPausedKey, "onchain-paused");
             }
           }
           continue;
@@ -1776,17 +1829,50 @@ export class ChainService {
           continue;
         }
 
-        // Skip if already paused on-chain (awaiting admin emergencyManualSettle)
+        // Skip if already paused on-chain (awaiting admin unpauseExpiry or emergencyManualSettle)
         const pausedOnChain = await this.isExpiryPausedOnChain(
           c.underlying,
           c.expiry
         );
         if (pausedOnChain) {
+          if (splitGuardTriggered) {
+            await this.db.setSyncState(splitPausedKey, "onchain-paused");
+          }
           const lastLog = this.lastBreakerLogAt.get(pairKey) ?? 0;
           if (Date.now() - lastLog > 60_000) {
             this.lastBreakerLogAt.set(pairKey, Date.now());
             console.warn(
-              `[SettlementKeeper] ${c.underlying} expiry=${c.expiry} is paused on-chain; awaiting admin emergencyManualSettle`
+              `[SettlementKeeper] ${c.underlying} expiry=${c.expiry} is paused on-chain; awaiting admin unpauseExpiry or emergencyManualSettle`
+            );
+          }
+          continue;
+        }
+
+        // RWA Split-Cutover Sentinel: freeze NVDAB expiry once on-chain when shareMultiplier drifts > 1%.
+        // Persists `nvdab_split_paused:<expiry>` in sync_state so if admin verifies a clean TWAP and
+        // calls `unpauseExpiry`, the keeper respects the admin decision instead of re-pausing.
+        if (splitGuardTriggered) {
+          try {
+            const txHash = await this.pauseExpiryOnChain(
+              c.underlying,
+              c.expiry
+            );
+            await this.db.setSyncState(splitPausedKey, txHash);
+            console.warn(
+              `[SettlementKeeper] RWA split-cutover guard triggered (>1% shareMultiplier drift) for ${c.underlying} expiry=${c.expiry}; froze expiry on-chain for admin verification (tx=${txHash})`
+            );
+            results.push({
+              underlying: c.underlying,
+              expiry: c.expiry,
+              priceUsd: 0,
+              txHash: "PAUSED_FOR_ADMIN",
+              source: "ATLAS_TWAP_30M",
+              disputed: true,
+            });
+          } catch (err: any) {
+            console.warn(
+              `[SettlementKeeper] Failed to pause split-guarded ${c.underlying} expiry=${c.expiry}:`,
+              err?.shortMessage || err?.message || err
             );
           }
           continue;

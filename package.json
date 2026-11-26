@@ -18,6 +18,8 @@
     "build:web": "pnpm --filter @payoff/web build",
     "deploy:local": "pnpm --filter @payoff/contracts deploy:local",
     "deploy:bsc": "pnpm --filter @payoff/contracts deploy:bsc",
+    "register:rwa:local": "pnpm --filter @payoff/contracts register:rwa:local",
+    "register:rwa:bsc": "pnpm --filter @payoff/contracts register:rwa:bsc",
     "verify:atlas:bsc": "pnpm --filter @payoff/contracts verify:atlas:bsc",
     "dev:server": "pnpm --filter @payoff/server dev",
     "dev:web": "pnpm --filter @payoff/web dev"

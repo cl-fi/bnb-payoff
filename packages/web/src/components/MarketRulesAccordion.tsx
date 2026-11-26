@@ -1,15 +1,24 @@
 import type { JSX } from "react";
-import { ChevronRight, Clock, Scale, ShieldCheck } from "lucide-react";
 import {
+  Building2,
+  ChevronRight,
+  Clock,
+  Scale,
+  ShieldCheck,
+} from "lucide-react";
+import {
+  ASSET_SPECS,
   ATLAS_FEEDS,
   type AtlasFeedTelemetry,
   type Direction,
   type ExpiryTenor,
   type FixedGridMeta,
+  type RwaAssetTelemetry,
   type TicketSummary,
   type UnderlyingSymbol,
 } from "@payoff/shared";
 import type { ConsensusGuardState } from "../lib/api";
+import { formatSettlementClock, formatStrikeNumber } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 import { AtlasOracleBadge } from "./AtlasOracleBadge";
 
@@ -22,34 +31,26 @@ export interface MarketRulesAccordionProps {
   ticket?: TicketSummary;
   grid?: FixedGridMeta;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
   consensusGuard?: ConsensusGuardState;
   signerAddress?: `0x${string}`;
   oracleAddress?: `0x${string}`;
 }
 
-function formatExpiryUtc(expiryIso: string): string {
-  if (!expiryIso) return "08:00 UTC";
+function formatExpiryUtc(
+  expiryIso: string,
+  fallbackUtcHour: number
+): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (!expiryIso) return `${pad(fallbackUtcHour)}:00 UTC`;
   const d = new Date(expiryIso);
   if (Number.isNaN(d.getTime())) return expiryIso;
   const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const min = String(d.getUTCMinutes()).padStart(2, "0");
+  const mm = pad(d.getUTCMonth() + 1);
+  const dd = pad(d.getUTCDate());
+  const hh = pad(d.getUTCHours());
+  const min = pad(d.getUTCMinutes());
   return `${yyyy}-${mm}-${dd} ${hh}:${min} UTC`;
-}
-
-function formatStrikeNumber(
-  value: number | undefined,
-  underlying: UnderlyingSymbol
-): string {
-  if (value === undefined || !Number.isFinite(value)) return "--";
-  const isWhole = Math.abs(value - Math.round(value)) < 0.005;
-  const maxFrac = underlying === "BTC" ? 0 : isWhole ? 0 : 2;
-  return value.toLocaleString("en-US", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: maxFrac,
-  });
 }
 
 export function MarketRulesAccordion({
@@ -61,15 +62,32 @@ export function MarketRulesAccordion({
   ticket,
   grid,
   atlasTelemetry,
+  rwaTelemetry,
   consensusGuard,
   signerAddress,
   oracleAddress,
 }: MarketRulesAccordionProps): JSX.Element {
   const t = getCopy(locale);
   const isBull = direction === "BULL";
+  const spec = ASSET_SPECS[underlying];
+  const isRwa = spec.assetClass === "RWA_EQUITY";
   const feed = ATLAS_FEEDS[underlying];
 
-  const expiryUtc = formatExpiryUtc(expiryIso || ticket?.expiryIso || "");
+  const effectiveExpiryIso = expiryIso || ticket?.expiryIso || "";
+  const parsedExpiry = effectiveExpiryIso ? new Date(effectiveExpiryIso) : null;
+  const settlementUtcHour =
+    rwaTelemetry?.settlementUtcHour ??
+    (parsedExpiry && !Number.isNaN(parsedExpiry.getTime())
+      ? parsedExpiry.getUTCHours()
+      : spec.settlementUtcHour);
+  const clock = formatSettlementClock(settlementUtcHour);
+  const windowLabel = isRwa
+    ? locale === "zh"
+      ? `${clock.windowUtc} · 美股收盘`
+      : `${clock.windowUtc} · US Close`
+    : clock.windowUtc;
+
+  const expiryUtc = formatExpiryUtc(effectiveExpiryIso, settlementUtcHour);
   const startValue =
     ticket?.startPrice ??
     grid?.anchorStartPrice ??
@@ -79,16 +97,18 @@ export function MarketRulesAccordion({
     ticket && Number.isFinite(ticket.maxPayoutUsdt)
       ? ticket.maxPayoutUsdt.toFixed(2)
       : "--";
+  const effectiveFeedId = atlasTelemetry?.feedId || feed.feedId;
 
   const rules = [
     {
       id: "oracle",
       icon: Clock,
-      title: t.rulesItem1Title,
+      title: isRwa ? t.rulesItem1TitleRwa : t.rulesItem1Title,
       body: t.rulesItem1Body(
         underlying,
-        atlasTelemetry?.feedId || feed.feedId,
-        expiryUtc
+        effectiveFeedId,
+        expiryUtc,
+        windowLabel
       ),
     },
     {
@@ -108,6 +128,19 @@ export function MarketRulesAccordion({
       title: t.rulesItem3Title,
       body: t.rulesItem3Body,
     },
+    ...(isRwa
+      ? [
+          {
+            id: "rwa-bstock",
+            icon: Building2,
+            title: t.rulesItem4Title,
+            body: t.rulesItem4Body(
+              (rwaTelemetry?.shareMultiplier ?? 1.0008).toFixed(4),
+              effectiveFeedId
+            ),
+          },
+        ]
+      : []),
   ];
 
   return (

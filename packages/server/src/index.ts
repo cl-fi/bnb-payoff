@@ -4,6 +4,7 @@ async function main() {
   const { app, services } = await buildApp();
   await services.chain.getEffectiveNow();
   services.atlasOracle.start();
+  services.rwaRisk.start();
   services.marketData.start();
   services.chain.start();
 

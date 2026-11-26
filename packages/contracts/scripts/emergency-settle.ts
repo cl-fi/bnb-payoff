@@ -7,10 +7,35 @@ import * as path from "path";
  * never exposed via HTTP API).
  *
  * Usage (via env vars because Hardhat intercepts CLI flags):
- *   ACTION=pause   ASSET=BTC EXPIRY=1795593600 npx hardhat run scripts/emergency-settle.ts --network bscTestnet
- *   ACTION=unpause ASSET=BTC EXPIRY=1795593600 npx hardhat run scripts/emergency-settle.ts --network bscTestnet
- *   ACTION=settle  ASSET=BTC EXPIRY=1795593600 PRICE_USD=64250.50 REASON="Atlas 30m avg score 0.28 < 0.40" CONFIRM=yes npx hardhat run scripts/emergency-settle.ts --network bscTestnet
+ *   ACTION=pause   ASSET=BTC   EXPIRY=1795593600 npx hardhat run scripts/emergency-settle.ts --network bscTestnet
+ *   ACTION=pause   ASSET=NVDAB EXPIRY=1795640400 npx hardhat run scripts/emergency-settle.ts --network bscTestnet
+ *   ACTION=unpause ASSET=BTC   EXPIRY=1795593600 npx hardhat run scripts/emergency-settle.ts --network bscTestnet
+ *   ACTION=settle  ASSET=BTC   EXPIRY=1795593600 PRICE_USD=64250.50 REASON="Atlas 30m avg score 0.28 < 0.40" CONFIRM=yes npx hardhat run scripts/emergency-settle.ts --network bscTestnet
  */
+function getExpectedSettlementUtcHours(assetSym: string): number[] {
+  if (assetSym === "BTC" || assetSym === "ETH") {
+    return [8];
+  }
+  if (assetSym === "NVDAB") {
+    const envRaw = process.env.NVDAB_SETTLEMENT_UTC_HOUR?.trim();
+    if (envRaw) {
+      if (!/^\d+$/.test(envRaw)) {
+        throw new Error(
+          `Invalid NVDAB_SETTLEMENT_UTC_HOUR="${envRaw}" (expected integer UTC hour 0-23)`
+        );
+      }
+      const hour = Number(envRaw);
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+        throw new Error(`NVDAB_SETTLEMENT_UTC_HOUR=${hour} out of range (expected 0-23)`);
+      }
+      return [hour];
+    }
+    // Accept both US EST (21:00 UTC) and US EDT (20:00 UTC) regular closes
+    return [21, 20];
+  }
+  return [8];
+}
+
 async function main() {
   if (network.name === "hardhat") {
     throw new Error(
@@ -27,17 +52,24 @@ async function main() {
     throw new Error("Set ACTION=pause|unpause|settle");
   }
   if (!assetSym) {
-    throw new Error("Set ASSET=BTC or ASSET=ETH explicitly");
+    throw new Error("Set ASSET=BTC, ASSET=ETH, or ASSET=NVDAB explicitly");
   }
   if (!Number.isInteger(expiry) || expiry <= 0 || expiry >= 1e11) {
     throw new Error(
       "Set valid unix timestamp EXPIRY in seconds (e.g. 1795593600, NOT milliseconds)"
     );
   }
-  const isStandard08Utc = expiry >= 28800 && (expiry - 28800) % 86400 === 0;
-  if (!isStandard08Utc && !force) {
+  const expectedUtcHours = getExpectedSettlementUtcHours(assetSym);
+  const isAlignedExpiry = expectedUtcHours.some((hour) => {
+    const offsetSec = hour * 3600;
+    return expiry >= offsetSec && (expiry - offsetSec) % 86400 === 0;
+  });
+  if (!isAlignedExpiry && !force) {
+    const expectedLabels = expectedUtcHours
+      .map((h) => `${String(h).padStart(2, "0")}:00 UTC`)
+      .join(" or ");
     throw new Error(
-      `EXPIRY=${expiry} (${new Date(expiry * 1000).toISOString()}) is not aligned to 08:00 UTC. Pass FORCE=1 to override.`
+      `EXPIRY=${expiry} (${new Date(expiry * 1000).toISOString()}) is not aligned to ${expectedLabels} for ${assetSym}. Pass FORCE=1 to override.`
     );
   }
 
@@ -61,7 +93,7 @@ async function main() {
   const configuredFeedId = await oracle.assetFeedIds(assetId);
   if (configuredFeedId === "0x00000000") {
     throw new Error(
-      `ASSET=${assetSym} is NOT configured on oracle ${manifest.settlementOracleAddress} (assetFeedIds=0x00000000). Use BTC or ETH.`
+      `ASSET=${assetSym} is NOT configured on oracle ${manifest.settlementOracleAddress} (assetFeedIds=0x00000000). Use BTC, ETH, or NVDAB.`
     );
   }
 

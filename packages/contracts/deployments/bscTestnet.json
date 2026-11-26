@@ -16,6 +16,12 @@
       "feedId": "632",
       "feedIdHex": "0x00000278",
       "pair": "ETH/USD"
+    },
+    "NVDAB": {
+      "feedId": "1005",
+      "feedIdHex": "0x000003ed",
+      "pair": "NVDAB/USD",
+      "settlementUtcHour": 21
     }
   },
   "twapConfig": {

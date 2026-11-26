@@ -11,6 +11,7 @@ import {
   type Time,
 } from "lightweight-charts";
 import type { CandleBar, CandlePoint, TicketSummary } from "@payoff/shared";
+import { formatStrikeNumber, formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 import { SpreadRangePrimitive } from "./SpreadRangePrimitive";
 
@@ -125,6 +126,7 @@ export function KlineChart({
             borderDownColor: NEG_CRIMSON,
             wickUpColor: PAY_TEAL,
             wickDownColor: NEG_CRIMSON,
+            priceFormat: { type: "price", precision: 2, minMove: 0.01 },
             autoscaleInfoProvider,
           })
         : chart.addSeries(AreaSeries, {
@@ -134,6 +136,7 @@ export function KlineChart({
               : "rgba(181, 65, 52, 0.14)",
             bottomColor: "rgba(255, 255, 255, 0)",
             lineWidth: 2,
+            priceFormat: { type: "price", precision: 2, minMove: 0.01 },
             autoscaleInfoProvider,
           });
 
@@ -335,13 +338,15 @@ export function KlineChart({
             <span>
               {t.profitZone}{" "}
               <strong className="text-[#14202a] tabular-nums">
-                ${ticket.startPrice.toLocaleString()} → $
-                {ticket.capPrice.toLocaleString()}
+                {formatStrikePrice(ticket.startPrice, ticket.underlying)} →{" "}
+                {formatStrikePrice(ticket.capPrice, ticket.underlying)}
               </strong>
             </span>
           </div>
           <span className="text-[11px] text-[#667080] tabular-nums">
-            {t.perpCompare(ticket.perp50xLiqPrice.toLocaleString())}
+            {t.perpCompare(
+              formatStrikeNumber(ticket.perp50xLiqPrice, ticket.underlying)
+            )}
           </span>
         </div>
       )}

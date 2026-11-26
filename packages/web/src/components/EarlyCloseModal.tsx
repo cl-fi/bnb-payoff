@@ -8,7 +8,12 @@ import {
   ShieldCheck,
   X,
 } from "lucide-react";
-import type { CloseRfqResponse, PositionView } from "@payoff/shared";
+import {
+  ASSET_SPECS,
+  type CloseRfqResponse,
+  type PositionView,
+} from "@payoff/shared";
+import { formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 import { UsdtIcon } from "./PayoffMark";
 
@@ -136,9 +141,13 @@ export function EarlyCloseModal({
             {t.earlyCloseTitle}
           </h1>
           <p className="text-xs text-[#667080] mt-0.5 tabular-nums">
-            {position.underlying} {position.isUp ? t.bull : t.bear} · $
-            {position.startPrice.toLocaleString()} → $
-            {position.capPrice.toLocaleString()}
+            {ASSET_SPECS[position.underlying].displaySymbol}
+            {ASSET_SPECS[position.underlying].assetClass === "RWA_EQUITY"
+              ? " (RWA)"
+              : ""}{" "}
+            {position.isUp ? t.bull : t.bear} ·{" "}
+            {formatStrikePrice(position.startPrice, position.underlying)} →{" "}
+            {formatStrikePrice(position.capPrice, position.underlying)}
           </p>
         </div>
         <button

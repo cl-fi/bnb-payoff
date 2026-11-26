@@ -1,5 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { validateCustomSpreadRange } from "../src/index.js";
+import {
+  ASSET_IDS,
+  ASSET_NVDAB_ID,
+  ASSET_SPECS,
+  ATLAS_FEEDS,
+  SUPPORTED_UNDERLYINGS,
+  Underlying,
+  assetIdToSymbol,
+  formatSettlementLabel,
+  generateOccEquityStrikes,
+  getAssetSettlementUtcHour,
+  getNextUsEquityOptionExpiry,
+  isSupportedUnderlying,
+  isUsEquityMarketHoliday,
+  symbolToAssetId,
+  symbolToUnderlying,
+  underlyingToSymbol,
+  validateCustomSpreadRange,
+} from "../src/index.js";
 
 const btcStrikes = [
   59000, 59500, 60000, 60500, 61000, 61500, 62000, 62500, 63000, 63500, 64000,
@@ -213,5 +231,322 @@ describe("@payoff/shared Layer-2 custom range guardrails", () => {
     expect(res.valid).toBe(true);
     expect(res.lowMultiplierWarning).toBe(true);
     expect(res.warnings[0]).toContain("当前区间偏保守收租");
+  });
+
+  it("validates NVDAB:DAILY ($2.50-$10.00) and NVDAB:WEEKLY ($5-$20) OCC-aligned spreads against width caps", () => {
+    const spot = 153.5;
+    const occStrikes = generateOccEquityStrikes(spot);
+
+    // NVDAB:DAILY widths: $2.50 (1.63%), $5.00 (3.26%), $7.50 (4.89%), $10.00 (6.51% <= 7.2%)
+    for (const width of [2.5, 5.0, 7.5, 10.0]) {
+      const lower = 152.5;
+      const upper = lower + width;
+      const res = validateCustomSpreadRange({
+        underlying: "NVDAB",
+        isCall: true,
+        spot,
+        lowerStrike: lower,
+        upperStrike: upper,
+        tenor: "DAILY",
+        hoursToExpiry: 24,
+        atmIv: 0.52,
+        availableStrikes: occStrikes,
+        maxMultiplier: 2.6,
+        shortLegSubsidyRatio: 0.22,
+      });
+      expect(res.valid).toBe(true);
+      expect(res.strikeAligned).toBe(true);
+      expect(res.widthWithinCap).toBe(true);
+    }
+
+    // NVDAB:DAILY over-cap ($15.00 = 9.77% > 8.0%) must fail
+    const dailyOver = validateCustomSpreadRange({
+      underlying: "NVDAB",
+      isCall: true,
+      spot,
+      lowerStrike: 152.5,
+      upperStrike: 167.5,
+      tenor: "DAILY",
+      hoursToExpiry: 24,
+      atmIv: 0.52,
+      availableStrikes: occStrikes,
+      maxMultiplier: 3.8,
+      shortLegSubsidyRatio: 0.1,
+    });
+    expect(dailyOver.valid).toBe(false);
+    expect(dailyOver.widthWithinCap).toBe(false);
+
+    // Unaligned non-OCC strike ($151.50 in >$150 $2.50 zone) must fail
+    const unaligned = validateCustomSpreadRange({
+      underlying: "NVDAB",
+      isCall: true,
+      spot,
+      lowerStrike: 151.5,
+      upperStrike: 155,
+      tenor: "DAILY",
+      hoursToExpiry: 24,
+      atmIv: 0.52,
+      availableStrikes: occStrikes,
+      maxMultiplier: 2.2,
+      shortLegSubsidyRatio: 0.2,
+    });
+    expect(unaligned.valid).toBe(false);
+    expect(unaligned.strikeAligned).toBe(false);
+
+    // NVDAB:WEEKLY widths: $5 (3.26%), $10 (6.51%), $15 (9.77%), $20 (13.03% <= 14.0%)
+    for (const width of [5, 10, 15, 20]) {
+      const lower = 150;
+      const upper = lower + width;
+      const res = validateCustomSpreadRange({
+        underlying: "NVDAB",
+        isCall: true,
+        spot,
+        lowerStrike: lower,
+        upperStrike: upper,
+        tenor: "WEEKLY",
+        hoursToExpiry: 144,
+        atmIv: 0.52,
+        availableStrikes: occStrikes,
+        maxMultiplier: 2.8,
+        shortLegSubsidyRatio: 0.25,
+      });
+      expect(res.valid).toBe(true);
+      expect(res.strikeAligned).toBe(true);
+      expect(res.widthWithinCap).toBe(true);
+    }
+
+    // NVDAB:WEEKLY over-cap ($27.50 = 17.92% > 16.0%) must fail
+    const weeklyOver = validateCustomSpreadRange({
+      underlying: "NVDAB",
+      isCall: true,
+      spot,
+      lowerStrike: 150,
+      upperStrike: 177.5,
+      tenor: "WEEKLY",
+      hoursToExpiry: 144,
+      atmIv: 0.52,
+      availableStrikes: occStrikes,
+      maxMultiplier: 4.2,
+      shortLegSubsidyRatio: 0.1,
+    });
+    expect(weeklyOver.valid).toBe(false);
+    expect(weeklyOver.widthWithinCap).toBe(false);
+  });
+});
+
+describe("@payoff/shared NVDAB metadata, OCC strikes, US equity expiry & settlement label", () => {
+  it("exports NVDAB asset metadata, Atlas feed #1005, and conversion helpers", () => {
+    expect(Underlying.NVDAB).toBe(2);
+    expect(SUPPORTED_UNDERLYINGS).toEqual(["BTC", "ETH", "NVDAB"]);
+    expect(isSupportedUnderlying("BTC")).toBe(true);
+    expect(isSupportedUnderlying("ETH")).toBe(true);
+    expect(isSupportedUnderlying("NVDAB")).toBe(true);
+    expect(isSupportedUnderlying("SOL")).toBe(false);
+    expect(isSupportedUnderlying(undefined)).toBe(false);
+
+    expect(ASSET_IDS.NVDAB).toBe(ASSET_NVDAB_ID);
+    expect(symbolToAssetId("NVDAB")).toBe(ASSET_NVDAB_ID);
+    expect(assetIdToSymbol(ASSET_NVDAB_ID)).toBe("NVDAB");
+    expect(underlyingToSymbol(Underlying.NVDAB)).toBe("NVDAB");
+    expect(symbolToUnderlying("NVDAB")).toBe(Underlying.NVDAB);
+
+    expect(ATLAS_FEEDS.NVDAB).toEqual({
+      feedId: "1005",
+      feedIdHex: "0x000003ed",
+      pair: "NVDAB/USD",
+    });
+
+    expect(ASSET_SPECS.NVDAB.assetClass).toBe("RWA_EQUITY");
+    expect(ASSET_SPECS.NVDAB.displaySymbol).toBe("NVDA");
+    expect(ASSET_SPECS.NVDAB.binanceSpotSymbol).toBe("NVDABUSDT");
+    expect(ASSET_SPECS.NVDAB.binancePerpSymbol).toBe("NVDAUSDT");
+    expect(getAssetSettlementUtcHour("BTC")).toBe(8);
+    expect(getAssetSettlementUtcHour("ETH")).toBe(8);
+    expect(getAssetSettlementUtcHour("NVDAB")).toBe(21);
+  });
+
+  it("generates exact CBOE/OCC equity strikes across $1, $2.50, and $5 transitions", () => {
+    // Spanning both $150 and $200 boundaries: spot = 180 -> [144, 216]
+    const wide = generateOccEquityStrikes(180);
+    expect(wide[0]).toBeLessThanOrEqual(180 * 0.8);
+    expect(wide[wide.length - 1]).toBeGreaterThanOrEqual(180 * 1.2);
+
+    // Check transitions explicitly
+    expect(wide).toContain(148);
+    expect(wide).toContain(149);
+    expect(wide).toContain(150);
+    expect(wide).toContain(152.5);
+    expect(wide).toContain(155);
+    expect(wide).not.toContain(151);
+    expect(wide).not.toContain(152);
+    expect(wide).toContain(197.5);
+    expect(wide).toContain(200);
+    expect(wide).toContain(205);
+    expect(wide).toContain(210);
+    expect(wide).not.toContain(202.5);
+
+    // Verify exact step size between every adjacent pair
+    for (let i = 1; i < wide.length; i++) {
+      const prev = wide[i - 1]!;
+      const curr = wide[i]!;
+      const step = curr - prev;
+      if (curr <= 150) {
+        expect(step).toBe(1);
+      } else if (curr <= 200) {
+        expect(step).toBe(2.5);
+      } else {
+        expect(step).toBe(5);
+      }
+    }
+
+    // Sub-$150 zone (spot = 100 -> [80..120], all $1 steps)
+    const low = generateOccEquityStrikes(100);
+    expect(low[0]).toBe(80);
+    expect(low[low.length - 1]).toBe(120);
+    expect(low.length).toBe(41);
+
+    // Above-$200 zone (spot = 250 -> [200..300], all $5 steps)
+    const high = generateOccEquityStrikes(250);
+    expect(high[0]).toBe(200);
+    expect(high[high.length - 1]).toBe(300);
+    expect(high.length).toBe(21);
+
+    // Edge boundary spot where minStrike = 150.4 snaps down to 150 cleanly
+    const boundary = generateOccEquityStrikes(188);
+    expect(boundary[0]).toBe(150);
+    expect(boundary[1]).toBe(152.5);
+
+    // Non-positive spot guard
+    expect(generateOccEquityStrikes(0)).toEqual([]);
+    expect(generateOccEquityStrikes(-10)).toEqual([]);
+  });
+
+  it("computes deterministic Mon/Wed/Fri DAILY and Friday WEEKLY US equity expiries (lead time, weekends, holidays, DST, listedDates)", () => {
+    const utcSec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+    // 1. Weekday M/W/F with >= 8h lead time vs < 8h lead time
+    // Wed 2026-12-02 12:00 UTC -> 9h before 21:00 UTC -> same day Wed 2026-12-02 21:00 UTC
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-02T12:00:00Z"), "DAILY", 21)
+    ).toBe(utcSec("2026-12-02T21:00:00Z"));
+
+    // Wed 2026-12-02 13:01 UTC -> 7h59m (< 8h) -> rolls to Fri 2026-12-04 21:00 UTC
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-02T13:01:00Z"), "DAILY", 21)
+    ).toBe(utcSec("2026-12-04T21:00:00Z"));
+
+    // 2. Weekend rollover (Saturday & Sunday -> Monday 21:00 UTC)
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-11-28T15:00:00Z"), "DAILY", 21)
+    ).toBe(utcSec("2026-11-30T21:00:00Z"));
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-11-29T18:00:00Z"), "DAILY", 21)
+    ).toBe(utcSec("2026-11-30T21:00:00Z"));
+
+    // 3. WEEKLY Friday >= 72h lead time
+    // Tue 2026-12-01 12:00 UTC -> Fri 2026-12-04 21:00 UTC is 81h (>= 72h)
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-01T12:00:00Z"), "WEEKLY", 21)
+    ).toBe(utcSec("2026-12-04T21:00:00Z"));
+    // Wed 2026-12-02 12:00 UTC -> Fri 2026-12-04 21:00 UTC is 57h (< 72h) -> next Fri 2026-12-11 21:00 UTC
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-02T12:00:00Z"), "WEEKLY", 21)
+    ).toBe(utcSec("2026-12-11T21:00:00Z"));
+
+    // 4. US Market Holidays:
+    // MLK Day Mon 2026-01-19 is a holiday -> Sun 2026-01-18 DAILY skips Mon to Wed 2026-01-21
+    expect(isUsEquityMarketHoliday(new Date("2026-01-19T00:00:00Z"))).toBe(true);
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-01-18T12:00:00Z"), "DAILY", 21)
+    ).toBe(utcSec("2026-01-21T21:00:00Z"));
+
+    // Good Friday 2026-04-03: OCC rule moves Friday expiry to preceding trading day Thu 2026-04-02
+    expect(isUsEquityMarketHoliday(new Date("2026-04-03T00:00:00Z"))).toBe(true);
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-04-01T15:00:00Z"), "DAILY", 20)
+    ).toBe(utcSec("2026-04-02T20:00:00Z"));
+    // Once within <8h of Thu 2026-04-02 20:00 UTC, DAILY rolls to Mon 2026-04-06
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-04-02T14:00:00Z"), "DAILY", 20)
+    ).toBe(utcSec("2026-04-06T20:00:00Z"));
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-03-30T12:00:00Z"), "WEEKLY", 20)
+    ).toBe(utcSec("2026-04-02T20:00:00Z"));
+
+    // Christmas Friday 2026-12-25 & New Year Friday 2027-01-01 -> holiday-adjusted Thu 12-24 & Thu 12-31 for both DAILY & WEEKLY
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-23T13:00:01Z"), "DAILY", 21)
+    ).toBe(utcSec("2026-12-24T21:00:00Z"));
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-30T14:00:00Z"), "DAILY", 21)
+    ).toBe(utcSec("2026-12-31T21:00:00Z"));
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-21T12:00:00Z"), "WEEKLY", 21)
+    ).toBe(utcSec("2026-12-24T21:00:00Z"));
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-12-27T12:00:00Z"), "WEEKLY", 21)
+    ).toBe(utcSec("2026-12-31T21:00:00Z"));
+
+    // Independence Day 2026 (Sat Jul 4 -> observed Fri Jul 3) -> holiday-adjusted Thu 2026-07-02
+    expect(isUsEquityMarketHoliday(new Date("2026-07-03T00:00:00Z"))).toBe(true);
+    expect(
+      getNextUsEquityOptionExpiry(utcSec("2026-06-29T12:00:00Z"), "WEEKLY", 20)
+    ).toBe(utcSec("2026-07-02T20:00:00Z"));
+
+    // 5. ThetaData listedDates override (supports both YYYY-MM-DD and YYYYMMDD)
+    const listed = [
+      "2026-11-27",
+      "20261130",
+      "2026-12-02",
+      "2026-12-04",
+      "2026-12-24",
+    ];
+    // Fri 11-27 14:00 UTC (< 8h to 21:00) -> selects next listed Mon 11-30
+    expect(
+      getNextUsEquityOptionExpiry(
+        utcSec("2026-11-27T14:00:00Z"),
+        "DAILY",
+        21,
+        listed
+      )
+    ).toBe(utcSec("2026-11-30T21:00:00Z"));
+    // WEEKLY picks listed Fri 12-04 (>= 72h)
+    expect(
+      getNextUsEquityOptionExpiry(
+        utcSec("2026-11-27T14:00:00Z"),
+        "WEEKLY",
+        21,
+        listed
+      )
+    ).toBe(utcSec("2026-12-04T21:00:00Z"));
+    // WEEKLY recognizes holiday-adjusted listed Thu 2026-12-24 (Fri 12-25 is Christmas)
+    expect(
+      getNextUsEquityOptionExpiry(
+        utcSec("2026-12-20T12:00:00Z"),
+        "WEEKLY",
+        21,
+        listed
+      )
+    ).toBe(utcSec("2026-12-24T21:00:00Z"));
+  });
+
+  it("formats settlement labels with dynamic UTC+8 hour rollover", () => {
+    const utcSec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+    // BTC / ETH: 08:00 UTC -> 16:00 UTC+8
+    expect(formatSettlementLabel(utcSec("2026-11-27T08:00:00Z"))).toBe(
+      "11-27 08:00 UTC (16:00 UTC+8)"
+    );
+    // NVDAB EST: 21:00 UTC -> 05:00 UTC+8 (rollover past midnight)
+    expect(formatSettlementLabel(utcSec("2026-11-27T21:00:00Z"))).toBe(
+      "11-27 21:00 UTC (05:00 UTC+8)"
+    );
+    // NVDAB EDT (DST): 20:00 UTC -> 04:00 UTC+8
+    expect(formatSettlementLabel(utcSec("2026-07-02T20:00:00Z"))).toBe(
+      "07-02 20:00 UTC (04:00 UTC+8)"
+    );
+    // Exact midnight rollover: 16:00 UTC -> 00:00 UTC+8
+    expect(formatSettlementLabel(utcSec("2026-11-27T16:00:00Z"))).toBe(
+      "11-27 16:00 UTC (00:00 UTC+8)"
+    );
   });
 });

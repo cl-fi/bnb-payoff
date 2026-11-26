@@ -3,10 +3,37 @@ import * as fs from "fs";
 import * as path from "path";
 
 const ATLAS_OFFICIAL_SIGNER = "0x59eD4701224fD9e2a85Ef2946c2ab828C1dDC600";
+const ASSET_NVDAB = ethers.keccak256(ethers.toUtf8Bytes("NVDAB"));
+
+function parseSettlementUtcHour(raw: string | undefined, defaultHour: number): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) return defaultHour;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid NVDAB_SETTLEMENT_UTC_HOUR="${trimmed}" (expected integer UTC hour 0-23)`
+    );
+  }
+  const hour = Number(trimmed);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+    throw new Error(`NVDAB_SETTLEMENT_UTC_HOUR=${hour} out of range (expected 0-23)`);
+  }
+  return hour;
+}
+
+const NVDAB_SETTLEMENT_UTC_HOUR = parseSettlementUtcHour(
+  process.env.NVDAB_SETTLEMENT_UTC_HOUR,
+  21
+);
 
 const ATLAS_FEEDS = {
   BTC: { feedId: "626", feedIdHex: "0x00000272", pair: "BTC/USD" },
   ETH: { feedId: "632", feedIdHex: "0x00000278", pair: "ETH/USD" },
+  NVDAB: {
+    feedId: "1005",
+    feedIdHex: "0x000003ed",
+    pair: "NVDAB/USD",
+    settlementUtcHour: NVDAB_SETTLEMENT_UTC_HOUR,
+  },
 };
 
 function normalizePrivateKey(raw?: string): string | undefined {
@@ -77,6 +104,24 @@ async function main() {
   await lens.waitForDeployment();
   const lensAddress = await lens.getAddress();
   console.log("Deployed PayoffVaultLens (Periphery):", lensAddress);
+
+  // 4b. Auto-register NVDAB RWA asset (US Close 21:00 UTC EST, Atlas feed #1005 / 0x000003ed)
+  await (
+    await oracle.setAssetFeedId(ASSET_NVDAB, ATLAS_FEEDS.NVDAB.feedIdHex, txOverrides)
+  ).wait();
+  await (
+    await vault.setAssetConfig(
+      ASSET_NVDAB,
+      true,
+      true,
+      NVDAB_SETTLEMENT_UTC_HOUR * 3600,
+      86400,
+      txOverrides
+    )
+  ).wait();
+  console.log(
+    `Registered NVDAB RWA asset: feedId=${ATLAS_FEEDS.NVDAB.feedIdHex} (#${ATLAS_FEEDS.NVDAB.feedId}), settlementUtc=${String(NVDAB_SETTLEMENT_UTC_HOUR).padStart(2, "0")}:00 UTC, cadence=86400s`
+  );
 
   // 5. Whitelist & pre-fund market maker margin (exact finite approval, zero standing MaxUint256)
   const targetMargin = ethers.parseUnits(

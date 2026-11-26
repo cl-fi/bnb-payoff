@@ -1,6 +1,10 @@
 import {
+  ASSET_SPECS,
+  SUPPORTED_UNDERLYINGS,
   bsOptionPrice,
-  SETTLEMENT_UTC_HOUR,
+  generateOccEquityStrikes,
+  getAssetSettlementUtcHour,
+  getNextUsEquityOptionExpiry,
   type AtlasFeedTelemetry,
   type CandleBar,
   type CandlePoint,
@@ -12,16 +16,7 @@ import {
   type UnderlyingSymbol,
 } from "@payoff/shared";
 import type { AtlasOracleService } from "./atlasOracle.js";
-
-const DEFAULT_SPOT: Record<UnderlyingSymbol, number> = {
-  BTC: 61500,
-  ETH: 1750,
-};
-
-const DEFAULT_IV: Record<UnderlyingSymbol, number> = {
-  BTC: 0.6,
-  ETH: 0.65,
-};
+import type { RwaRiskService } from "./rwaRiskService.js";
 
 const BINANCE_INTERVAL_MAP: Record<CandleBar, string> = {
   "5m": "5m",
@@ -45,21 +40,28 @@ export type BinanceKlinesFetcher = (
   limit: number
 ) => Promise<unknown[][]>;
 
-function next08UtcTimestamp(fromSec: number, daysAhead: number): number {
+function nextUtcHourTimestamp(
+  fromSec: number,
+  settlementUtcHour: number,
+  daysAhead: number
+): number {
   const daySec = 86400;
-  const offset = SETTLEMENT_UTC_HOUR * 3600;
+  const offset = settlementUtcHour * 3600;
   const currentDayIndex = Math.floor((fromSec - offset) / daySec);
   return (currentDayIndex + daysAhead) * daySec + offset;
 }
 
-function nextWeeklyFriday08Utc(fromSec: number): number {
+function nextWeeklyFridayUtcHour(
+  fromSec: number,
+  settlementUtcHour: number
+): number {
   for (let d = 3; d <= 9; d++) {
-    const candidate = next08UtcTimestamp(fromSec, d);
+    const candidate = nextUtcHourTimestamp(fromSec, settlementUtcHour, d);
     if (new Date(candidate * 1000).getUTCDay() === 5) {
       return candidate;
     }
   }
-  return next08UtcTimestamp(fromSec, 5);
+  return nextUtcHourTimestamp(fromSec, settlementUtcHour, 5);
 }
 
 function formatInstDate(expirySec: number): string {
@@ -70,7 +72,7 @@ function formatInstDate(expirySec: number): string {
   return `${yy}${mm}${dd}`;
 }
 
-function buildSyntheticStrikeQuote(params: {
+export function buildSyntheticStrikeQuote(params: {
   underlying: UnderlyingSymbol;
   expirySec: number;
   strike: number;
@@ -88,9 +90,23 @@ function buildSyntheticStrikeQuote(params: {
   const callIsItm = spot > strike;
   const putIsItm = spot < strike;
 
-  const baseSpread = underlying === "BTC" ? spot * 0.00028 : spot * 0.00035;
+  const isEquity = ASSET_SPECS[underlying].assetClass === "RWA_EQUITY";
+  const minBid = isEquity ? 0.01 : 0.5;
+  const minAsk = isEquity ? 0.02 : 1.0;
+
+  const baseSpread =
+    underlying === "BTC"
+      ? spot * 0.00028
+      : isEquity
+        ? Math.max(0.01, spot * 0.0004)
+        : spot * 0.00035;
   const callHalfSpread = callIsItm ? baseSpread * 2.4 : baseSpread * 0.65;
   const putHalfSpread = putIsItm ? baseSpread * 2.4 : baseSpread * 0.65;
+
+  const callBid = Math.max(minBid, cFair - callHalfSpread);
+  const callAsk = Math.max(minAsk, callBid + minBid, cFair + callHalfSpread);
+  const putBid = Math.max(minBid, pFair - putHalfSpread);
+  const putAsk = Math.max(minAsk, putBid + minBid, pFair + putHalfSpread);
 
   const instIdPrefix = `${underlying}-USD-${formatInstDate(expirySec)}-${strike}`;
 
@@ -99,8 +115,8 @@ function buildSyntheticStrikeQuote(params: {
     call: {
       strike,
       instId: `${instIdPrefix}-C`,
-      bidUsd: Math.max(0.5, cFair - callHalfSpread),
-      askUsd: Math.max(1.0, cFair + callHalfSpread),
+      bidUsd: callBid,
+      askUsd: callAsk,
       markUsd: cFair,
       iv,
       bidSize: 40,
@@ -109,8 +125,8 @@ function buildSyntheticStrikeQuote(params: {
     put: {
       strike,
       instId: `${instIdPrefix}-P`,
-      bidUsd: Math.max(0.5, pFair - putHalfSpread),
-      askUsd: Math.max(1.0, pFair + putHalfSpread),
+      bidUsd: putBid,
+      askUsd: putAsk,
       markUsd: pFair,
       iv,
       bidSize: 40,
@@ -123,7 +139,10 @@ function generateGridStrikes(
   underlying: UnderlyingSymbol,
   spot: number
 ): number[] {
-  const step = underlying === "BTC" ? 500 : 25;
+  if (ASSET_SPECS[underlying].assetClass === "RWA_EQUITY") {
+    return generateOccEquityStrikes(spot);
+  }
+  const step = ASSET_SPECS[underlying].defaultDailyStep;
   const center = Math.round(spot / step) * step;
   const strikes: number[] = [];
   for (let i = -16; i <= 16; i++) {
@@ -179,7 +198,9 @@ export class MarketDataService {
   private enableLiveAtlas: boolean;
   private enableBinanceKlines: boolean;
   private pollIntervalMs: number;
+  private nvdabSettlementUtcHour: number;
   private binanceKlinesFetcher?: BinanceKlinesFetcher;
+  private rwaRisk?: RwaRiskService;
 
   constructor(
     private atlasOracle: AtlasOracleService,
@@ -187,20 +208,29 @@ export class MarketDataService {
       enableLiveAtlas: boolean;
       enableBinanceKlines: boolean;
       pollIntervalMs: number;
+      nvdabSettlementUtcHour?: number;
       effectiveNowFn?: () => number;
       binanceKlinesFetcher?: BinanceKlinesFetcher;
+      rwaRisk?: RwaRiskService;
     }
   ) {
     this.enableLiveAtlas = opts.enableLiveAtlas;
     this.enableBinanceKlines = opts.enableBinanceKlines;
     this.pollIntervalMs = opts.pollIntervalMs;
+    this.nvdabSettlementUtcHour =
+      opts.nvdabSettlementUtcHour ?? ASSET_SPECS.NVDAB.settlementUtcHour;
     this.effectiveNowFn =
       opts.effectiveNowFn ?? (() => Math.floor(Date.now() / 1000));
     this.binanceKlinesFetcher = opts.binanceKlinesFetcher;
+    this.rwaRisk = opts.rwaRisk;
 
-    for (const u of ["BTC", "ETH"] as UnderlyingSymbol[]) {
+    for (const u of SUPPORTED_UNDERLYINGS) {
       this.snapshots.set(u, this.buildSyntheticSnapshot(u));
     }
+  }
+
+  setRwaRisk(rwaRisk?: RwaRiskService) {
+    this.rwaRisk = rwaRisk;
   }
 
   setBinanceKlinesFetcher(fetcher?: BinanceKlinesFetcher) {
@@ -230,11 +260,15 @@ export class MarketDataService {
 
   private deriveEffectiveIv(
     underlying: UnderlyingSymbol,
-    _telemetry?: AtlasFeedTelemetry
+    _telemetry?: AtlasFeedTelemetry,
+    tenor: ExpiryTenor = "DAILY"
   ): number {
-    // Keep baseline IV clean here; Atlas `priceVolatility` & `ConsensusScore` IV floor
-    // boosts are applied solely inside `@payoff/mock-maker` (`ShelfEngine`) to avoid double-counting.
-    return DEFAULT_IV[underlying];
+    // Keep baseline IV clean here; Atlas `priceVolatility` & `ConsensusScore` / RWA session
+    // IV floor boosts are applied solely inside `@payoff/mock-maker` (`ShelfEngine`) to avoid double-counting.
+    if (underlying === "NVDAB" && this.rwaRisk) {
+      return this.rwaRisk.getEffectiveAtmIv(tenor);
+    }
+    return ASSET_SPECS[underlying].defaultIv;
   }
 
   start() {
@@ -258,20 +292,48 @@ export class MarketDataService {
     if (!current || !current.daily || current.daily.expiry <= effNow + 3600) {
       const spot = live
         ? latestTelemetry.price
-        : current?.spot ?? DEFAULT_SPOT[underlying];
+        : current?.spot ?? ASSET_SPECS[underlying].defaultSpot;
       const dataSource: DataSourceStatus = live
         ? "LIVE_ATLAS"
         : current?.dataSource ?? "SYNTHETIC_FALLBACK";
       const rebuilt = this.buildSyntheticSnapshot(
         underlying,
         spot,
-        live ? this.atlasOracle.get24hChangePct(underlying) : current?.change24hPct ?? 0,
+        live
+          ? this.atlasOracle.get24hChangePct(underlying)
+          : current?.change24hPct ?? 0,
         this.deriveEffectiveIv(underlying, latestTelemetry),
         dataSource,
         latestTelemetry
       );
       this.snapshots.set(underlying, rebuilt);
       return rebuilt;
+    }
+
+    if (underlying === "NVDAB" && this.rwaRisk) {
+      const dailyRwa = current.daily
+        ? this.rwaRisk.getTelemetry("NVDAB", {
+            expiry: current.daily.expiry,
+            nowSec: effNow,
+          })
+        : undefined;
+      const weeklyRwa = current.weekly
+        ? this.rwaRisk.getTelemetry("NVDAB", {
+            expiry: current.weekly.expiry,
+            nowSec: effNow,
+          })
+        : undefined;
+      return {
+        ...current,
+        atlasTelemetry: latestTelemetry,
+        rwaTelemetry: dailyRwa,
+        daily: current.daily
+          ? { ...current.daily, rwaTelemetry: dailyRwa }
+          : undefined,
+        weekly: current.weekly
+          ? { ...current.weekly, rwaTelemetry: weeklyRwa }
+          : undefined,
+      };
     }
 
     return {
@@ -302,7 +364,11 @@ export class MarketDataService {
     limit = 120
   ): Promise<{ candles: CandlePoint[]; source: "BINANCE_KLINES" | "SYNTHETIC" }> {
     const snap = this.getSnapshot(underlying);
-    const key = `${underlying}-${bar}-${limit}`;
+    const isRwaEquity = ASSET_SPECS[underlying].assetClass === "RWA_EQUITY";
+    const shareMultiplier = isRwaEquity
+      ? this.rwaRisk?.getShareMultiplier() ?? 1.0
+      : 1.0;
+    const key = `${underlying}-${bar}-${limit}-${shareMultiplier.toFixed(6)}`;
     const cached = this.candleCache.get(key);
     if (cached && Date.now() - cached.fetchedAt < 10_000) {
       return {
@@ -314,20 +380,30 @@ export class MarketDataService {
     if (this.enableBinanceKlines || this.binanceKlinesFetcher) {
       try {
         const interval = BINANCE_INTERVAL_MAP[bar] || "15m";
-        const symbol = `${underlying}USDT`;
+        const symbol = ASSET_SPECS[underlying].binanceSpotSymbol;
         const rawRows = this.binanceKlinesFetcher
           ? await this.binanceKlinesFetcher(symbol, interval, limit)
           : await fetchJson<unknown[][]>(
               `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
             );
 
+        // For RWA bStocks (e.g. NVDABUSDT), Binance spot bars are 1-share prices;
+        // scale OHLC by live Atlas shareMultiplier BEFORE anchoring to Atlas #1005 1-token spot.
+        const scalePrice = (raw: unknown): number => {
+          const v = Number(raw);
+          if (!Number.isFinite(v)) return v;
+          return isRwaEquity
+            ? Number((v * shareMultiplier).toFixed(4))
+            : v;
+        };
+
         const rows: CandlePoint[] = (rawRows || [])
           .map((row) => ({
             time: Math.floor(Number(row[0]) / 1000),
-            open: Number(row[1]),
-            high: Number(row[2]),
-            low: Number(row[3]),
-            close: Number(row[4]),
+            open: scalePrice(row[1]),
+            high: scalePrice(row[2]),
+            low: scalePrice(row[3]),
+            close: scalePrice(row[4]),
           }))
           .filter(
             (c) =>
@@ -388,7 +464,7 @@ export class MarketDataService {
     if (this.enableLiveAtlas && !this.atlasOracle.isWsConnected()) {
       await this.atlasOracle.refreshLatest();
     }
-    await Promise.all([this.refreshOne("BTC"), this.refreshOne("ETH")]);
+    await Promise.all(SUPPORTED_UNDERLYINGS.map((u) => this.refreshOne(u)));
   }
 
   async refreshOne(underlying: UnderlyingSymbol): Promise<MarketSnapshot> {
@@ -398,7 +474,7 @@ export class MarketDataService {
     const prev = this.snapshots.get(underlying);
     const spot = live
       ? telemetry.price
-      : prev?.spot ?? DEFAULT_SPOT[underlying];
+      : prev?.spot ?? ASSET_SPECS[underlying].defaultSpot;
     const change24hPct = live
       ? this.atlasOracle.get24hChangePct(underlying)
       : prev?.change24hPct ?? 0;
@@ -419,34 +495,98 @@ export class MarketDataService {
     return snap;
   }
 
+  private resolveStrikesForTenor(
+    underlying: UnderlyingSymbol,
+    spot: number,
+    tenor: ExpiryTenor
+  ): number[] {
+    if (underlying === "NVDAB" && this.rwaRisk) {
+      const thetaStrikes = this.rwaRisk.getThetaStrikes(tenor);
+      if (thetaStrikes && thetaStrikes.length >= 8) {
+        const sorted = [...new Set(thetaStrikes)]
+          .filter((k) => Number.isFinite(k) && k > 0)
+          .sort((a, b) => a - b);
+        const minK = sorted[0]!;
+        const maxK = sorted[sorted.length - 1]!;
+        // Use live ThetaData strikes when they span around live Atlas spot
+        if (minK <= spot * 0.92 && maxK >= spot * 1.08) {
+          return sorted;
+        }
+      }
+    }
+    return generateGridStrikes(underlying, spot);
+  }
+
   buildSyntheticSnapshot(
     underlying: UnderlyingSymbol,
-    spot = DEFAULT_SPOT[underlying],
+    spot = ASSET_SPECS[underlying].defaultSpot,
     change24hPct = 1.4,
-    iv = DEFAULT_IV[underlying],
+    iv = ASSET_SPECS[underlying].defaultIv,
     dataSource: DataSourceStatus = "SYNTHETIC_FALLBACK",
     atlasTelemetry?: AtlasFeedTelemetry
   ): MarketSnapshot {
     const effNow = this.effectiveNowFn();
-    const dailyExp = next08UtcTimestamp(effNow, 1);
-    const dailyExpiry =
-      dailyExp - effNow >= 8 * 3600 ? dailyExp : next08UtcTimestamp(effNow, 2);
-    const weeklyExpiry = nextWeeklyFriday08Utc(effNow);
-    const strikes = generateGridStrikes(underlying, spot);
+    const spec = ASSET_SPECS[underlying];
+    let dailyExpiry: number;
+    let weeklyExpiry: number;
+
+    if (spec.expiryCadence === "US_EQUITY_MWF") {
+      const settlementHour =
+        this.rwaRisk?.getSettlementUtcHour() ?? this.nvdabSettlementUtcHour;
+      const listedDates = this.rwaRisk?.getThetaListedExpirations();
+      dailyExpiry = getNextUsEquityOptionExpiry(
+        effNow,
+        "DAILY",
+        settlementHour,
+        listedDates
+      );
+      weeklyExpiry = getNextUsEquityOptionExpiry(
+        effNow,
+        "WEEKLY",
+        settlementHour,
+        listedDates
+      );
+      void this.rwaRisk?.observeExpiry(dailyExpiry);
+      void this.rwaRisk?.observeExpiry(weeklyExpiry);
+    } else {
+      const settlementHour = getAssetSettlementUtcHour(underlying);
+      const dailyExp = nextUtcHourTimestamp(effNow, settlementHour, 1);
+      dailyExpiry =
+        dailyExp - effNow >= 8 * 3600
+          ? dailyExp
+          : nextUtcHourTimestamp(effNow, settlementHour, 2);
+      weeklyExpiry = nextWeeklyFridayUtcHour(effNow, settlementHour);
+    }
 
     const makeBook = (tenor: ExpiryTenor, expirySec: number): ExpiryBook => {
       const hoursToExpiry = Math.max(4, (expirySec - effNow) / 3600);
+      const strikes = this.resolveStrikesForTenor(underlying, spot, tenor);
+      const bookAtmIv =
+        underlying === "NVDAB" && this.rwaRisk
+          ? this.rwaRisk.getEffectiveAtmIv(tenor)
+          : iv;
       const syntheticStrikes: Record<number, OptionStrikeQuote> = {};
       for (const k of strikes) {
+        const strikeIv =
+          underlying === "NVDAB" && this.rwaRisk
+            ? this.rwaRisk.resolveStrikeIv(k, spot, tenor)
+            : bookAtmIv;
         syntheticStrikes[k] = buildSyntheticStrikeQuote({
           underlying,
           expirySec,
           strike: k,
           spot,
-          iv,
+          iv: strikeIv,
           hoursToExpiry,
         });
       }
+      const rwaTelemetry =
+        underlying === "NVDAB"
+          ? this.rwaRisk?.getTelemetry("NVDAB", {
+              expiry: expirySec,
+              nowSec: effNow,
+            })
+          : undefined;
       return {
         underlying,
         tenor,
@@ -454,11 +594,15 @@ export class MarketDataService {
         expiryIso: new Date(expirySec * 1000).toISOString(),
         hoursToExpiry: Number(hoursToExpiry.toFixed(1)),
         spot,
-        atmIv: Number(iv.toFixed(4)),
+        atmIv: Number(bookAtmIv.toFixed(4)),
         availableStrikes: strikes,
         syntheticStrikes,
+        ...(rwaTelemetry ? { rwaTelemetry } : {}),
       };
     };
+
+    const daily = makeBook("DAILY", dailyExpiry);
+    const weekly = makeBook("WEEKLY", weeklyExpiry);
 
     return {
       underlying,
@@ -467,8 +611,9 @@ export class MarketDataService {
       dataSource,
       updatedAt: Math.floor(Date.now() / 1000),
       atlasTelemetry: atlasTelemetry ?? this.atlasOracle.getTelemetry(underlying),
-      daily: makeBook("DAILY", dailyExpiry),
-      weekly: makeBook("WEEKLY", weeklyExpiry),
+      ...(daily.rwaTelemetry ? { rwaTelemetry: daily.rwaTelemetry } : {}),
+      daily,
+      weekly,
     };
   }
 }

@@ -8,6 +8,8 @@
     "node": "hardhat node",
     "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
     "deploy:bsc": "hardhat run scripts/deploy.ts --network bscTestnet",
+    "register:rwa:local": "hardhat run scripts/register-rwa-assets.ts --network localhost",
+    "register:rwa:bsc": "hardhat run scripts/register-rwa-assets.ts --network bscTestnet",
     "verify:atlas:bsc": "hardhat run scripts/verify-atlas-onchain.ts --network bscTestnet",
     "verify:bsc": "hardhat run scripts/verify-contracts.ts --network bscTestnet",
     "emergency:settle:bsc": "hardhat run scripts/emergency-settle.ts --network bscTestnet"

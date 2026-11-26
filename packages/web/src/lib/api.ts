@@ -14,6 +14,7 @@ import type {
   OpenRfqResponse,
   Phase1Metrics,
   PositionView,
+  RwaAssetTelemetry,
   TicketSummary,
   TierKind,
   TwapWindowHealthSummary,
@@ -49,6 +50,7 @@ export interface HealthResponse {
   dataSourceStatus?: DataSourceStatus | string;
   spots: Record<UnderlyingSymbol, number>;
   atlasTelemetry?: Partial<Record<UnderlyingSymbol, AtlasFeedTelemetry>>;
+  rwaTelemetry?: Partial<Record<UnderlyingSymbol, RwaAssetTelemetry>>;
   settlementCircuitBreaker?: Partial<
     Record<UnderlyingSymbol, ConsensusGuardState>
   >;
@@ -70,6 +72,7 @@ export interface OracleConsensusResponse {
   oracleAddress?: `0x${string}`;
   feeds: Record<UnderlyingSymbol, AtlasFeedConfig>;
   telemetry: Partial<Record<UnderlyingSymbol, AtlasFeedTelemetry>>;
+  rwaTelemetry?: Partial<Record<UnderlyingSymbol, RwaAssetTelemetry>>;
   circuitBreaker: Partial<Record<UnderlyingSymbol, ConsensusGuardState>>;
   twapWindowHealth?: Partial<
     Record<UnderlyingSymbol, TwapWindowHealthSummary>
@@ -124,6 +127,9 @@ export interface ShelfResponse {
   change24hPct: number;
   dataSource: DataSourceStatus | string;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?:
+    | RwaAssetTelemetry
+    | Partial<Record<UnderlyingSymbol, RwaAssetTelemetry>>;
   quotingGuard?: ConsensusGuardState;
   expiry: number;
   expiryIso: string;

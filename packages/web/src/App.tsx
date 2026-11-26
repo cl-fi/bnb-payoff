@@ -10,6 +10,7 @@ import {
   BSC_TESTNET,
   type AtlasFeedTelemetry,
   type PositionView,
+  type RwaAssetTelemetry,
   type UnderlyingSymbol,
 } from "@payoff/shared";
 import {
@@ -69,9 +70,13 @@ export function App() {
   >({
     BTC: { spot: 68000, change24hPct: 0 },
     ETH: { spot: 2500, change24hPct: 0 },
+    NVDAB: { spot: 153.0, change24hPct: 0 },
   });
   const [liveTelemetry, setLiveTelemetry] = useState<
     Partial<Record<UnderlyingSymbol, AtlasFeedTelemetry>>
+  >({});
+  const [liveRwaTelemetry, setLiveRwaTelemetry] = useState<
+    Partial<Record<UnderlyingSymbol, RwaAssetTelemetry>>
   >({});
   const [liveCircuitBreaker, setLiveCircuitBreaker] = useState<
     Partial<Record<UnderlyingSymbol, ConsensusGuardState>>
@@ -138,11 +143,24 @@ export function App() {
       const h = await api.getHealth();
       setHealth(h);
       setLiveSpots((prev) => ({
-        BTC: { spot: h.spots.BTC, change24hPct: prev.BTC.change24hPct },
-        ETH: { spot: h.spots.ETH, change24hPct: prev.ETH.change24hPct },
+        BTC: {
+          spot: h.spots.BTC ?? prev.BTC.spot,
+          change24hPct: prev.BTC.change24hPct,
+        },
+        ETH: {
+          spot: h.spots.ETH ?? prev.ETH.spot,
+          change24hPct: prev.ETH.change24hPct,
+        },
+        NVDAB: {
+          spot: h.spots.NVDAB ?? prev.NVDAB.spot,
+          change24hPct: prev.NVDAB.change24hPct,
+        },
       }));
       if (h.atlasTelemetry) {
         setLiveTelemetry((prev) => ({ ...prev, ...h.atlasTelemetry }));
+      }
+      if (h.rwaTelemetry) {
+        setLiveRwaTelemetry((prev) => ({ ...prev, ...h.rwaTelemetry }));
       }
       if (h.settlementCircuitBreaker) {
         setLiveCircuitBreaker((prev) => ({
@@ -190,6 +208,9 @@ export function App() {
         if (res.telemetry) {
           setLiveTelemetry((prev) => ({ ...prev, ...res.telemetry }));
         }
+        if (res.rwaTelemetry) {
+          setLiveRwaTelemetry((prev) => ({ ...prev, ...res.rwaTelemetry }));
+        }
         if (res.circuitBreaker) {
           setLiveCircuitBreaker((prev) => ({
             ...prev,
@@ -217,9 +238,14 @@ export function App() {
       try {
         const msg = JSON.parse(evt.data);
         if (msg.type === "TICK") {
-          if (msg.spots) setLiveSpots(msg.spots);
+          if (msg.spots) {
+            setLiveSpots((prev) => ({ ...prev, ...msg.spots }));
+          }
           if (msg.atlasTelemetry) {
             setLiveTelemetry((prev) => ({ ...prev, ...msg.atlasTelemetry }));
+          }
+          if (msg.rwaTelemetry) {
+            setLiveRwaTelemetry((prev) => ({ ...prev, ...msg.rwaTelemetry }));
           }
           if (msg.settlementCircuitBreaker) {
             setLiveCircuitBreaker((prev) => ({
@@ -353,6 +379,7 @@ export function App() {
           rpcUrl={health?.rpcUrl || BSC_TESTNET.rpcUrl}
           liveSpots={liveSpots}
           liveTelemetry={liveTelemetry}
+          liveRwaTelemetry={liveRwaTelemetry}
           liveCircuitBreaker={liveCircuitBreaker}
           onOpenWallet={() => {
             setWalletErr(undefined);

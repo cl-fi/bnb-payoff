@@ -65,11 +65,40 @@ export interface AtlasFeedTelemetry {
   updatedAtMs: number;
 }
 
+export type RwaMarketSession = "RTH" | "EXTENDED" | "WEEKEND";
+
+export type RwaIvSource =
+  | "THETADATA_LIVE"
+  | "THETADATA_CACHED"
+  | "SYNTHETIC_BASELINE";
+
+export interface RwaAssetTelemetry {
+  underlying: UnderlyingSymbol;
+  session: RwaMarketSession;
+  shareMultiplier: number;
+  baselineShareMultiplier: number;
+  multiplierDriftPct: number;
+  crossVenueMultiplierGapPct: number;
+  splitGuardTriggered: boolean;
+  corporateActionBlackout: boolean;
+  blackoutReason: string | null;
+  perpSymbol: string;
+  perpPriceUsd: number | null;
+  spotPerpBasisBps: number | null;
+  ivSource: RwaIvSource;
+  thetaAtmIv: number | null;
+  thetaExpiration: string | null;
+  thetaStrikeCount: number;
+  thetaUpdatedAtMs: number | null;
+  settlementUtcHour: number;
+  updatedAtMs: number;
+}
+
 export interface OfficialSettlementPrice {
   underlying: UnderlyingSymbol;
   feedId: string;
   feedIdHex: `0x${string}`;
-  expiry: number; // unix seconds (08:00 UTC)
+  expiry: number; // unix seconds (asset settlement UTC hour, e.g. 08:00 or 21:00 UTC)
   expiryIso: string;
   priceUsd: number;
   oracleTimestamp: number; // unix seconds signed by Atlas
@@ -114,13 +143,14 @@ export interface OptionStrikeQuote {
 export interface ExpiryBook {
   underlying: UnderlyingSymbol;
   tenor: ExpiryTenor;
-  expiry: number; // unix seconds (08:00 UTC)
+  expiry: number; // unix seconds (asset settlement UTC hour, e.g. 08:00 or 21:00 UTC)
   expiryIso: string;
   hoursToExpiry: number;
   spot: number;
   atmIv: number;
   availableStrikes: number[];
   syntheticStrikes: Record<number, OptionStrikeQuote>;
+  rwaTelemetry?: RwaAssetTelemetry;
 }
 
 export interface MarketSnapshot {
@@ -130,6 +160,7 @@ export interface MarketSnapshot {
   dataSource: DataSourceStatus;
   updatedAt: number;
   atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
   daily?: ExpiryBook;
   weekly?: ExpiryBook;
 }

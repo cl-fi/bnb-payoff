@@ -11,6 +11,7 @@ import { MarketDataService } from "./services/marketData.js";
 import { MetricsService } from "./services/metricsService.js";
 import { PositionsService } from "./services/positionsService.js";
 import { RfqGateway } from "./services/rfqGateway.js";
+import { RwaRiskService } from "./services/rwaRiskService.js";
 import { registerWsStream } from "./ws/stream.js";
 
 export async function buildApp(overrides?: Partial<ServerConfig>) {
@@ -27,6 +28,7 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
     apiKey: config.atlasApiKey,
     btcFeedId: config.atlasBtcFeedId,
     ethFeedId: config.atlasEthFeedId,
+    nvdabFeedId: config.atlasNvdabFeedId,
     authorizedSigner: config.atlasSignerAddress,
     enableLiveAtlas: config.enableLiveAtlas,
     pollIntervalMs: config.pollIntervalMs,
@@ -36,13 +38,24 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
     },
   });
 
-  const chain = new ChainService(config, db, atlasOracle);
+  const rwaRisk = new RwaRiskService(config, db, atlasOracle, {
+    effectiveNowFn: () =>
+      chainRef?.getCachedEffectiveNow() ?? Math.floor(Date.now() / 1000),
+    onStateChange: () => {
+      void marketDataRef?.refreshOne("NVDAB");
+    },
+  });
+  await rwaRisk.init();
+
+  const chain = new ChainService(config, db, atlasOracle, undefined, rwaRisk);
   chainRef = chain;
   const marketData = new MarketDataService(atlasOracle, {
     enableLiveAtlas: config.enableLiveAtlas,
     enableBinanceKlines: config.enableBinanceKlines,
     pollIntervalMs: config.pollIntervalMs,
+    nvdabSettlementUtcHour: config.nvdabSettlementUtcHour,
     effectiveNowFn: () => chain.getCachedEffectiveNow(),
+    rwaRisk,
   });
   marketDataRef = marketData;
   chain.setMarketData(marketData);
@@ -54,9 +67,10 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
     atlasOracle,
     marketData,
     chain,
-    shelfEngine
+    shelfEngine,
+    rwaRisk
   );
-  const positions = new PositionsService(db, marketData, chain);
+  const positions = new PositionsService(db, marketData, chain, rwaRisk);
   const metrics = new MetricsService(db, chain);
 
   const app = Fastify({ logger: false });
@@ -78,6 +92,7 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
     config,
     db,
     atlasOracle,
+    rwaRisk,
     marketData,
     chain,
     shelfEngine,
@@ -91,6 +106,7 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
 
   app.addHook("onClose", async () => {
     atlasOracle.stop();
+    rwaRisk.stop();
     marketData.stop();
     chain.stop();
     await db.close();

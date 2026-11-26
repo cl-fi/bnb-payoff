@@ -13,13 +13,17 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import {
+  ASSET_SPECS,
   ATLAS_FEEDS,
   ATLAS_OFFICIAL_SIGNER,
   BSC_TESTNET,
+  SUPPORTED_UNDERLYINGS,
   type AtlasConsensusStatus,
   type HedgeLedgerEntry,
   type Phase1Metrics,
-  type UnderlyingSymbol,
+  type RwaAssetTelemetry,
+  type RwaIvSource,
+  type RwaMarketSession,
 } from "@payoff/shared";
 import {
   api,
@@ -27,6 +31,7 @@ import {
   type OracleConsensusResponse,
   type SettlementHistoryRecord,
 } from "../lib/api";
+import { formatSettlementClock, formatStrikeNumber } from "../lib/format";
 
 function formatScorePct(score: number | null | undefined): string {
   if (score === null || score === undefined || !Number.isFinite(score)) {
@@ -69,6 +74,28 @@ function statusPillClasses(status: AtlasConsensusStatus): string {
   }
 }
 
+function sessionBadgeClasses(session: RwaMarketSession): string {
+  switch (session) {
+    case "RTH":
+      return "border-emerald-500/40 bg-emerald-500/15 text-emerald-300";
+    case "EXTENDED":
+      return "border-amber-500/40 bg-amber-500/15 text-amber-300";
+    default:
+      return "border-slate-700 bg-slate-800/80 text-slate-300";
+  }
+}
+
+function ivSourceBadgeClasses(source: RwaIvSource): string {
+  switch (source) {
+    case "THETADATA_LIVE":
+      return "border-emerald-500/40 bg-emerald-500/15 text-emerald-300";
+    case "THETADATA_CACHED":
+      return "border-sky-500/40 bg-sky-500/15 text-sky-300";
+    default:
+      return "border-slate-700 bg-slate-800/80 text-slate-300";
+  }
+}
+
 export function MetricsLedgerPage() {
   const [metrics, setMetrics] = useState<Phase1Metrics | null>(null);
   const [ledger, setLedger] = useState<HedgeLedgerEntry[]>([]);
@@ -82,23 +109,23 @@ export function MetricsLedgerPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const [m, l, h, c, btcHist, ethHist] = await Promise.all([
+      const [m, l, h, c, ...histResults] = await Promise.all([
         api.getMetrics(),
         api.getLedger(50),
         api.getHealth().catch(() => null),
         api.getOracleConsensus().catch(() => null),
-        api.getSettlementHistory("BTC", 5).catch(() => null),
-        api.getSettlementHistory("ETH", 5).catch(() => null),
+        ...SUPPORTED_UNDERLYINGS.map((sym) =>
+          api.getSettlementHistory(sym, 5).catch(() => null)
+        ),
       ]);
       setMetrics(m);
       setLedger(l.entries);
       setHealth(h);
       setConsensus(c);
-      const merged = [
-        ...(btcHist?.records || []),
-        ...(ethHist?.records || []),
-      ].sort((a, b) => b.expiry - a.expiry);
-      setSettlements(merged.slice(0, 10));
+      const merged = histResults
+        .flatMap((res) => res?.records || [])
+        .sort((a, b) => b.expiry - a.expiry);
+      setSettlements(merged.slice(0, 15));
     } finally {
       setLoading(false);
     }
@@ -256,11 +283,15 @@ export function MetricsLedgerPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {(["BTC", "ETH"] as UnderlyingSymbol[]).map((sym) => {
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {SUPPORTED_UNDERLYINGS.map((sym) => {
+            const spec = ASSET_SPECS[sym];
+            const isRwa = spec.assetClass === "RWA_EQUITY";
             const feed = ATLAS_FEEDS[sym];
             const tel =
               consensus?.telemetry?.[sym] ?? health?.atlasTelemetry?.[sym];
+            const rwa: RwaAssetTelemetry | undefined =
+              consensus?.rwaTelemetry?.[sym] ?? health?.rwaTelemetry?.[sym];
             const guard =
               consensus?.circuitBreaker?.[sym] ??
               health?.settlementCircuitBreaker?.[sym];
@@ -271,6 +302,19 @@ export function MetricsLedgerPage() {
               score === null || !Number.isFinite(score)
                 ? 0
                 : Math.max(0, Math.min(100, score <= 1 ? score * 100 : score));
+            const rwaBreakerActive = Boolean(
+              rwa && (rwa.splitGuardTriggered || rwa.corporateActionBlackout)
+            );
+            const quotingHalted = guard?.quotingSafe === false || rwaBreakerActive;
+            const rwaClock = formatSettlementClock(
+              rwa?.settlementUtcHour ?? spec.settlementUtcHour
+            );
+            const thetaIvText =
+              rwa?.thetaAtmIv !== null &&
+              rwa?.thetaAtmIv !== undefined &&
+              Number.isFinite(rwa.thetaAtmIv)
+                ? `${(rwa.thetaAtmIv <= 5 ? rwa.thetaAtmIv * 100 : rwa.thetaAtmIv).toFixed(1)}%`
+                : "--";
 
             return (
               <div
@@ -279,8 +323,15 @@ export function MetricsLedgerPage() {
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
-                    <div className="text-sm font-bold text-white tabular-nums">
-                      #{tel?.feedId || feed.feedId} · {feed.pair}{" "}
+                    <div className="flex flex-wrap items-center gap-1.5 text-sm font-bold text-white tabular-nums">
+                      <span>
+                        #{tel?.feedId || feed.feedId} · {feed.pair}
+                      </span>
+                      {isRwa && (
+                        <span className="rounded border border-teal-500/40 bg-teal-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-teal-300">
+                          RWA
+                        </span>
+                      )}
                       <span className="font-mono text-[11px] font-normal text-slate-400">
                         ({tel?.feedIdHex || feed.feedIdHex})
                       </span>
@@ -295,11 +346,11 @@ export function MetricsLedgerPage() {
                     )}`}
                   >
                     {status === "CRITICAL" || status === "SPLIT_MARKET" ? (
-                      <ShieldAlert className="h-3.5 w-3.5" />
+                      <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
                     ) : status === "WARNING" || status === "DEGRADED" ? (
-                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
                     ) : (
-                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
                     )}
                     {status} · {formatScorePct(score)}
                   </span>
@@ -335,7 +386,7 @@ export function MetricsLedgerPage() {
                   </div>
                   <div className="rounded-lg bg-slate-900/90 px-2.5 py-2">
                     <div className="flex items-center gap-1 text-[10px] text-slate-400">
-                      <Activity className="h-3 w-3" />
+                      <Activity className="h-3 w-3" aria-hidden="true" />
                       Volatility
                     </div>
                     <div className="font-semibold text-slate-200 mt-0.5">
@@ -343,6 +394,139 @@ export function MetricsLedgerPage() {
                     </div>
                   </div>
                 </div>
+
+                {/* RWA Risk & Hedge Telemetry Block (NVDAB) */}
+                {isRwa && (
+                  <div className="rounded-lg border border-teal-500/25 bg-slate-900/80 p-3 space-y-2.5 text-[11px] tabular-nums">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-teal-300 uppercase tracking-wider text-[10px]">
+                        RWA Risk &amp; Hedge Telemetry
+                      </span>
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold ${sessionBadgeClasses(
+                          rwa?.session ?? "EXTENDED"
+                        )}`}
+                      >
+                        {rwa?.session ?? "EXTENDED"} · {rwaClock.utcLabel} · US
+                        Close
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-md bg-slate-950/70 px-2.5 py-1.5">
+                        <div className="text-[10px] text-slate-400">
+                          bStock shareMultiplier
+                        </div>
+                        <div className="font-semibold text-slate-100 mt-0.5">
+                          {rwa ? `${rwa.shareMultiplier.toFixed(6)}x` : "--"}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          Drift:{" "}
+                          <span
+                            className={
+                              rwa && Math.abs(rwa.multiplierDriftPct) > 1
+                                ? "font-semibold text-rose-300"
+                                : "text-slate-300"
+                            }
+                          >
+                            {rwa
+                              ? `${rwa.multiplierDriftPct >= 0 ? "+" : ""}${rwa.multiplierDriftPct.toFixed(2)}%`
+                              : "--"}
+                          </span>{" "}
+                          · Gap:{" "}
+                          <span className="text-slate-300">
+                            {rwa
+                              ? `${rwa.crossVenueMultiplierGapPct.toFixed(2)}%`
+                              : "--"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="rounded-md bg-slate-950/70 px-2.5 py-1.5">
+                        <div className="text-[10px] text-slate-400">
+                          {rwa?.perpSymbol || spec.binancePerpSymbol || "NVDAUSDT"}{" "}
+                          Perp Basis
+                        </div>
+                        <div
+                          className={`font-semibold mt-0.5 ${
+                            rwa?.spotPerpBasisBps != null &&
+                            rwa.spotPerpBasisBps > 30
+                              ? "text-amber-300"
+                              : "text-slate-100"
+                          }`}
+                        >
+                          {rwa?.spotPerpBasisBps !== null &&
+                          rwa?.spotPerpBasisBps !== undefined
+                            ? `${rwa.spotPerpBasisBps.toFixed(1)} bps`
+                            : "--"}
+                          {rwa?.perpPriceUsd != null && (
+                            <span className="ml-1 font-normal text-[10px] text-slate-400">
+                              ({formatPrice(rwa.perpPriceUsd)})
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          Delta Hedge:{" "}
+                          <span className="font-semibold text-teal-300">
+                            ×{(rwa?.shareMultiplier ?? 1).toFixed(4)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="col-span-2 rounded-md bg-slate-950/70 px-2.5 py-1.5 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <div className="text-[10px] text-slate-400">
+                            ThetaData IV · CBOE Expiry
+                          </div>
+                          <div className="font-semibold text-slate-100 mt-0.5">
+                            ATM IV {thetaIvText} ·{" "}
+                            <span className="text-slate-300">
+                              {rwa?.thetaExpiration || "M/W/F Fallback"}
+                            </span>
+                            {rwa && rwa.thetaStrikeCount > 0 && (
+                              <span className="text-[10px] text-slate-400">
+                                {" "}
+                                ({rwa.thetaStrikeCount} strikes)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <span
+                          className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold ${ivSourceBadgeClasses(
+                            rwa?.ivSource ?? "SYNTHETIC_BASELINE"
+                          )}`}
+                        >
+                          {rwa?.ivSource ?? "SYNTHETIC_BASELINE"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/90 pt-2 text-[10px]">
+                      <span
+                        className={
+                          rwa?.splitGuardTriggered
+                            ? "font-bold text-rose-300"
+                            : "text-emerald-400"
+                        }
+                      >
+                        Split-Cutover Sentinel:{" "}
+                        {rwa?.splitGuardTriggered ? "TRIGGERED (>1%)" : "ARMED"}
+                      </span>
+                      <span
+                        className={
+                          rwa?.corporateActionBlackout
+                            ? "font-bold text-rose-300"
+                            : "text-emerald-400"
+                        }
+                      >
+                        Blackout Guard:{" "}
+                        {rwa?.corporateActionBlackout
+                          ? rwa.blackoutReason || "ACTIVE"
+                          : "CLEAR"}
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 {(() => {
                   const twapHealth =
@@ -378,22 +562,29 @@ export function MetricsLedgerPage() {
                                 ? `LOW HEALTH ${formatScorePct(twapHealth?.avgConsensusScore)} (${twapHealth?.observedMinutes}/${twapHealth?.sampleCountTarget}m)`
                                 : twapHealth && twapHealth.observedMinutes > 0
                                   ? `${formatScorePct(twapHealth.avgConsensusScore)} (${twapHealth.observedMinutes}/${twapHealth.sampleCountTarget}m)`
-                                  : "ARMED (30×1m)"}
+                                  : `ARMED (${rwaClock.windowUtc})`}
                         </span>
                         <span
                           className={
-                            guard?.quotingSafe === false
+                            quotingHalted
                               ? "font-semibold text-rose-300"
                               : "text-emerald-400"
                           }
                         >
                           Mock Maker Quoting:{" "}
-                          {guard?.quotingSafe === false ? "HALTED" : "ACTIVE"}
+                          {quotingHalted ? "HALTED" : "ACTIVE"}
                         </span>
                       </div>
                       {guard?.reason && (
                         <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-2.5 py-1.5 text-[11px] text-amber-200">
                           {guard.reason}
+                        </div>
+                      )}
+                      {rwaBreakerActive && (
+                        <div className="rounded-lg bg-rose-500/10 border border-rose-500/30 px-2.5 py-1.5 text-[11px] text-rose-200">
+                          {rwa?.corporateActionBlackout
+                            ? `Corporate Action Blackout: ${rwa.blackoutReason || "Active"}`
+                            : `Split-Cutover Sentinel Triggered: multiplier drift ${rwa?.multiplierDriftPct.toFixed(2)}% > 1.0%`}
                         </div>
                       )}
                     </>
@@ -559,14 +750,14 @@ export function MetricsLedgerPage() {
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-950/70 text-slate-400">
                 <tr>
-                  <th className="px-4 py-3 font-medium">Asset / Feed</th>
-                  <th className="px-4 py-3 font-medium">Expiry (UTC)</th>
-                  <th className="px-4 py-3 font-medium text-right">
+                  <th scope="col" className="px-4 py-3 font-medium">Asset / Feed</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Expiry (UTC)</th>
+                  <th scope="col" className="px-4 py-3 font-medium text-right">
                     Settlement Price
                   </th>
-                  <th className="px-4 py-3 font-medium">Oracle Timestamp</th>
-                  <th className="px-4 py-3 font-medium">Source</th>
-                  <th className="px-4 py-3 font-medium text-right">Tx</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Oracle Timestamp</th>
+                  <th scope="col" className="px-4 py-3 font-medium">Source</th>
+                  <th scope="col" className="px-4 py-3 font-medium text-right">Tx</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/70 text-slate-200 tabular-nums">
@@ -576,12 +767,20 @@ export function MetricsLedgerPage() {
                     className="hover:bg-slate-900/50"
                   >
                     <td className="px-4 py-3 font-semibold">
-                      {rec.underlying}{" "}
-                      {rec.feedId && (
-                        <span className="font-mono text-[10px] text-slate-400">
-                          #{rec.feedId}
-                        </span>
-                      )}
+                      <span className="inline-flex items-center gap-1.5">
+                        <span>{rec.underlying}</span>
+                        {ASSET_SPECS[rec.underlying].assetClass ===
+                          "RWA_EQUITY" && (
+                          <span className="rounded border border-teal-500/40 bg-teal-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-teal-300">
+                            RWA
+                          </span>
+                        )}
+                        {rec.feedId && (
+                          <span className="font-mono text-[10px] text-slate-400">
+                            #{rec.feedId}
+                          </span>
+                        )}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       {rec.expiryIso.slice(0, 16).replace("T", " ")} UTC
@@ -657,19 +856,19 @@ export function MetricsLedgerPage() {
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-950/70 text-slate-400">
               <tr>
-                <th className="px-4 py-3 font-medium">Action</th>
-                <th className="px-4 py-3 font-medium">Range</th>
-                <th className="px-4 py-3 font-medium">Maker / Venue</th>
-                <th className="px-4 py-3 font-medium">Parity Route</th>
-                <th className="px-4 py-3 font-medium">Synthetic Legs</th>
-                <th className="px-4 py-3 font-medium text-right">Combo Fee</th>
-                <th className="px-4 py-3 font-medium text-right">
+                <th scope="col" className="px-4 py-3 font-medium">Action</th>
+                <th scope="col" className="px-4 py-3 font-medium">Range</th>
+                <th scope="col" className="px-4 py-3 font-medium">Maker / Venue</th>
+                <th scope="col" className="px-4 py-3 font-medium">Parity Route</th>
+                <th scope="col" className="px-4 py-3 font-medium">Synthetic Legs</th>
+                <th scope="col" className="px-4 py-3 font-medium text-right">Combo Fee</th>
+                <th scope="col" className="px-4 py-3 font-medium text-right">
                   Parity Saved
                 </th>
-                <th className="px-4 py-3 font-medium text-right">
+                <th scope="col" className="px-4 py-3 font-medium text-right">
                   MM Net Margin
                 </th>
-                <th className="px-4 py-3 font-medium text-right">
+                <th scope="col" className="px-4 py-3 font-medium text-right">
                   Unlocked USDT
                 </th>
               </tr>
@@ -681,7 +880,7 @@ export function MetricsLedgerPage() {
                     colSpan={9}
                     className="px-4 py-8 text-center text-slate-500"
                   >
-                    No on-chain fills yet. Open a vertical-spread ticket on the
+                    No on-chain fills yet. Open a continuous-payout ticket on the
                     Trade tab to populate the Mock Maker ledger.
                   </td>
                 </tr>
@@ -702,7 +901,8 @@ export function MetricsLedgerPage() {
                     <td className="px-4 py-3 font-medium">
                       {row.underlying} {row.direction}{" "}
                       <span className="text-slate-400">
-                        {row.lowerStrike}-{row.upperStrike}
+                        {formatStrikeNumber(row.lowerStrike, row.underlying)}–
+                        {formatStrikeNumber(row.upperStrike, row.underlying)}
                       </span>
                     </td>
                     <td className="px-4 py-3">
