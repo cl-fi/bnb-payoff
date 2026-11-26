@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Building2, Check, ChevronDown, X } from "lucide-react";
+import { Check, ChevronDown, X } from "lucide-react";
 import {
   ASSET_SPECS,
   SUPPORTED_UNDERLYINGS,
@@ -37,11 +37,11 @@ export interface MarketSelectorProps {
 
 const ASSET_META: Record<
   UnderlyingSymbol,
-  { zh: string; en: string; badge: string }
+  { zh: string; en: string; logoSrc: string }
 > = {
-  BTC: { zh: "比特币", en: "Bitcoin", badge: "₿" },
-  ETH: { zh: "以太坊", en: "Ethereum", badge: "Ξ" },
-  NVDAB: { zh: "英伟达", en: "NVIDIA", badge: "N" },
+  BTC: { zh: "比特币", en: "Bitcoin", logoSrc: "/markets/btc.svg" },
+  ETH: { zh: "以太坊", en: "Ethereum", logoSrc: "/markets/eth.svg" },
+  NVDAB: { zh: "英伟达", en: "NVIDIA", logoSrc: "/markets/nvda.svg" },
 };
 
 function formatSpotPrice(spot: number): string {
@@ -143,22 +143,17 @@ function MarketRowList({
             }
           >
             <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-              <span
+              <img
+                src={ASSET_META[u].logoSrc}
+                alt=""
                 aria-hidden="true"
-                className={`flex shrink-0 items-center justify-center rounded-full font-bold ${
-                  isDropdown ? "h-9 w-9 text-[13px]" : "h-10 w-10 text-sm"
-                } ${
-                  isSelected
-                    ? "bg-white text-black"
-                    : "bg-[#15171b] border border-[#24282e] text-white"
+                width={isDropdown ? 36 : 40}
+                height={isDropdown ? 36 : 40}
+                decoding="async"
+                className={`shrink-0 rounded-full object-cover ${
+                  isDropdown ? "h-9 w-9" : "h-10 w-10"
                 }`}
-              >
-                {isRwa ? (
-                  <Building2 className="h-4 w-4" />
-                ) : (
-                  ASSET_META[u].badge
-                )}
-              </span>
+              />
 
               <div className="min-w-0">
                 {/* Line 1: Ticker + concise asset name + RWA pill */}
@@ -344,10 +339,19 @@ export function MarketSelector({
               }
         }
         {...(isDesktop ? desktopMenu.triggerInvokerProps : {})}
-        className={`group -ml-2.5 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-left transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+        className={`group -ml-2.5 inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-left transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
           isExpanded ? "bg-[#15171b]" : "hover:bg-[#15171b]"
         }`}
       >
+        <img
+          src={ASSET_META[selectedUnderlying].logoSrc}
+          alt=""
+          aria-hidden="true"
+          width={24}
+          height={24}
+          decoding="async"
+          className="h-6 w-6 shrink-0 rounded-full object-cover"
+        />
         <span className="text-lg font-bold tracking-[-0.02em] text-white">
           {spec.displaySymbol}
         </span>
