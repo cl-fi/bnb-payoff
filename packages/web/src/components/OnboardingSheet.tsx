@@ -512,7 +512,7 @@ export function OnboardingSheet({
             }}
           />
         ) : (
-          <div className="absolute inset-0 bg-black/72" />
+          <div className="absolute inset-0 bg-black/56" />
         )}
       </div>
 
