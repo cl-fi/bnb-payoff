@@ -2002,6 +2002,7 @@ export function TradePage({
             positions={currentExpiryActivePositions}
             selectedPositionId={selectedPositionId}
             onSelectPosition={setSelectedPositionId}
+            isCustomMode={rangeMode === "CUSTOM"}
             inTwapWindow={isCurrentExpiryInTwap}
             twapAvgPrice={currentTwapAvgPrice}
             scrubPrice={scrubPrice}

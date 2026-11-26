@@ -31,6 +31,7 @@ export interface KlineChartProps {
   positions?: PositionView[];
   selectedPositionId?: string | null;
   onSelectPosition?: (positionId: string | null) => void;
+  isCustomMode?: boolean;
   inTwapWindow?: boolean;
   twapAvgPrice?: number | null;
   scrubPrice?: number | null;
@@ -84,6 +85,7 @@ export function KlineChart({
   positions,
   selectedPositionId = null,
   onSelectPosition,
+  isCustomMode = false,
   inTwapWindow = false,
   twapAvgPrice = null,
   scrubPrice: controlledScrubPrice,
@@ -510,31 +512,32 @@ export function KlineChart({
         ? yCap + 14
         : Math.max(13, yCap - 7);
 
-    // Subtle inner micro-captions (only shown when vertical spacing & future width prevent overlap)
+    // Inner threshold labels (Scheme 1: high-contrast BE & Start/$0 hierarchy, auto-hide when tight)
     const showBeLabel =
-      futureW >= 78 &&
-      Math.abs(yBe - yCap) >= 15 &&
-      Math.abs(yStart - yBe) >= 13;
-    const beLabelText =
-      futureW >= 106
-        ? locale === "zh"
-          ? `回本 ${formatStrikePrice(src.breakevenPrice, src.underlying)}`
-          : `BE ${formatStrikePrice(src.breakevenPrice, src.underlying)}`
-        : locale === "zh"
-          ? "回本"
-          : "BE";
-    const beLabelY = bull ? yBe - 4 : yBe + 11;
+      futureW >= 74 &&
+      Math.abs(yBe - yCap) >= 16 &&
+      Math.abs(yStart - yBe) >= 14;
+    const bePrefix = locale === "zh" ? "回本" : "BE";
+    const bePriceStr =
+      futureW >= 102
+        ? formatStrikePrice(src.breakevenPrice, src.underlying)
+        : "";
+    const beLabelY = bull ? yBe - 5 : yBe + 12;
 
-    const isCustomDraft = !selectedPosition && ticket?.tierKind === "CUSTOM";
+    const isCustomDraft =
+      !selectedPosition && (isCustomMode || ticket?.tierKind === "CUSTOM");
     const showStartLabel =
-      futureW >= 78 && Math.abs(yStart - yCap) >= (isCustomDraft ? 14 : 24);
-    const startLabelText =
-      futureW >= 106
-        ? `$0 · ${formatStrikePrice(src.startPrice, src.underlying)}`
-        : "$0";
+      futureW >= 74 && Math.abs(yStart - yCap) >= (isCustomDraft ? 14 : 22);
+    const startPrefix = isCustomDraft
+      ? locale === "zh"
+        ? "起赚"
+        : "Start"
+      : "$0";
+    const startPriceStr =
+      futureW >= 102 ? formatStrikePrice(src.startPrice, src.underlying) : "";
     const startLabelY = bull
-      ? Math.min(height - 6, yStart + 11)
-      : Math.max(13, yStart - 5);
+      ? Math.min(height - 6, yStart + 13)
+      : Math.max(13, yStart - 6);
 
     return {
       bull,
@@ -551,13 +554,15 @@ export function KlineChart({
       capPriceStr,
       capTextY,
       showBeLabel,
-      beLabelText,
+      bePrefix,
+      bePriceStr,
       beLabelY,
       showStartLabel,
-      startLabelText,
+      startPrefix,
+      startPriceStr,
       startLabelY,
     };
-  }, [selectedPosition, ticket, yOf, locale, height, futureW]);
+  }, [selectedPosition, isCustomMode, ticket, yOf, locale, height, futureW]);
 
   // Warm-gold 30m TWAP observation window geometry
   const twapGeom = useMemo(() => {
@@ -936,7 +941,7 @@ export function KlineChart({
               y1={refPriceY}
               x2={expiryX}
               y2={refPriceY}
-              stroke="#1a1d22"
+              stroke="#15181d"
               strokeWidth={1}
               strokeDasharray="2 5"
             />
@@ -1004,20 +1009,21 @@ export function KlineChart({
                 x2={expiryX}
                 y2={activeZone.yCap}
                 stroke={activeZone.col}
-                strokeOpacity={0.9}
-                strokeWidth={1.5}
+                strokeOpacity={0.95}
+                strokeWidth={1.6}
               />
-              {/* Subtle Breakeven guide */}
+              {/* Warm-gold Breakeven turning-point dashed guide */}
               <line
                 x1={nowX}
                 y1={activeZone.yBe}
                 x2={expiryX}
                 y2={activeZone.yBe}
-                stroke="rgba(255,255,255,0.20)"
-                strokeWidth={1}
-                strokeDasharray="2 4"
+                stroke={GOLD}
+                strokeOpacity={0.52}
+                strokeWidth={1.15}
+                strokeDasharray="4 4"
               />
-              {/* Start / Floor guide (emphasized when adjusting Start in Custom mode) */}
+              {/* Start / Floor boundary: crisp solid white frame in Custom mode, legible silver dashed line in Quick */}
               <line
                 x1={nowX}
                 y1={activeZone.yStart}
@@ -1025,21 +1031,19 @@ export function KlineChart({
                 y2={activeZone.yStart}
                 stroke={
                   activeZone.isCustomDraft
-                    ? "rgba(255,255,255,0.34)"
-                    : "rgba(255,255,255,0.11)"
+                    ? "rgba(255,255,255,0.78)"
+                    : "rgba(255,255,255,0.36)"
                 }
-                strokeWidth={activeZone.isCustomDraft ? 1.25 : 1}
-                strokeDasharray="2 4"
+                strokeWidth={activeZone.isCustomDraft ? 1.5 : 1.15}
+                strokeDasharray={activeZone.isCustomDraft ? undefined : "4 3"}
               />
 
-              {/* Quiet micro inner labels (never clip, auto-hide when tight or overlapped by scrub readout) */}
+              {/* High-contrast inner threshold labels (auto-hide when tight or overlapped by scrub readout) */}
               {activeZone.showBeLabel && (
                 <text
                   x={nowX + 8}
                   y={activeZone.beLabelY}
-                  fontSize={9.5}
-                  fontWeight={500}
-                  fill="#6f7782"
+                  fontSize={isNarrow ? 10 : 10.5}
                   opacity={
                     scrubSummary && Math.abs(scrubTagY - activeZone.beLabelY) < 20
                       ? 0
@@ -1049,16 +1053,22 @@ export function KlineChart({
                   className="transition-opacity duration-150 motion-reduce:transition-none"
                   style={{ fontVariantNumeric: "tabular-nums" }}
                 >
-                  {activeZone.beLabelText}
+                  <tspan fontWeight={600} fill={GOLD} fillOpacity={0.92}>
+                    {activeZone.bePrefix}
+                  </tspan>
+                  {activeZone.bePriceStr && (
+                    <tspan fontWeight={600} fill="#d0d6de">
+                      {" "}
+                      {activeZone.bePriceStr}
+                    </tspan>
+                  )}
                 </text>
               )}
               {activeZone.showStartLabel && (
                 <text
                   x={nowX + 8}
                   y={activeZone.startLabelY}
-                  fontSize={9.5}
-                  fontWeight={activeZone.isCustomDraft ? 600 : 500}
-                  fill={activeZone.isCustomDraft ? "#9aa2ad" : "#525963"}
+                  fontSize={isNarrow ? 10 : 10.5}
                   opacity={
                     scrubSummary &&
                     Math.abs(scrubTagY - activeZone.startLabelY) < 20
@@ -1069,7 +1079,33 @@ export function KlineChart({
                   className="transition-opacity duration-150 motion-reduce:transition-none"
                   style={{ fontVariantNumeric: "tabular-nums" }}
                 >
-                  {activeZone.startLabelText}
+                  {activeZone.isCustomDraft ? (
+                    <>
+                      <tspan fontWeight={700} fill="#ffffff">
+                        {activeZone.startPrefix}
+                        {activeZone.startPriceStr
+                          ? ` ${activeZone.startPriceStr}`
+                          : ""}
+                      </tspan>
+                      <tspan fontWeight={500} fill="#7e8690">
+                        {" · $0"}
+                      </tspan>
+                    </>
+                  ) : (
+                    <>
+                      <tspan fontWeight={600} fill="#9aa2ad">
+                        {activeZone.startPrefix}
+                      </tspan>
+                      {activeZone.startPriceStr && (
+                        <>
+                          <tspan fill="#5d6570"> · </tspan>
+                          <tspan fontWeight={500} fill="#b8bec6">
+                            {activeZone.startPriceStr}
+                          </tspan>
+                        </>
+                      )}
+                    </>
+                  )}
                 </text>
               )}
 
@@ -1092,7 +1128,7 @@ export function KlineChart({
                   {activeZone.capPrimary}
                 </tspan>
                 <tspan fill="#525862"> · </tspan>
-                <tspan fontWeight={500} fill="#8d96a0">
+                <tspan fontWeight={500} fill="#b8bec6">
                   {activeZone.capPriceStr}
                 </tspan>
               </text>
@@ -1106,8 +1142,32 @@ export function KlineChart({
                 rx={2}
                 fill={`url(#${activeZone.bull ? bullBarGradId : bearBarGradId})`}
               />
-              <circle cx={expiryX} cy={activeZone.yCap} r={2.8} fill={activeZone.col} />
-              <circle cx={expiryX} cy={activeZone.yStart} r={2} fill="#474e57" />
+              <circle cx={expiryX} cy={activeZone.yCap} r={3} fill={activeZone.col} />
+              {activeZone.isCustomDraft ? (
+                <>
+                  <circle
+                    cx={nowX}
+                    cy={activeZone.yStart}
+                    r={2.6}
+                    fill="#000000"
+                    stroke="#ffffff"
+                    strokeWidth={1.5}
+                  />
+                  <circle
+                    cx={expiryX}
+                    cy={activeZone.yStart}
+                    r={3}
+                    fill="#ffffff"
+                  />
+                </>
+              ) : (
+                <circle
+                  cx={expiryX}
+                  cy={activeZone.yStart}
+                  r={2.2}
+                  fill="#7e8690"
+                />
+              )}
             </g>
           )}
 
