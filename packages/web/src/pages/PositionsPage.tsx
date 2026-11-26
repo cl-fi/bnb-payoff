@@ -9,9 +9,10 @@ import {
   ExternalLink,
   Loader2,
   Lock,
+  Mail,
   ShieldCheck,
+  Sparkles,
   TrendingUp,
-  Wallet,
 } from "lucide-react";
 import {
   ASSET_SPECS,
@@ -324,7 +325,7 @@ export function PositionsPage({
       <main className="mx-auto max-w-md px-4 py-16 text-center pb-28">
         <div className="rounded-2xl border border-[#e2e5e8] bg-white p-8 space-y-4 shadow-[0_1px_2px_rgba(20,32,42,0.06)]">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#eef0f2] text-[#14202a]">
-            <Wallet className="h-5 w-5" aria-hidden="true" />
+            <Mail className="h-5 w-5" aria-hidden="true" />
           </div>
           <h1 className="text-lg font-bold text-[#14202a]">
             {t.positionsConnectTitle}
@@ -437,15 +438,10 @@ export function PositionsPage({
             </div>
             <p className="mt-1 text-xs text-[#667080]">{t.faucetDesc}</p>
           </div>
-          <a
-            href="https://www.bnbchain.org/en/testnet-faucet"
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 rounded-lg border border-[#c8ccd1] bg-white px-3 py-1.5 text-xs font-semibold text-[#14202a] hover:bg-[#f7f8f9] transition"
-          >
-            {t.faucetBnbLink}
-            <ExternalLink className="h-3 w-3" aria-hidden="true" />
-          </a>
+          <span className="inline-flex items-center gap-1 rounded-full bg-[#e9f3f1] px-3 py-1 text-xs font-semibold text-[#0e7c72] shrink-0">
+            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+            {t.gasFreeBadge}
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[#f7f8f9] border border-[#eef0f2] px-4 py-3">

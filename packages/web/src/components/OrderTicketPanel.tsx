@@ -6,10 +6,10 @@ import {
   CheckCircle2,
   Clock,
   Loader2,
+  Mail,
   RefreshCw,
   ShieldAlert,
   ShieldCheck,
-  Wallet,
 } from "lucide-react";
 import {
   ASSET_SPECS,
@@ -554,7 +554,7 @@ export function OrderTicketPanel({
           onClick={onOpenWallet}
           className="flex w-full min-h-[48px] items-center justify-center gap-2 rounded-xl bg-[#14202a] py-3.5 text-sm font-semibold text-white transition hover:bg-[#000a12] cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#14202a]"
         >
-          <Wallet className="h-4 w-4" aria-hidden="true" />
+          <Mail className="h-4 w-4" aria-hidden="true" />
           <span>{t.connectToBuy}</span>
         </button>
       ) : (

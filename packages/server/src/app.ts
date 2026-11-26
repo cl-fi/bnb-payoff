@@ -10,6 +10,7 @@ import { ChainService } from "./services/chainService.js";
 import { MarketDataService } from "./services/marketData.js";
 import { MetricsService } from "./services/metricsService.js";
 import { PositionsService } from "./services/positionsService.js";
+import { PrivyAuthService } from "./services/privyAuth.js";
 import { RfqGateway } from "./services/rfqGateway.js";
 import { RwaRiskService } from "./services/rwaRiskService.js";
 import { registerWsStream } from "./ws/stream.js";
@@ -72,6 +73,7 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
   );
   const positions = new PositionsService(db, marketData, chain, rwaRisk);
   const metrics = new MetricsService(db, chain);
+  const privyAuth = new PrivyAuthService(config, db, chain);
 
   const app = Fastify({ logger: false });
   const corsOrigins = config.corsOrigin
@@ -99,6 +101,7 @@ export async function buildApp(overrides?: Partial<ServerConfig>) {
     rfq,
     positions,
     metrics,
+    privyAuth,
   };
 
   registerApiRoutes(app, services);

@@ -28,6 +28,10 @@ import type { ChainService } from "../services/chainService.js";
 import type { MarketDataService } from "../services/marketData.js";
 import type { MetricsService } from "../services/metricsService.js";
 import type { PositionsService } from "../services/positionsService.js";
+import {
+  PrivyAuthError,
+  type PrivyAuthService,
+} from "../services/privyAuth.js";
 import type { RfqGateway } from "../services/rfqGateway.js";
 import {
   SPLIT_PAUSED_SYNC_STATE_PREFIX,
@@ -45,6 +49,7 @@ export interface AppServices {
   rfq: RfqGateway;
   positions: PositionsService;
   metrics: MetricsService;
+  privyAuth: PrivyAuthService;
 }
 
 const UNSUPPORTED_UNDERLYING_ERR = `Only ${SUPPORTED_UNDERLYINGS.join(", ")} underlyings are supported`;
@@ -94,6 +99,9 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       settlementOracleSource: "ATLAS_PULL_ORACLE",
       atlasSignerAddress: svc.atlasOracle.getAuthorizedSigner(),
       oracleAddress: settlementOracleAddress,
+      privyAppId: svc.config.privyAppId ?? null,
+      privyEnabled: Boolean(svc.config.privyAppId),
+      welcomeAirdropUsdt: svc.config.welcomeAirdropUsdt,
       dbEngine: svc.db.engine,
       protocolFeeBps: onChainFees.openFeeBps,
       closeFeeBps: onChainFees.closeFeeBps,
@@ -609,6 +617,39 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       return reply
         .code(400)
         .send({ error: err?.message || "Close RFQ failed" });
+    }
+  });
+
+  app.post("/api/auth/welcome-airdrop", async (req, reply) => {
+    const authHeader = req.headers.authorization;
+    const match =
+      typeof authHeader === "string"
+        ? authHeader.match(/^Bearer\s+(.+)$/i)
+        : null;
+    if (!match || !match[1]) {
+      return reply.code(401).send({
+        error: "Missing Bearer Privy access token",
+        code: "MISSING_TOKEN",
+      });
+    }
+
+    try {
+      const result = await svc.privyAuth.claimWelcomeAirdrop(match[1]);
+      return {
+        ok: true,
+        ...result,
+      };
+    } catch (err: any) {
+      if (err instanceof PrivyAuthError) {
+        return reply.code(err.statusCode).send({
+          error: err.message,
+          code: err.code,
+        });
+      }
+      return reply.code(500).send({
+        error: err?.message || "Welcome airdrop failed",
+        code: "INTERNAL_ERROR",
+      });
     }
   });
 

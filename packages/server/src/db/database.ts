@@ -152,6 +152,23 @@ export interface SeriesTicketMeta {
   upperStrike: number;
 }
 
+export interface StoredWelcomeAirdrop {
+  privyUserId: string;
+  walletAddress: string;
+  amountUsdt: number;
+  txHash: string;
+  status: "PENDING" | "COMPLETED" | "FAILED";
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ReserveWelcomeAirdropInput {
+  privyUserId: string;
+  walletAddress: string;
+  amountUsdt: number;
+  timestamp: number;
+}
+
 function computeMergeProceedsSplit(
   upRow: StoredTicket | undefined,
   downRow: StoredTicket | undefined,
@@ -214,6 +231,24 @@ export interface PayoffDatabase {
     underlying: UnderlyingSymbol,
     expiry: number
   ): Promise<TwapSampleObservation[]>;
+  getWelcomeAirdropByUserId(
+    privyUserId: string
+  ): Promise<StoredWelcomeAirdrop | undefined>;
+  getWelcomeAirdropByWallet(
+    walletAddress: string
+  ): Promise<StoredWelcomeAirdrop | undefined>;
+  tryReserveWelcomeAirdrop(
+    input: ReserveWelcomeAirdropInput
+  ): Promise<{ reserved: boolean; existing?: StoredWelcomeAirdrop }>;
+  completeWelcomeAirdrop(input: {
+    privyUserId: string;
+    txHash: string;
+    timestamp: number;
+  }): Promise<void>;
+  failWelcomeAirdrop(input: {
+    privyUserId: string;
+    timestamp: number;
+  }): Promise<void>;
 }
 
 // ============================================================================
@@ -363,6 +398,16 @@ export class PostgresDatabase implements PayoffDatabase {
         tx_hash TEXT NOT NULL,
         log_index INTEGER NOT NULL,
         PRIMARY KEY (tx_hash, log_index)
+      );
+
+      CREATE TABLE IF NOT EXISTS welcome_airdrops (
+        privy_user_id TEXT PRIMARY KEY,
+        wallet_address TEXT NOT NULL UNIQUE,
+        amount_usdt DOUBLE PRECISION NOT NULL,
+        tx_hash TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL
       );
     `);
   }
@@ -952,6 +997,112 @@ export class PostgresDatabase implements PayoffDatabase {
       observedAt: Number(r.observed_at),
     }));
   }
+
+  private mapWelcomeAirdrop(r: any): StoredWelcomeAirdrop {
+    return {
+      privyUserId: r.privy_user_id,
+      walletAddress: r.wallet_address,
+      amountUsdt: Number(r.amount_usdt),
+      txHash: r.tx_hash || "",
+      status: r.status as StoredWelcomeAirdrop["status"],
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
+  }
+
+  async getWelcomeAirdropByUserId(
+    privyUserId: string
+  ): Promise<StoredWelcomeAirdrop | undefined> {
+    const res = await this.pool.query(
+      `SELECT * FROM welcome_airdrops WHERE privy_user_id = $1`,
+      [privyUserId]
+    );
+    return res.rows[0] ? this.mapWelcomeAirdrop(res.rows[0]) : undefined;
+  }
+
+  async getWelcomeAirdropByWallet(
+    walletAddress: string
+  ): Promise<StoredWelcomeAirdrop | undefined> {
+    const res = await this.pool.query(
+      `SELECT * FROM welcome_airdrops WHERE wallet_address = $1`,
+      [walletAddress.toLowerCase()]
+    );
+    return res.rows[0] ? this.mapWelcomeAirdrop(res.rows[0]) : undefined;
+  }
+
+  async tryReserveWelcomeAirdrop(
+    input: ReserveWelcomeAirdropInput
+  ): Promise<{ reserved: boolean; existing?: StoredWelcomeAirdrop }> {
+    const wallet = input.walletAddress.toLowerCase();
+    const byUser = await this.getWelcomeAirdropByUserId(input.privyUserId);
+    if (byUser) {
+      if (byUser.status !== "FAILED") {
+        return { reserved: false, existing: byUser };
+      }
+      const byWallet = await this.getWelcomeAirdropByWallet(wallet);
+      if (byWallet && byWallet.privyUserId !== input.privyUserId) {
+        return { reserved: false, existing: byWallet };
+      }
+      const updated = await this.pool.query(
+        `UPDATE welcome_airdrops
+         SET wallet_address = $1, amount_usdt = $2, tx_hash = '', status = 'PENDING', updated_at = $3
+         WHERE privy_user_id = $4 AND status = 'FAILED'`,
+        [wallet, input.amountUsdt, input.timestamp, input.privyUserId]
+      );
+      if (updated.rowCount && updated.rowCount > 0) {
+        return { reserved: true };
+      }
+      return {
+        reserved: false,
+        existing: await this.getWelcomeAirdropByUserId(input.privyUserId),
+      };
+    }
+
+    const byWallet = await this.getWelcomeAirdropByWallet(wallet);
+    if (byWallet) {
+      return { reserved: false, existing: byWallet };
+    }
+
+    const inserted = await this.pool.query(
+      `INSERT INTO welcome_airdrops (
+        privy_user_id, wallet_address, amount_usdt, tx_hash, status, created_at, updated_at
+      ) VALUES ($1, $2, $3, '', 'PENDING', $4, $4)
+      ON CONFLICT DO NOTHING`,
+      [input.privyUserId, wallet, input.amountUsdt, input.timestamp]
+    );
+    if (inserted.rowCount && inserted.rowCount > 0) {
+      return { reserved: true };
+    }
+    const existing =
+      (await this.getWelcomeAirdropByUserId(input.privyUserId)) ??
+      (await this.getWelcomeAirdropByWallet(wallet));
+    return { reserved: false, existing };
+  }
+
+  async completeWelcomeAirdrop(input: {
+    privyUserId: string;
+    txHash: string;
+    timestamp: number;
+  }): Promise<void> {
+    await this.pool.query(
+      `UPDATE welcome_airdrops
+       SET status = 'COMPLETED', tx_hash = $1, updated_at = $2
+       WHERE privy_user_id = $3`,
+      [input.txHash, input.timestamp, input.privyUserId]
+    );
+  }
+
+  async failWelcomeAirdrop(input: {
+    privyUserId: string;
+    timestamp: number;
+  }): Promise<void> {
+    await this.pool.query(
+      `UPDATE welcome_airdrops
+       SET status = 'FAILED', updated_at = $1
+       WHERE privy_user_id = $2 AND status = 'PENDING'`,
+      [input.timestamp, input.privyUserId]
+    );
+  }
 }
 
 // ============================================================================
@@ -1098,6 +1249,16 @@ export class SqliteDatabase implements PayoffDatabase {
         txHash TEXT NOT NULL,
         logIndex INTEGER NOT NULL,
         PRIMARY KEY (txHash, logIndex)
+      );
+
+      CREATE TABLE IF NOT EXISTS welcome_airdrops (
+        privyUserId TEXT PRIMARY KEY,
+        walletAddress TEXT NOT NULL UNIQUE,
+        amountUsdt REAL NOT NULL,
+        txHash TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL,
+        createdAt INTEGER NOT NULL,
+        updatedAt INTEGER NOT NULL
       );
     `);
 
@@ -1661,6 +1822,119 @@ export class SqliteDatabase implements PayoffDatabase {
       tickCount: Number(r.tickCount),
       observedAt: Number(r.observedAt),
     }));
+  }
+
+  private mapSqliteWelcomeAirdrop(r: Record<string, any>): StoredWelcomeAirdrop {
+    return {
+      privyUserId: String(r.privyUserId),
+      walletAddress: String(r.walletAddress),
+      amountUsdt: Number(r.amountUsdt),
+      txHash: String(r.txHash || ""),
+      status: r.status as StoredWelcomeAirdrop["status"],
+      createdAt: Number(r.createdAt),
+      updatedAt: Number(r.updatedAt),
+    };
+  }
+
+  async getWelcomeAirdropByUserId(
+    privyUserId: string
+  ): Promise<StoredWelcomeAirdrop | undefined> {
+    const row = this.db
+      .prepare(`SELECT * FROM welcome_airdrops WHERE privyUserId = ?`)
+      .get(privyUserId) as Record<string, any> | undefined;
+    return row ? this.mapSqliteWelcomeAirdrop(row) : undefined;
+  }
+
+  async getWelcomeAirdropByWallet(
+    walletAddress: string
+  ): Promise<StoredWelcomeAirdrop | undefined> {
+    const row = this.db
+      .prepare(`SELECT * FROM welcome_airdrops WHERE walletAddress = ?`)
+      .get(walletAddress.toLowerCase()) as Record<string, any> | undefined;
+    return row ? this.mapSqliteWelcomeAirdrop(row) : undefined;
+  }
+
+  async tryReserveWelcomeAirdrop(
+    input: ReserveWelcomeAirdropInput
+  ): Promise<{ reserved: boolean; existing?: StoredWelcomeAirdrop }> {
+    const wallet = input.walletAddress.toLowerCase();
+    const byUser = await this.getWelcomeAirdropByUserId(input.privyUserId);
+    if (byUser) {
+      if (byUser.status !== "FAILED") {
+        return { reserved: false, existing: byUser };
+      }
+      const byWallet = await this.getWelcomeAirdropByWallet(wallet);
+      if (byWallet && byWallet.privyUserId !== input.privyUserId) {
+        return { reserved: false, existing: byWallet };
+      }
+      const res = this.db
+        .prepare(
+          `UPDATE welcome_airdrops
+           SET walletAddress = ?, amountUsdt = ?, txHash = '', status = 'PENDING', updatedAt = ?
+           WHERE privyUserId = ? AND status = 'FAILED'`
+        )
+        .run(wallet, input.amountUsdt, input.timestamp, input.privyUserId);
+      if (Number(res.changes) > 0) {
+        return { reserved: true };
+      }
+      return {
+        reserved: false,
+        existing: await this.getWelcomeAirdropByUserId(input.privyUserId),
+      };
+    }
+
+    const byWallet = await this.getWelcomeAirdropByWallet(wallet);
+    if (byWallet) {
+      return { reserved: false, existing: byWallet };
+    }
+
+    const res = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO welcome_airdrops (
+          privyUserId, walletAddress, amountUsdt, txHash, status, createdAt, updatedAt
+        ) VALUES (?, ?, ?, '', 'PENDING', ?, ?)`
+      )
+      .run(
+        input.privyUserId,
+        wallet,
+        input.amountUsdt,
+        input.timestamp,
+        input.timestamp
+      );
+    if (Number(res.changes) > 0) {
+      return { reserved: true };
+    }
+    const existing =
+      (await this.getWelcomeAirdropByUserId(input.privyUserId)) ??
+      (await this.getWelcomeAirdropByWallet(wallet));
+    return { reserved: false, existing };
+  }
+
+  async completeWelcomeAirdrop(input: {
+    privyUserId: string;
+    txHash: string;
+    timestamp: number;
+  }): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE welcome_airdrops
+         SET status = 'COMPLETED', txHash = ?, updatedAt = ?
+         WHERE privyUserId = ?`
+      )
+      .run(input.txHash, input.timestamp, input.privyUserId);
+  }
+
+  async failWelcomeAirdrop(input: {
+    privyUserId: string;
+    timestamp: number;
+  }): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE welcome_airdrops
+         SET status = 'FAILED', updatedAt = ?
+         WHERE privyUserId = ? AND status = 'PENDING'`
+      )
+      .run(input.timestamp, input.privyUserId);
   }
 }
 

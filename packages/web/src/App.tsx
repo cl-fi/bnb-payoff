@@ -1,11 +1,19 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  useAccount,
-  useConnect,
-  useConnectors,
-  useDisconnect,
-  useSwitchChain,
-} from "wagmi";
+  useCreateWallet,
+  useExportWallet,
+  usePrivy,
+  useSendTransaction,
+  useWallets,
+} from "@privy-io/react-auth";
+import {
+  CheckCircle2,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+  Sparkles,
+  X,
+} from "lucide-react";
 import {
   BSC_TESTNET,
   type AtlasFeedTelemetry,
@@ -14,6 +22,7 @@ import {
   type UnderlyingSymbol,
 } from "@payoff/shared";
 import {
+  ApiRequestError,
   api,
   getWsUrl,
   type ConsensusGuardState,
@@ -21,15 +30,8 @@ import {
 } from "./lib/api";
 import { getCopy, type Locale } from "./lib/i18n";
 import {
-  BINANCE_WALLET_ICON,
-  WALLETCONNECT_ICON,
-  getOrderedWalletConnectors,
-  type WalletConnectorOption,
-} from "./lib/wagmi";
-import {
   createClientForRpc,
-  disconnectWalletSession,
-  extractWalletErrorMessage,
+  getExplorerBaseUrl,
   readUsdtBalance,
   type ConnectedWallet,
 } from "./lib/wallet";
@@ -41,11 +43,23 @@ import { MetricsLedgerPage } from "./pages/MetricsLedgerPage";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
+type WelcomeAirdropBanner =
+  | { kind: "MINTING" }
+  | { kind: "MINTED"; amountUsdt: number; txHash: string }
+  | { kind: "ERROR"; message: string }
+  | null;
+
 function isOpsRoute(): boolean {
   return (
     window.location.pathname.startsWith("/ops") ||
     window.location.hash.startsWith("#/ops")
   );
+}
+
+function parsePrivyChainId(raw?: string): number | undefined {
+  if (!raw) return undefined;
+  const m = String(raw).match(/(\d+)$/);
+  return m ? Number(m[1]) : undefined;
 }
 
 export function App() {
@@ -54,16 +68,20 @@ export function App() {
   const [activeTab, setActiveTab] = useState<ConsumerTab>("TRADE");
   const [health, setHealth] = useState<HealthResponse | undefined>();
 
-  const [walletModalOpen, setWalletModalOpen] = useState(false);
-  const [connectingId, setConnectingId] = useState<string | null>(null);
-  const [walletErr, setWalletErr] = useState<string | undefined>();
+  const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [usdtBalance, setUsdtBalance] = useState<number>(0);
+  const [welcomeBanner, setWelcomeBanner] =
+    useState<WelcomeAirdropBanner>(null);
 
-  const { address, isConnected, chainId: walletChainId, connector } = useAccount();
-  const connectors = useConnectors();
-  const { connectAsync } = useConnect();
-  const { disconnectAsync } = useDisconnect();
-  const { switchChainAsync, isPending: switchingChain } = useSwitchChain();
+  const { ready, authenticated, user, login, logout, getAccessToken } =
+    usePrivy();
+  const { wallets, ready: walletsReady } = useWallets();
+  const { createWallet } = useCreateWallet();
+  const { exportWallet } = useExportWallet();
+  const { sendTransaction: privySendTransaction } = useSendTransaction();
+
+  const creatingWalletRef = useRef(false);
+  const attemptedAirdropUsersRef = useRef<Set<string>>(new Set());
 
   const [liveSpots, setLiveSpots] = useState<
     Record<UnderlyingSymbol, { spot: number; change24hPct: number }>
@@ -85,13 +103,99 @@ export function App() {
 
   const targetChainId = health?.chainId ?? BSC_TESTNET.chainId;
 
-  const walletOptions = useMemo(
-    () => getOrderedWalletConnectors(connectors),
-    [connectors]
+  const embeddedWallet = useMemo(
+    () => wallets.find((w) => w.walletClientType === "privy"),
+    [wallets]
+  );
+
+  const embeddedAddress = (
+    embeddedWallet?.address ||
+    (authenticated && user?.wallet?.walletClientType === "privy"
+      ? user.wallet.address
+      : undefined)
+  ) as `0x${string}` | undefined;
+
+  const userEmail = user?.email?.address;
+  const embeddedWalletChainId = parsePrivyChainId(embeddedWallet?.chainId);
+  const isGasSponsoredChain =
+    targetChainId === BSC_TESTNET.chainId || targetChainId === 56;
+
+  // Safeguard: ensure every authenticated email user gets an EVM embedded wallet automatically.
+  useEffect(() => {
+    if (
+      !ready ||
+      !authenticated ||
+      !walletsReady ||
+      embeddedWallet ||
+      creatingWalletRef.current
+    ) {
+      return;
+    }
+    creatingWalletRef.current = true;
+    void createWallet()
+      .catch(() => {
+        // wallet may already exist or be creating via createOnLogin
+      })
+      .finally(() => {
+        creatingWalletRef.current = false;
+      });
+  }, [ready, authenticated, walletsReady, embeddedWallet, createWallet]);
+
+  // Keep embedded wallet aligned to targetChainId (BSC Testnet 97) silently.
+  useEffect(() => {
+    if (
+      !embeddedWallet ||
+      embeddedWalletChainId === undefined ||
+      embeddedWalletChainId === targetChainId
+    ) {
+      return;
+    }
+    void embeddedWallet.switchChain(targetChainId).catch(() => {});
+  }, [embeddedWallet, embeddedWalletChainId, targetChainId]);
+
+  const sendPrivyTx = useCallback(
+    async (tx: {
+      to: `0x${string}`;
+      data: `0x${string}`;
+      value?: bigint;
+      chainId: number;
+    }): Promise<`0x${string}`> => {
+      if (!embeddedWallet) {
+        throw new Error("Gasless account is still initializing; please retry");
+      }
+      const sponsor =
+        tx.chainId === BSC_TESTNET.chainId || tx.chainId === 56;
+      const result = await privySendTransaction(
+        {
+          to: tx.to,
+          data: tx.data,
+          value: tx.value ?? 0n,
+          chainId: tx.chainId,
+        },
+        {
+          address: embeddedWallet.address,
+          sponsor,
+          uiOptions: {
+            showWalletUIs: false,
+          },
+        }
+      );
+      return result.hash;
+    },
+    [embeddedWallet, privySendTransaction]
+  );
+
+  const switchPrivyChain = useCallback(
+    async (chainId: number) => {
+      if (embeddedWallet) {
+        await embeddedWallet.switchChain(chainId);
+      }
+    },
+    [embeddedWallet]
   );
 
   const wallet: ConnectedWallet = useMemo(() => {
-    if (!isConnected || !address) {
+    if (!authenticated || !embeddedAddress) {
       return {
         kind: "NONE",
         chainId: targetChainId,
@@ -99,33 +203,30 @@ export function App() {
       };
     }
 
-    const hay = `${connector?.id || ""} ${connector?.name || ""}`.toLowerCase();
-    const isBinance = hay.includes("binance");
-    const isWc = hay.includes("walletconnect");
-
     return {
-      kind: "WAGMI",
-      walletName: isBinance ? "Binance Wallet" : connector?.name || "Web3 Wallet",
-      walletIcon:
-        connector?.icon ||
-        (isBinance
-          ? BINANCE_WALLET_ICON
-          : isWc
-            ? WALLETCONNECT_ICON
-            : undefined),
-      connectorId: connector?.id,
-      address,
+      kind: "PRIVY",
+      walletName: userEmail || "Privy Account",
+      email: userEmail,
+      connectorId: "privy",
+      address: embeddedAddress,
       chainId: targetChainId,
-      walletChainId,
+      walletChainId: embeddedWalletChainId ?? targetChainId,
       usdtBalance,
+      gasSponsored: isGasSponsoredChain,
+      sendTransaction: embeddedWallet ? sendPrivyTx : undefined,
+      switchChain: embeddedWallet ? switchPrivyChain : undefined,
     };
   }, [
-    isConnected,
-    address,
-    connector,
+    authenticated,
+    embeddedAddress,
+    userEmail,
     targetChainId,
-    walletChainId,
+    embeddedWalletChainId,
     usdtBalance,
+    isGasSponsoredChain,
+    embeddedWallet,
+    sendPrivyTx,
+    switchPrivyChain,
   ]);
 
   useEffect(() => {
@@ -221,15 +322,78 @@ export function App() {
       .catch(() => {});
   }, [refreshHealth]);
 
-  // Keep USDT balance & positions synced on connect, auto-reconnect, account switch, or chain switch
+  // Keep USDT balance & positions synced on login or wallet init
   useEffect(() => {
-    if (!isConnected || !address) {
+    if (!authenticated || !embeddedAddress) {
       setUsdtBalance(0);
       setPositions([]);
       return;
     }
-    void refreshWalletAndPositions(address);
-  }, [isConnected, address, walletChainId, health, refreshWalletAndPositions]);
+    void refreshWalletAndPositions(embeddedAddress);
+  }, [authenticated, embeddedAddress, health, refreshWalletAndPositions]);
+
+  // Automatically airdrop 1,000 welcome tUSDT on first Privy login
+  const triggerWelcomeAirdrop = useCallback(
+    async (targetAddr: `0x${string}`, attempt = 1): Promise<void> => {
+      setWelcomeBanner({ kind: "MINTING" });
+      try {
+        const token = await getAccessToken();
+        if (!token) {
+          setWelcomeBanner(null);
+          return;
+        }
+        const res = await api.claimWelcomeAirdrop(token);
+        if (res.status === "MINTED") {
+          setWelcomeBanner({
+            kind: "MINTED",
+            amountUsdt: res.amountUsdt,
+            txHash: res.txHash,
+          });
+          await refreshWalletAndPositions(targetAddr);
+          // Re-check balance once more shortly in case load-balanced RPC lags by 1 block
+          setTimeout(() => {
+            void refreshWalletAndPositions(targetAddr);
+          }, 2500);
+        } else {
+          setWelcomeBanner(null);
+        }
+      } catch (err: any) {
+        if (
+          err instanceof ApiRequestError &&
+          err.status === 409 &&
+          err.code === "WALLET_NOT_READY" &&
+          attempt < 4
+        ) {
+          await new Promise((r) => setTimeout(r, 1500));
+          return triggerWelcomeAirdrop(targetAddr, attempt + 1);
+        }
+        if (
+          err instanceof ApiRequestError &&
+          (err.code === "AIRDROP_DISABLED" ||
+            err.code === "PRIVY_NOT_CONFIGURED")
+        ) {
+          setWelcomeBanner(null);
+          return;
+        }
+        setWelcomeBanner({
+          kind: "ERROR",
+          message: err?.message || "Welcome tUSDT airdrop failed",
+        });
+      }
+    },
+    [getAccessToken, refreshWalletAndPositions]
+  );
+
+  useEffect(() => {
+    if (!ready || !authenticated || !user?.id || !embeddedAddress) {
+      return;
+    }
+    if (attemptedAirdropUsersRef.current.has(user.id)) {
+      return;
+    }
+    attemptedAirdropUsersRef.current.add(user.id);
+    void triggerWelcomeAirdrop(embeddedAddress);
+  }, [ready, authenticated, user?.id, embeddedAddress, triggerWelcomeAirdrop]);
 
   useEffect(() => {
     const wsUrl = getWsUrl(wallet.address);
@@ -262,54 +426,24 @@ export function App() {
     return () => ws.close();
   }, [wallet.address]);
 
-  const handleConnectOption = async (option: WalletConnectorOption) => {
-    setConnectingId(option.uid);
-    setWalletErr(undefined);
-    try {
-      const h = health || (await refreshHealth());
-      const desiredChainId = h?.chainId ?? BSC_TESTNET.chainId;
-
-      // Close native top-layer <dialog> before launching QR modals (Binance App QR / WalletConnect)
-      // so the dialog top layer never occludes the third-party QR overlay.
-      if (option.isQrFallback) {
-        setWalletModalOpen(false);
-      }
-
-      const res = await connectAsync({
-        connector: option.connector,
-        chainId: desiredChainId,
-      });
-
-      if (res.chainId !== desiredChainId) {
-        await switchChainAsync({ chainId: desiredChainId }).catch(() => {});
-      }
-
-      setWalletModalOpen(false);
-      if (res.accounts[0]) {
-        await refreshWalletAndPositions(res.accounts[0], h);
-      }
-    } catch (err: any) {
-      const msg = extractWalletErrorMessage(
-        err,
-        `Failed to connect ${option.name}`
-      );
-      const code = err?.code ?? err?.cause?.code;
-      const isCancelled =
-        code === 4001 ||
-        code === 100001 ||
-        code === 100002 ||
-        /cancel|closed modal|user rejected/i.test(msg);
-      if (!isCancelled) {
-        setWalletErr(msg);
-        setWalletModalOpen(true);
-      }
-    } finally {
-      setConnectingId(null);
+  const handleOpenAuthOrAccount = () => {
+    if (!ready) return;
+    if (!authenticated) {
+      login({ loginMethods: ["email"] });
+      return;
     }
+    setAccountModalOpen(true);
   };
 
-  const handleDisconnect = async () => {
-    await disconnectAsync().catch(() => disconnectWalletSession());
+  const handleExportWallet = async () => {
+    if (!embeddedAddress) return;
+    await exportWallet({ address: embeddedAddress }).catch(() => {});
+  };
+
+  const handleLogout = async () => {
+    setAccountModalOpen(false);
+    setWelcomeBanner(null);
+    await logout().catch(() => {});
     setUsdtBalance(0);
     setPositions([]);
   };
@@ -326,19 +460,8 @@ export function App() {
     (p) => p.status === "ACTIVE" || p.status === "SETTLED_CLAIMABLE"
   ).length;
   const t = getCopy(locale);
-  const wrongNetwork =
-    wallet.kind !== "NONE" &&
-    wallet.walletChainId !== undefined &&
-    wallet.walletChainId !== targetChainId;
-
-  const handleSwitchNetwork = async () => {
-    try {
-      await switchChainAsync({ chainId: targetChainId });
-      await refreshWalletAndPositions(wallet.address);
-    } catch {
-      // user rejected chain switch
-    }
-  };
+  const explorerBase = getExplorerBaseUrl(targetChainId);
+  const authInitializing = authenticated && !embeddedAddress;
 
   return (
     <div className="min-h-screen bg-[#f7f8f9] text-[#14202a]">
@@ -348,25 +471,81 @@ export function App() {
         locale={locale}
         onToggleLocale={() => setLocale((l) => (l === "zh" ? "en" : "zh"))}
         wallet={wallet}
+        authReady={ready}
+        authInitializing={authInitializing}
         positionCount={activePositionsCount}
-        onOpenWalletModal={() => {
-          setWalletErr(undefined);
-          setWalletModalOpen(true);
-        }}
+        onOpenWalletModal={handleOpenAuthOrAccount}
       />
 
-      {wrongNetwork && (
-        <div className="border-b border-[#e2e5e8] bg-[#fbf3dd] px-4 py-2.5">
-          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 text-xs text-[#8a6410]">
-            <span className="font-medium">{t.wrongNetworkBanner}</span>
-            <button
-              type="button"
-              disabled={switchingChain}
-              onClick={() => void handleSwitchNetwork()}
-              className="rounded-lg bg-[#14202a] px-3 py-1 text-xs font-semibold text-white hover:bg-[#000a12] disabled:opacity-50 cursor-pointer"
-            >
-              {switchingChain ? t.switchingNetwork : t.switchToBsc}
-            </button>
+      {welcomeBanner && (
+        <div
+          role={welcomeBanner.kind === "ERROR" ? "alert" : "status"}
+          aria-live="polite"
+          className={`border-b px-4 py-2.5 ${
+            welcomeBanner.kind === "ERROR"
+              ? "border-[#f1ccc6] bg-[#fbeeea] text-[#b54134]"
+              : "border-[#bfe2dc] bg-[#e9f3f1] text-[#0e7c72]"
+          }`}
+        >
+          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 text-xs font-medium">
+            <div className="flex items-center gap-2">
+              {welcomeBanner.kind === "MINTING" ? (
+                <>
+                  <Loader2
+                    className="h-3.5 w-3.5 animate-spin shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>{t.welcomeAirdropMinting}</span>
+                </>
+              ) : welcomeBanner.kind === "MINTED" ? (
+                <>
+                  <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>{t.welcomeAirdropSuccess(welcomeBanner.amountUsdt)}</span>
+                  {explorerBase && welcomeBanner.txHash && (
+                    <a
+                      href={`${explorerBase}/tx/${welcomeBanner.txHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 font-semibold underline underline-offset-2"
+                    >
+                      BscScan
+                      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                    </a>
+                  )}
+                </>
+              ) : (
+                <>
+                  <CheckCircle2
+                    className="h-3.5 w-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>{welcomeBanner.message}</span>
+                </>
+              )}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {welcomeBanner.kind === "ERROR" && embeddedAddress && (
+                <button
+                  type="button"
+                  onClick={() => void triggerWelcomeAirdrop(embeddedAddress)}
+                  className="inline-flex items-center gap-1 rounded-md bg-[#b54134] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#99352a] cursor-pointer"
+                >
+                  <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                  {t.welcomeAirdropRetry}
+                </button>
+              )}
+              {welcomeBanner.kind !== "MINTING" && (
+                <button
+                  type="button"
+                  aria-label={t.cancel}
+                  onClick={() => setWelcomeBanner(null)}
+                  className="rounded p-1 hover:bg-black/5 cursor-pointer"
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -381,10 +560,7 @@ export function App() {
           liveTelemetry={liveTelemetry}
           liveRwaTelemetry={liveRwaTelemetry}
           liveCircuitBreaker={liveCircuitBreaker}
-          onOpenWallet={() => {
-            setWalletErr(undefined);
-            setWalletModalOpen(true);
-          }}
+          onOpenWallet={handleOpenAuthOrAccount}
           onTxSuccess={() => void refreshWalletAndPositions(wallet.address)}
           onGoToPositions={() => {
             void refreshWalletAndPositions(wallet.address);
@@ -399,25 +575,23 @@ export function App() {
           wallet={wallet}
           health={health}
           positions={positions}
-          onOpenWallet={() => {
-            setWalletErr(undefined);
-            setWalletModalOpen(true);
-          }}
+          onOpenWallet={handleOpenAuthOrAccount}
           onGoToTrade={() => setActiveTab("TRADE")}
           onRefresh={() => void refreshWalletAndPositions(wallet.address)}
         />
       )}
 
       <WalletModal
-        open={walletModalOpen}
+        open={accountModalOpen}
         locale={locale}
         wallet={wallet}
-        walletOptions={walletOptions}
-        connectingId={connectingId}
-        errorMsg={walletErr}
-        onClose={() => setWalletModalOpen(false)}
-        onConnectOption={(w) => void handleConnectOption(w)}
-        onDisconnect={() => void handleDisconnect()}
+        onClose={() => setAccountModalOpen(false)}
+        onLogin={() => {
+          setAccountModalOpen(false);
+          login({ loginMethods: ["email"] });
+        }}
+        onExportWallet={() => void handleExportWallet()}
+        onDisconnect={() => void handleLogout()}
       />
     </div>
   );

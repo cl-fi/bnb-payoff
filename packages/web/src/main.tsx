@@ -2,10 +2,9 @@ import "./lib/polyfills";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { WagmiProvider } from "wagmi";
 import "./index.css";
 import { App } from "./App";
-import { wagmiConfig } from "./lib/wagmi";
+import { PrivyBootProvider } from "./lib/privy";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -18,10 +17,10 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <WagmiProvider config={wagmiConfig}>
+    <PrivyBootProvider>
       <QueryClientProvider client={queryClient}>
         <App />
       </QueryClientProvider>
-    </WagmiProvider>
+    </PrivyBootProvider>
   </StrictMode>
 );

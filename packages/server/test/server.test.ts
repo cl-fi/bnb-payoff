@@ -2383,4 +2383,163 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       await testnetApp.app.close();
     }
   });
+
+  it("Privy welcome 1,000 tUSDT airdrop verifies access token, never leaks PRIVY_APP_SECRET, deduplicates concurrent/repeat claims, and recovers from failed mints", async () => {
+    const PRIVY_SECRET_SENTINEL = "privy-super-secret-never-expose";
+    const privyApp = await buildApp({
+      databaseUrl: undefined,
+      dbPath: ":memory:",
+      rpcUrl: "http://127.0.0.1:8545",
+      enableLiveAtlas: false,
+      enableBinanceKlines: false,
+      enableRwaFeeds: false,
+      chainId: 97,
+      privyAppId: "cm_test_privy_app_id",
+      privyAppSecret: PRIVY_SECRET_SENTINEL,
+      welcomeAirdropUsdt: 1000,
+      usdtAddress: "0x2222222222222222222222222222222222222222",
+      vaultAddress: "0x1111111111111111111111111111111111111111",
+    });
+
+    try {
+      // 1. /api/health exposes public privyAppId but NEVER leaks PRIVY_APP_SECRET
+      const healthRes = await privyApp.app.inject({
+        method: "GET",
+        url: "/api/health",
+      });
+      expect(healthRes.statusCode).toBe(200);
+      expect(healthRes.body).not.toContain(PRIVY_SECRET_SENTINEL);
+      const h = healthRes.json();
+      expect(h.privyAppId).toBe("cm_test_privy_app_id");
+      expect(h.privyEnabled).toBe(true);
+      expect(h.welcomeAirdropUsdt).toBe(1000);
+
+      // 2. Rejects missing Authorization header
+      const noAuthRes = await privyApp.app.inject({
+        method: "POST",
+        url: "/api/auth/welcome-airdrop",
+      });
+      expect(noAuthRes.statusCode).toBe(401);
+      expect(noAuthRes.json().code).toBe("MISSING_TOKEN");
+
+      // Inject deterministic token verifier for unit tests
+      const userWalletA = "0xAbCdEf0123456789AbCdEf0123456789aBcDeF01" as Hex;
+      const userWalletB = "0x9999999999999999999999999999999999999999" as Hex;
+      privyApp.services.privyAuth.setTokenVerifier(async (token) => {
+        if (token === "token-no-wallet") {
+          return {
+            userId: "did:privy:user-no-wallet",
+            email: "pending@example.com",
+          };
+        }
+        if (token === "token-user-a") {
+          return {
+            userId: "did:privy:user-a",
+            email: "alice@example.com",
+            embeddedWalletAddress: userWalletA,
+          };
+        }
+        if (token === "token-user-a-dupe-wallet") {
+          return {
+            userId: "did:privy:user-a-clone",
+            email: "clone@example.com",
+            embeddedWalletAddress: userWalletA,
+          };
+        }
+        if (token === "token-user-b") {
+          return {
+            userId: "did:privy:user-b",
+            email: "bob@example.com",
+            embeddedWalletAddress: userWalletB,
+          };
+        }
+        throw new Error("Bad JWT");
+      });
+
+      // 3. Returns 409 WALLET_NOT_READY when embedded wallet hasn't finished creating yet
+      const noWalletRes = await privyApp.app.inject({
+        method: "POST",
+        url: "/api/auth/welcome-airdrop",
+        headers: { authorization: "Bearer token-no-wallet" },
+      });
+      expect(noWalletRes.statusCode).toBe(409);
+      expect(noWalletRes.json().code).toBe("WALLET_NOT_READY");
+
+      // 4. Concurrent double-fire (React StrictMode / two tabs) mints ONCE and both resolve cleanly
+      let mintCallCount = 0;
+      const mintSpy = vi
+        .spyOn(privyApp.services.chain, "mintWelcomeUsdt")
+        .mockImplementation(async (addr, amt) => {
+          mintCallCount += 1;
+          expect(amt).toBe(1000);
+          await new Promise((r) => setTimeout(r, 30));
+          return `0x${String(mintCallCount).padStart(64, "a")}` as Hex;
+        });
+
+      const [r1, r2] = await Promise.all([
+        privyApp.app.inject({
+          method: "POST",
+          url: "/api/auth/welcome-airdrop",
+          headers: { authorization: "Bearer token-user-a" },
+        }),
+        privyApp.app.inject({
+          method: "POST",
+          url: "/api/auth/welcome-airdrop",
+          headers: { authorization: "Bearer token-user-a" },
+        }),
+      ]);
+      expect(r1.statusCode).toBe(200);
+      expect(r2.statusCode).toBe(200);
+      expect(mintCallCount).toBe(1);
+      expect(r1.json().status).toBe("MINTED");
+      expect(r1.json().amountUsdt).toBe(1000);
+      expect(r1.json().walletAddress.toLowerCase()).toBe(
+        userWalletA.toLowerCase()
+      );
+
+      // 5. Subsequent login by same user returns ALREADY_CLAIMED without re-minting
+      const r3 = await privyApp.app.inject({
+        method: "POST",
+        url: "/api/auth/welcome-airdrop",
+        headers: { authorization: "Bearer token-user-a" },
+      });
+      expect(r3.statusCode).toBe(200);
+      expect(r3.json().status).toBe("ALREADY_CLAIMED");
+      expect(mintCallCount).toBe(1);
+
+      // 6. Another userId pointing to the same wallet also gets ALREADY_CLAIMED (wallet unique lock)
+      const rDupeWallet = await privyApp.app.inject({
+        method: "POST",
+        url: "/api/auth/welcome-airdrop",
+        headers: { authorization: "Bearer token-user-a-dupe-wallet" },
+      });
+      expect(rDupeWallet.statusCode).toBe(200);
+      expect(rDupeWallet.json().status).toBe("ALREADY_CLAIMED");
+      expect(mintCallCount).toBe(1);
+
+      // 7. Transient RPC failure marks FAILED so retry succeeds cleanly
+      mintSpy.mockRejectedValueOnce(new Error("RPC temporary timeout"));
+      const failedRes = await privyApp.app.inject({
+        method: "POST",
+        url: "/api/auth/welcome-airdrop",
+        headers: { authorization: "Bearer token-user-b" },
+      });
+      expect(failedRes.statusCode).toBe(502);
+      expect(failedRes.json().code).toBe("MINT_FAILED");
+
+      const retryRes = await privyApp.app.inject({
+        method: "POST",
+        url: "/api/auth/welcome-airdrop",
+        headers: { authorization: "Bearer token-user-b" },
+      });
+      expect(retryRes.statusCode).toBe(200);
+      expect(retryRes.json().status).toBe("MINTED");
+      expect(retryRes.json().amountUsdt).toBe(1000);
+      expect(mintCallCount).toBe(2);
+
+      mintSpy.mockRestore();
+    } finally {
+      await privyApp.app.close();
+    }
+  });
 });

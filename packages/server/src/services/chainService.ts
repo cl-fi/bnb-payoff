@@ -143,6 +143,7 @@ export class ChainService {
   private cachedProtocolFeesFetchedAt = 0;
   private syncPromise: Promise<void> | null = null;
   private keeperPromise: Promise<SettlementKeeperResult[]> | null = null;
+  private mintQueue: Promise<unknown> = Promise.resolve();
   private pendingSettlementMeta = new Map<string, SettlementMeta>();
   private lastWaitingLogAt = new Map<string, number>();
   private lastBreakerLogAt = new Map<string, number>();
@@ -2045,6 +2046,64 @@ export class ChainService {
     });
     await this.ingestTransaction(hash);
     return hash;
+  }
+
+  /**
+   * Mints welcome testnet tUSDT directly to a verified Privy user's embedded wallet
+   * using the MockUSDT owner account (`oracleAccount` / `TESTNET_WALLET_PK`).
+   * Serialized via `mintQueue` to prevent nonce collisions across concurrent signups.
+   */
+  async mintWelcomeUsdt(targetAddress: Hex, amountUsdt: number): Promise<Hex> {
+    if (!this.isConfigured()) {
+      throw new Error("On-chain MockUSDT contract is not configured");
+    }
+    if (
+      !Number.isFinite(amountUsdt) ||
+      amountUsdt <= 0 ||
+      amountUsdt > 100_000
+    ) {
+      throw new Error("Invalid welcome airdrop amount");
+    }
+
+    const execute = async (): Promise<Hex> => {
+      const wallet = createWalletClient({
+        account: this.oracleAccount,
+        transport: this.createWalletTransport(),
+      });
+      const isBsc =
+        this.config.chainId === BSC_TESTNET.chainId ||
+        this.config.chainId === 56;
+      let gasPrice: bigint | undefined;
+      if (isBsc) {
+        const minFloor = 100_000_000n; // 0.1 Gwei floor for BSC Testnet
+        const raw = await this.publicClient.getGasPrice().catch(() => minFloor);
+        const buffered = (raw * 120n) / 100n;
+        gasPrice = buffered > minFloor ? buffered : minFloor;
+      }
+
+      const hash = await wallet.writeContract({
+        address: this.config.usdtAddress,
+        abi: MOCK_USDT_ABI,
+        functionName: "mint",
+        args: [targetAddress, parseUnits(amountUsdt.toFixed(6), 6)],
+        chain: null,
+        ...(gasPrice ? { gasPrice } : {}),
+      });
+      const receipt = await this.publicClient.waitForTransactionReceipt({
+        hash,
+      });
+      if (receipt.status !== "success") {
+        throw new Error(`Welcome tUSDT mint transaction reverted (tx=${hash})`);
+      }
+      return hash;
+    };
+
+    const next = this.mintQueue.then(execute, execute);
+    this.mintQueue = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
   }
 
   async mintFaucetLocal(targetAddress: Hex): Promise<Hex> {

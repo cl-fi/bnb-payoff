@@ -60,6 +60,9 @@ export interface ServerConfig {
   nvdabSettlementUtcHour: number;
   thetaDataApiKey?: string;
   thetaDataPythonBin?: string;
+  privyAppId?: string;
+  privyAppSecret?: string;
+  welcomeAirdropUsdt: number;
   enableRwaFeeds: boolean;
   nvdabBlackoutDates: string[];
   enableLiveAtlas: boolean;
@@ -293,6 +296,13 @@ export function loadConfig(chainIdOverride?: number): ServerConfig {
   const thetaDataApiKey = process.env.THETADATA_API_KEY?.trim() || undefined;
   const thetaDataPythonBin =
     process.env.THETADATA_PYTHON_BIN?.trim() || undefined;
+  const privyAppId = process.env.PRIVY_APP_ID?.trim() || undefined;
+  const privyAppSecret = process.env.PRIVY_APP_SECRET?.trim() || undefined;
+  const rawWelcomeAirdrop = Number(process.env.WELCOME_AIRDROP_USDT ?? 1000);
+  const welcomeAirdropUsdt =
+    Number.isFinite(rawWelcomeAirdrop) && rawWelcomeAirdrop >= 0
+      ? Math.min(100_000, rawWelcomeAirdrop)
+      : 1000;
   const enableRwaFeeds = process.env.ENABLE_RWA_FEEDS !== "false";
   const nvdabBlackoutDates = (process.env.NVDAB_BLACKOUT_DATES || "")
     .split(",")
@@ -317,6 +327,9 @@ export function loadConfig(chainIdOverride?: number): ServerConfig {
     nvdabSettlementUtcHour,
     thetaDataApiKey,
     thetaDataPythonBin,
+    privyAppId,
+    privyAppSecret,
+    welcomeAirdropUsdt,
     enableRwaFeeds,
     nvdabBlackoutDates,
     enableLiveAtlas: process.env.ENABLE_LIVE_ATLAS !== "false",

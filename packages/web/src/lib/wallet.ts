@@ -27,19 +27,31 @@ import {
 } from "@payoff/shared";
 import { getBscTestnetRpcUrls, wagmiConfig } from "./wagmi";
 
-export type WalletTransportKind = "NONE" | "WAGMI";
+export type WalletTransportKind = "NONE" | "PRIVY" | "WAGMI";
 
 export interface ConnectedWallet {
   kind: WalletTransportKind;
   walletName?: string;
   walletIcon?: string;
   connectorId?: string;
+  email?: string;
   address?: `0x${string}`;
   /** Target app chain (97 = BNB Smart Chain Testnet) */
   chainId: number;
   /** Wallet's actual currently selected EVM chain ID */
   walletChainId?: number;
   usdtBalance: number;
+  /** True when transactions are gas-sponsored silently via Privy */
+  gasSponsored?: boolean;
+  /** Embedded wallet silent transaction sender (used when kind === "PRIVY") */
+  sendTransaction?: (tx: {
+    to: `0x${string}`;
+    data: `0x${string}`;
+    value?: bigint;
+    chainId: number;
+  }) => Promise<`0x${string}`>;
+  /** Optional chain switcher for embedded wallets */
+  switchChain?: (targetChainId: number) => Promise<void>;
 }
 
 /**
@@ -183,6 +195,16 @@ export async function disconnectWalletSession() {
 async function ensureWalletOnTargetChain(
   wallet: ConnectedWallet
 ): Promise<void> {
+  if (wallet.kind === "PRIVY") {
+    if (
+      wallet.switchChain &&
+      wallet.walletChainId !== undefined &&
+      wallet.walletChainId !== wallet.chainId
+    ) {
+      await wallet.switchChain(wallet.chainId).catch(() => {});
+    }
+    return;
+  }
   const account = getAccount(wagmiConfig);
   const currentChainId = account.chainId ?? wallet.walletChainId;
   if (currentChainId && currentChainId !== wallet.chainId) {
@@ -233,8 +255,21 @@ async function sendEvmTx(params: {
   data: `0x${string}`;
 }): Promise<`0x${string}`> {
   const { wallet, publicClient, to, data } = params;
-  if (!wallet.address || wallet.kind !== "WAGMI") {
-    throw new Error("Please connect a wallet first");
+  if (!wallet.address || wallet.kind === "NONE") {
+    throw new Error("Please sign in first");
+  }
+
+  if (wallet.kind === "PRIVY") {
+    if (!wallet.sendTransaction) {
+      throw new Error("Privy embedded wallet is still initializing");
+    }
+    // Let Privy Gas Sponsorship (Powered by Alchemy) handle gas pricing & paymaster sponsorship silently.
+    return wallet.sendTransaction({
+      to,
+      data,
+      value: 0n,
+      chainId: wallet.chainId,
+    });
   }
 
   const { gas, gasPrice } = await resolveSafeGasOverrides({

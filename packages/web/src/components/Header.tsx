@@ -1,4 +1,4 @@
-import { Briefcase, TrendingUp, Wallet } from "lucide-react";
+import { Briefcase, Loader2, Mail, TrendingUp } from "lucide-react";
 import type { ConnectedWallet } from "../lib/wallet";
 import { getCopy, type Locale } from "../lib/i18n";
 import { PayoffMark, UsdtIcon } from "./PayoffMark";
@@ -11,6 +11,8 @@ interface Props {
   locale: Locale;
   onToggleLocale: () => void;
   wallet: ConnectedWallet;
+  authReady?: boolean;
+  authInitializing?: boolean;
   positionCount: number;
   onOpenWalletModal: () => void;
 }
@@ -21,6 +23,8 @@ export function Header({
   locale,
   onToggleLocale,
   wallet,
+  authReady = true,
+  authInitializing = false,
   positionCount,
   onOpenWalletModal,
 }: Props) {
@@ -101,8 +105,10 @@ export function Header({
 
             <button
               type="button"
+              disabled={!authReady}
               onClick={onOpenWalletModal}
-              className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition cursor-pointer ${
+              title={wallet.email || wallet.address || undefined}
+              className={`flex items-center gap-2 rounded-lg px-3.5 py-2 text-xs font-semibold transition cursor-pointer disabled:opacity-60 ${
                 isConnected
                   ? "border border-[#c8ccd1] bg-white text-[#14202a] hover:border-[#667080] hover:bg-[#f7f8f9]"
                   : "bg-[#14202a] text-white hover:bg-[#000a12]"
@@ -119,9 +125,14 @@ export function Header({
                   <span className="text-[#c8ccd1]">|</span>
                   <span className="font-mono text-[#3a4552]">{shortAddr}</span>
                 </>
+              ) : authInitializing ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  <span>{t.initializingWallet}</span>
+                </>
               ) : (
                 <>
-                  <Wallet className="h-3.5 w-3.5" />
+                  <Mail className="h-3.5 w-3.5" aria-hidden="true" />
                   <span>{t.connectWallet}</span>
                 </>
               )}

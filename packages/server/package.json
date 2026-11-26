@@ -15,6 +15,7 @@
     "@fastify/websocket": "^11.0.1",
     "@payoff/mock-maker": "workspace:*",
     "@payoff/shared": "workspace:*",
+    "@privy-io/node": "^0.42.0",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
     "pg": "^8.23.1",

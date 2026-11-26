@@ -42,6 +42,9 @@ export interface HealthResponse {
   settlementOracleSource?: string;
   atlasSignerAddress?: `0x${string}`;
   oracleAddress?: `0x${string}`;
+  privyAppId?: string | null;
+  privyEnabled?: boolean;
+  welcomeAirdropUsdt?: number;
   dbEngine?: "postgres" | "sqlite";
   protocolFeeBps: number;
   closeFeeBps?: number;
@@ -148,6 +151,27 @@ export interface DemoAccountInfo {
   vaultAddress: `0x${string}`;
 }
 
+export interface WelcomeAirdropResponse {
+  ok: boolean;
+  status: "MINTED" | "ALREADY_CLAIMED";
+  userId: string;
+  email?: string;
+  walletAddress: `0x${string}`;
+  amountUsdt: number;
+  txHash: string;
+}
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly code?: string
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
 const API_BASE = ((import.meta as any).env?.VITE_API_BASE || "").replace(
   /\/+$/,
   ""
@@ -177,7 +201,11 @@ async function reqJson<T>(url: string, init?: RequestInit): Promise<T> {
   });
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(data?.error || `Request failed (${res.status})`);
+    throw new ApiRequestError(
+      data?.error || `Request failed (${res.status})`,
+      res.status,
+      typeof data?.code === "string" ? data.code : undefined
+    );
   }
   return data as T;
 }
@@ -283,6 +311,15 @@ export const api = {
     reqJson<{ ok: boolean; txHash: string }>("/api/dev/faucet", {
       method: "POST",
       body: JSON.stringify({ address }),
+    }),
+
+  claimWelcomeAirdrop: (accessToken: string) =>
+    reqJson<WelcomeAirdropResponse>("/api/auth/welcome-airdrop", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: "{}",
     }),
 
   simulateExpiry: (body: {
