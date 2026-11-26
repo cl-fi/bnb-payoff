@@ -1,4 +1,4 @@
-# Payoff on BNB Chain — Hackathon One-Pager
+# Payoff — Continuous-Payout Prediction Markets on BNB Chain (Hackathon One-Pager)
 
 **Event**: HackQuest BNB Bangkok Hackathon  
 **Tracks**: **Developer Track** + **CoinMarketCap × Atlas Challenge**  
@@ -7,16 +7,17 @@
 
 ---
 
-## 1. Problem & Target Audience
+## 1. Problem & Real Product Edge vs. Existing Prediction Markets
 
-Active BNB Chain traders want clean directional exposure to BTC and ETH without suffering sudden perp wick liquidations or deciphering complex multi-leg options Greeks.
-- **Perpetual futures** liquidate users on temporary intraday spikes even when their end-of-day thesis is right.
-- **On-chain option books** require managing strikes, implied volatility, margin collateral, and fragmented liquidity.
+Short-term crypto price markets are one of the highest-frequency daily categories on Polymarket and Kalshi—yet forcing continuous asset prices into **`0-or-1` binary contracts** breaks both user experience and liquidity:
+- **All-or-Nothing Wipeouts on Right Calls**: With BTC at `$60,276`, buying a `5.0x` binary ticket (`$61,750 or above`) pays **`$0` (`-100%`)** even if BTC surges `+$1,224` (`+2.0%`) to `$61,500`. Meanwhile, perpetual futures liquidate users on sudden overnight wicks.
+- **60 Fragmented Rows & Empty Orderbooks (`—`)**: Binary platforms split one BTC expiry into dozens of `$250`-spaced `or above` rows; over half sit empty (`—`) because extreme expiry pin-risk deters market makers, and bearish traders have to mentally invert `or above → Buy No`.
+- **High Churn & Expiry Manipulation Cliff**: Binary lotteries wipe out retail bankrolls ~80% of the time on high-multiplier tiers, and a tiny spot push at expiry flips `100%` of the pool.
 
-**Payoff** delivers **fixed-risk, zero-liquidation vertical spread tickets** settled in `tUSDT` on BNB Chain:
-- Users pick an asset (`BTC` / `ETH`), direction (`UP` / `DOWN`), tenor (`Daily` / `Weekly`), and target price tier from a hysteresis-locked 4-tier shelf.
-- Every ticket clearly displays **5 retail numbers**: Stake (= Max Loss), Breakeven Price, Max Payout & Multiplier, 08:00 UTC Settlement Time, and Live Indicative Early-Exit Value.
-- Users can exit early at any time via competitive reverse-RFQ (with atomic `UP + DOWN` collateral merge unlocks) or hold to deterministic 08:00 UTC expiry settlement with zero risk of liquidation.
+**Payoff** delivers **Continuous-Payout Prediction Markets** settled in `tUSDT` on BNB Chain—collapsing 60 fragmented binary rows into **one smooth, zero-liquidation ticket**:
+- Users pick an asset (`BTC` / `ETH`), **`UP`** or **`DOWN`**, tenor (`Daily` / `Weekly`), and one of **4 deep fixed-grid Target Multiplier tiers** (`~1.6x` cushioned to `~5x` breakout) above an anchored **Start Line**.
+- On the exact same `$100` `~5x` BTC bet (`$60,000 → $64,000`, spot `$60,276`), a `+$1,224` rally to `$61,500` pays **`~$180` (`+80%` profit)** instead of **`$0` (`-100%`)**, starts profiting at `+1%`, and still recovers `~1/3` of stake if flat—roughly doubling directional win rate, lifting retail retention, and generating organic on-chain USDT protocol fees from Day 1.
+- Every ticket surfaces **5 plain retail numbers**: Stake (= Max Loss), Breakeven Price, If-Flat Return, Target Cap & Max Multiplier, and Live Early-Cashout Value—with 1-click early exits via competitive EIP-712 RFQ (plus atomic `UP + DOWN` merge unlocks) and zero risk of intraday liquidation.
 
 ---
 
@@ -69,4 +70,4 @@ All 4 contracts are live on **BNB Smart Chain Testnet (Chain ID `97`, Block `144
 
 1. **BNB Smart Chain Mainnet Launch**: Security audit of `PayoffSpreadVault` & `AtlasPullSettlementOracle`, native USDT collateral integration, and BscScan + Sourcify verification.
 2. **Multi-MM Competitive RFQ Network**: Onboard independent professional market makers competing on the same EIP-712 `OpenQuote` / `CloseQuote` standard, maximizing user multipliers and early-exit liquidity via atomic merge competition.
-3. **BNB, Altcoin & RWA Spread Markets via Atlas Custom Feeds**: Expand beyond BTC (`#626`) and ETH (`#632`) to **BNB/USD**, major BNB ecosystem assets, and tokenized equity/gold RWA spreads backed by Atlas Pull Oracle custom feeds and `ConsensusScore` guardrails.
+3. **BNB, Altcoin & RWA Continuous-Payout Markets via Atlas Custom Feeds**: Expand beyond BTC (`#626`) and ETH (`#632`) to **BNB/USD**, high-volatility BNB ecosystem assets, and tokenized equity/gold RWA price prediction markets backed by Atlas Pull Oracle custom feeds and `ConsensusScore` guardrails.

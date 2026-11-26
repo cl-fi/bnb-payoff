@@ -17,3 +17,4 @@ data/*.sqlite*
 *.tsbuildinfo
 packages/contracts/deployments/localhost.json
 .vercel
+pitch_materials/
