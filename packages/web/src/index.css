@@ -504,3 +504,146 @@ dialog.payoff-sheet[open]:where(:not([data-closing]))::backdrop {
   border: 0 !important;
   white-space: nowrap !important;
 }
+
+/* ============================================================================
+   Spotlight Onboarding Tour (popover="manual" + CSS Anchor Positioning)
+   - Desktop (>=1024px): Tethered left of active target via CSS Anchor Positioning
+     gated behind @supports; falls back to viewport-clamped fixed JS positioning.
+   - Mobile (<1024px): Compact fixed bottom floating sheet above safe-area.
+   ============================================================================ */
+.payoff-tour-ring {
+  position: fixed;
+  pointer-events: none;
+  border: 1.5px solid rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 0 0 4px rgba(255, 255, 255, 0.12),
+    0 0 28px rgba(255, 255, 255, 0.18),
+    0 0 0 150vmax rgba(0, 0, 0, 0.72);
+}
+
+.payoff-tour-ring[data-step-animate="true"] {
+  transition:
+    left 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    top 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    width 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 260ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.payoff-tour-popover {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  z-index: 60;
+  padding: 0;
+  width: min(calc(100vw - 24px), 344px);
+  max-width: calc(100vw - 24px);
+  height: fit-content;
+  border: 1px solid #2b3039;
+  border-radius: 20px;
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.88);
+  overflow: visible;
+  outline: none;
+}
+
+[popover].payoff-tour-popover {
+  opacity: 0;
+  transition-property: opacity, display, overlay;
+  transition-duration: 0.18s;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  transition-behavior: allow-discrete;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [popover].payoff-tour-popover {
+    transition-property: opacity, translate, display, overlay;
+  }
+
+  @supports selector(:popover-open) {
+    [popover].payoff-tour-popover {
+      translate: 0 6px;
+    }
+  }
+}
+
+[popover].payoff-tour-popover:is(:popover-open, .\:popover-open) {
+  opacity: 1;
+
+  @starting-style {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    @supports selector(:popover-open) {
+      translate: 0 0;
+
+      @starting-style {
+        translate: 0 6px;
+      }
+    }
+  }
+}
+
+@supports not selector(:popover-open) {
+  [popover].payoff-tour-popover:not(.\:popover-open) {
+    display: none;
+  }
+}
+
+/* Mobile (<1024px): fixed floating bottom card so narrow screens never clip */
+@media (max-width: 1023px) {
+  .payoff-tour-popover {
+    position: fixed;
+    inset: auto 12px max(12px, env(safe-area-inset-bottom)) 12px;
+    margin: 0 auto;
+    width: min(calc(100vw - 24px), 440px);
+    max-width: 440px;
+    z-index: 60;
+  }
+}
+
+/* Desktop (>=1024px): native CSS Anchor Positioning when supported */
+@media (min-width: 1024px) {
+  @supports ((position-area: inline-start) and (align-self: anchor-center)) {
+    .payoff-tour-popover[data-anchored="true"] {
+      position-anchor: --payoff-tour-target;
+      inset: auto;
+      margin: 22px;
+      position-area: inline-start;
+      align-self: anchor-center;
+      position-try-fallbacks: flip-inline, block-start, block-end;
+    }
+  }
+
+  @supports not ((position-area: inline-start) and (align-self: anchor-center)) {
+    .payoff-tour-popover[data-js-positioned="true"] {
+      position: fixed;
+      inset: auto;
+      margin: 0;
+      z-index: 60;
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .payoff-tour-ring[data-step-animate="true"] {
+    transition: none;
+  }
+
+  [popover].payoff-tour-popover {
+    transition-duration: 0.08s;
+  }
+}
+
+@media (forced-colors: active) {
+  .payoff-tour-ring {
+    border: 2px solid Highlight;
+    box-shadow: none;
+  }
+
+  .payoff-tour-popover {
+    border: 1px solid CanvasText;
+  }
+}

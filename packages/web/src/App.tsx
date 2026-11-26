@@ -646,6 +646,7 @@ export function App() {
 
   const handleOpenOnboarding = useCallback(() => {
     setRulesSheetOpen(false);
+    setActiveTab("TRADE");
     setOnboardingOpen(true);
   }, []);
 
@@ -828,6 +829,7 @@ export function App() {
       <OnboardingSheet
         open={onboardingOpen}
         locale={locale}
+        walletConnected={wallet.kind !== "NONE"}
         onClose={() => setOnboardingOpen(false)}
       />
     </div>

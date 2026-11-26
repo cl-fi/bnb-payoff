@@ -553,9 +553,14 @@ export function OrderTicketPanel({
         {isBull ? t.bull : t.bear}
       </h2>
 
-      {/* 1. Direction Pill Switch (#131519 track, #1f2329 active pill) */}
+      {/* Tour Step 1 Target: Direction Switch + Target Cap Slider */}
       <div
-        className="grid grid-cols-2 gap-[3px] rounded-full bg-[#131519] p-[3px]"
+        data-tour-target={sheetMode ? undefined : "direction-cap"}
+        className="space-y-3 sm:space-y-4"
+      >
+        {/* 1. Direction Pill Switch (#131519 track, #1f2329 active pill) */}
+        <div
+          className="grid grid-cols-2 gap-[3px] rounded-full bg-[#131519] p-[3px]"
         role="group"
         aria-label={locale === "zh" ? "方向选择" : "Direction"}
       >
@@ -1164,6 +1169,7 @@ export function OrderTicketPanel({
           </div>
         )}
       </div>
+      </div>
 
       {/* 3. Option A: Standard Amount Box (Clickable Available -> Max + Full-Width Input + 25/50/75%/Max) */}
       <div
@@ -1327,12 +1333,14 @@ export function OrderTicketPanel({
       </div>
 
       {/* 4. Option A: Polymarket-Style "To win" Readout + Compact Red/Green PnL Curve */}
-      <MiniPayoffPnlChart
-        locale={locale}
-        direction={direction}
-        ticket={activeTicket}
-        spot={spot}
-      />
+      <div data-tour-target={sheetMode ? undefined : "payoff-curve"}>
+        <MiniPayoffPnlChart
+          locale={locale}
+          direction={direction}
+          ticket={activeTicket}
+          spot={spot}
+        />
+      </div>
 
       {/* Optional Merge Preview Callout (for B3 Add-to-Position Sheet) */}
       {mergePreview && (
@@ -1387,6 +1395,7 @@ export function OrderTicketPanel({
       )}
 
       {/* 5. Single Pure-White Pill CTA / Slippage Confirmation / In-Place Progress */}
+      <div data-tour-target={sheetMode ? undefined : "buy-cta"}>
       {stage === "SUCCESS" && txHash ? (
         <div
           role="status"
@@ -1545,6 +1554,7 @@ export function OrderTicketPanel({
                     )}
         </button>
       )}
+      </div>
     </form>
   );
 }

@@ -366,23 +366,6 @@ export function TradePage({
     return () => mq.removeEventListener("change", sync);
   }, []);
 
-  // First-visit A1 OnboardingSheet auto-trigger using localStorage (StrictMode-safe)
-  useEffect(() => {
-    if (onboardingCheckedRef.current) return;
-    if (hasSeenOnboarding()) {
-      onboardingCheckedRef.current = true;
-      return;
-    }
-    const id = window.setTimeout(() => {
-      if (onboardingCheckedRef.current) return;
-      onboardingCheckedRef.current = true;
-      if (!hasSeenOnboarding()) {
-        onOpenOnboarding();
-      }
-    }, 350);
-    return () => window.clearTimeout(id);
-  }, [onOpenOnboarding]);
-
   useEffect(() => {
     if (health) {
       contractsRef.current = {
@@ -919,6 +902,27 @@ export function TradePage({
         }
       : customClampState;
   const effectiveTargetKey = quickTicket ? getTargetKey(quickTicket) : "";
+  const canAutoStartOnboarding = Boolean(
+    activeTicket && shelf && !isPriorExpiry
+  );
+
+  // First-visit Spotlight Onboarding Tour auto-trigger once OrderTicketPanel targets are mounted (StrictMode-safe)
+  useEffect(() => {
+    if (onboardingCheckedRef.current) return;
+    if (hasSeenOnboarding()) {
+      onboardingCheckedRef.current = true;
+      return;
+    }
+    if (!canAutoStartOnboarding) return;
+    const id = window.setTimeout(() => {
+      if (onboardingCheckedRef.current) return;
+      onboardingCheckedRef.current = true;
+      if (!hasSeenOnboarding()) {
+        onOpenOnboarding();
+      }
+    }, 400);
+    return () => window.clearTimeout(id);
+  }, [canAutoStartOnboarding, onOpenOnboarding]);
 
   const resetFlowState = useCallback(() => {
     setSlippagePause(undefined);

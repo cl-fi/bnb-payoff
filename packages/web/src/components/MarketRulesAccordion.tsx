@@ -237,7 +237,7 @@ function RulesAndOracleContent({
           <span className="inline-flex items-center gap-2 text-xs font-semibold text-white">
             <BookOpen className="h-4 w-4 text-[#2EC26B]" aria-hidden="true" />
             <span>
-              {isZh ? "重看 30 秒看懂 Payoff" : "Replay 30s Payoff Guide"}
+              {isZh ? "重看新手分步引导" : "Replay interactive guide"}
             </span>
           </span>
           <ChevronRight className="h-4 w-4 text-[#7e8690]" aria-hidden="true" />
