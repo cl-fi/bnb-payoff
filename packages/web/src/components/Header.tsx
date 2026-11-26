@@ -9,9 +9,7 @@ import {
   KeyRound,
   Loader2,
   LogOut,
-  PieChart,
   User,
-  Wallet,
 } from "lucide-react";
 import { BSC_TESTNET } from "@payoff/shared";
 import { getExplorerBaseUrl, type ConnectedWallet } from "../lib/wallet";
@@ -223,6 +221,11 @@ export function Header({
             }`}
           >
             <span>{t.navPositions}</span>
+            {positionCount > 0 && (
+              <span className="hidden sm:inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[#1f2329] px-1 text-[10px] font-bold text-[#d0d6de] tabular-nums leading-none">
+                {positionCount}
+              </span>
+            )}
             {claimableCount > 0 && (
               <span
                 className="h-1.5 w-1.5 rounded-full bg-[#2ec26b] shrink-0"
@@ -232,7 +235,7 @@ export function Header({
           </button>
         </nav>
 
-        {/* Right: Language Dropdown + Wallet Balance Pill + Avatar Account Menu (3A) */}
+        {/* Right: Language Dropdown + Testnet Mint Pill + Merged Account & Balance Menu (Option A) */}
         <div className="justify-self-end flex items-center gap-1 sm:gap-2">
           <button
             id={langMenu.triggerId}
@@ -319,39 +322,7 @@ export function Header({
 
           {isConnected ? (
             <>
-              {/* Wallet Balance Pill -> Portfolio Page */}
-              <button
-                type="button"
-                disabled={!authReady}
-                onClick={handleBalanceClick}
-                aria-label={`${t.navPositions}: ${formatCompactBalance(wallet.usdtBalance)}`}
-                className={`inline-flex h-7 sm:h-8 items-center gap-1.5 rounded-full px-2 sm:px-3 text-xs font-semibold whitespace-nowrap transition cursor-pointer disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
-                  resolvedTab === "POSITIONS"
-                    ? "bg-[#1f2329] ring-1 ring-white/25 text-white"
-                    : "bg-[#15171b] text-white hover:bg-[#24282f]"
-                }`}
-              >
-                <Wallet
-                  className="h-3.5 w-3.5 text-[#9aa2ad] shrink-0"
-                  aria-hidden="true"
-                />
-                <span className="tabular-nums font-semibold tracking-[-0.01em]">
-                  {formatCompactBalance(wallet.usdtBalance)}
-                </span>
-                {positionCount > 0 && (
-                  <span className="hidden sm:inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-white px-1 text-[10px] font-bold text-black tabular-nums leading-none">
-                    {positionCount}
-                  </span>
-                )}
-                {claimableCount > 0 && (
-                  <span
-                    className="h-1.5 w-1.5 rounded-full bg-[#2ec26b] shrink-0"
-                    aria-hidden="true"
-                  />
-                )}
-              </button>
-
-              {/* Testnet Mint Pill right beside token balance (monochrome pill matching Header chrome) */}
+              {/* Testnet Mint Pill beside merged account/balance trigger (monochrome pill matching Header chrome) */}
               {onOpenMint && (
                 <button
                   type="button"
@@ -370,25 +341,26 @@ export function Header({
                 </button>
               )}
 
-              {/* Standalone Avatar Account Dropdown Trigger */}
+              {/* Merged Avatar + Cash Balance Account Menu Trigger */}
               <button
                 id={accountMenu.triggerId}
                 ref={accountMenu.triggerRef}
                 type="button"
+                disabled={!authReady}
                 aria-haspopup="menu"
                 aria-expanded={accountMenu.open}
-                aria-label={
+                aria-label={`${
                   wallet.email
                     ? `${isZh ? "账户" : "Account"}: ${wallet.email}`
                     : isZh
                       ? "账户菜单"
                       : "Account menu"
-                }
+                } · ${formatCompactBalance(wallet.usdtBalance)}`}
                 title={wallet.email || wallet.address || undefined}
                 onPointerDown={accountMenu.onTriggerPointerDown}
                 onKeyDown={accountMenu.onTriggerKeyDown}
                 {...accountMenu.triggerInvokerProps}
-                className={`inline-flex h-7 sm:h-8 items-center gap-1 rounded-full p-0.5 sm:pl-1 sm:pr-2 text-xs font-semibold transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+                className={`inline-flex h-7 sm:h-8 items-center gap-1.5 rounded-full pl-0.5 sm:pl-1 pr-2 sm:pr-2.5 text-xs font-semibold whitespace-nowrap transition cursor-pointer disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
                   accountMenu.open
                     ? "bg-[#24282f] ring-1 ring-white/25 text-white"
                     : "bg-[#15171b] text-white hover:bg-[#24282f]"
@@ -396,9 +368,12 @@ export function Header({
               >
                 <span
                   aria-hidden="true"
-                  className="flex h-6 w-6 items-center justify-center rounded-full bg-[#24282f] text-[11px] font-bold text-white"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#24282f] text-[11px] font-bold text-white"
                 >
                   {initial ?? <User className="h-3.5 w-3.5 text-[#b8bec6]" />}
+                </span>
+                <span className="tabular-nums font-semibold tracking-[-0.01em]">
+                  {formatCompactBalance(wallet.usdtBalance)}
                 </span>
                 <ChevronDown
                   className={`hidden sm:inline h-3 w-3 shrink-0 transition-transform duration-150 ${
@@ -474,21 +449,6 @@ export function Header({
                               ? "复制钱包地址"
                               : "Copy address"}
                       </span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        accountMenu.hideMenu(false);
-                        navigate("POSITIONS");
-                      }}
-                      className="flex min-h-[36px] w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] font-medium text-[#d0d6de] hover:bg-[#1a1e24] hover:text-white transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/75"
-                    >
-                      <PieChart
-                        className="h-3.5 w-3.5 shrink-0 text-[#7e8690]"
-                        aria-hidden="true"
-                      />
-                      <span>{t.navPositions}</span>
                     </button>
 
                     {onOpenMint && (
