@@ -2,7 +2,6 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, X } from "lucide-react";
 import {
   ASSET_SPECS,
-  SUPPORTED_UNDERLYINGS,
   type PositionView,
   type RwaAssetTelemetry,
   type UnderlyingSymbol,
@@ -34,6 +33,12 @@ export interface MarketSelectorProps {
   onCloseExternal?: () => void;
   onSelectUnderlying: (underlying: UnderlyingSymbol) => void;
 }
+
+const MARKET_PICKER_ORDER: readonly UnderlyingSymbol[] = [
+  "NVDAB",
+  "BTC",
+  "ETH",
+];
 
 const ASSET_META: Record<
   UnderlyingSymbol,
@@ -80,7 +85,7 @@ function MarketRowList({
       aria-label={isDropdown ? (isZh ? "可用市场" : "Available markets") : undefined}
       className={isDropdown ? "flex flex-col gap-0.5" : "divide-y divide-[#1d2025]"}
     >
-      {SUPPORTED_UNDERLYINGS.map((u) => {
+      {MARKET_PICKER_ORDER.map((u) => {
         const spec = ASSET_SPECS[u];
         const isSelected = selectedUnderlying === u;
         const isRwa = spec.assetClass === "RWA_EQUITY";

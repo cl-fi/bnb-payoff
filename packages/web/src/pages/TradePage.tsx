@@ -277,7 +277,7 @@ export function TradePage({
   const isZh = locale === "zh";
   const t = getCopy(locale);
 
-  const [underlying, setUnderlying] = useState<UnderlyingSymbol>("BTC");
+  const [underlying, setUnderlying] = useState<UnderlyingSymbol>("NVDAB");
   const [direction, setDirection] = useState<Direction>("BULL");
   const [tenor, setTenor] = useState<ExpiryTenor>("DAILY");
   const [selectedPriorExpiry, setSelectedPriorExpiry] = useState<number | null>(
