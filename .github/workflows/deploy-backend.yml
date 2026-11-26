@@ -8,6 +8,7 @@ on:
       - "packages/shared/**"
       - "packages/mock-maker/**"
       - "packages/contracts/deployments/**"
+      - "scripts/fetch-thetadata-iv.py"
       - "docker-compose.yml"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -59,17 +60,19 @@ jobs:
             --output text)
 
           echo "Dispatched SSM command: $CMD_ID"
-          aws ssm wait command-executed \
-            --region ap-southeast-1 \
-            --command-id "$CMD_ID" \
-            --instance-id "$EC2_INSTANCE_ID" || true
-
-          STATUS=$(aws ssm get-command-invocation \
-            --region ap-southeast-1 \
-            --command-id "$CMD_ID" \
-            --instance-id "$EC2_INSTANCE_ID" \
-            --query "Status" \
-            --output text)
+          STATUS="Pending"
+          for _ in $(seq 1 60); do
+            STATUS=$(aws ssm get-command-invocation \
+              --region ap-southeast-1 \
+              --command-id "$CMD_ID" \
+              --instance-id "$EC2_INSTANCE_ID" \
+              --query "Status" \
+              --output text 2>/dev/null || echo "Pending")
+            case "$STATUS" in
+              Pending|InProgress|Delayed) sleep 5 ;;
+              *) break ;;
+            esac
+          done
 
           aws ssm get-command-invocation \
             --region ap-southeast-1 \
