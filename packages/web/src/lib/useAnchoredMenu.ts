@@ -47,7 +47,7 @@ function getEnabledMenuItems(container: HTMLElement | null): HTMLElement[] {
   if (!container) return [];
   return Array.from(
     container.querySelectorAll<HTMLElement>(
-      'button[role="menuitemradio"], button[role="menuitem"], button:not([role])'
+      'button[role="menuitemradio"], button[role="menuitem"], button:not([role]), a[href]'
     )
   ).filter(
     (el) =>
@@ -128,12 +128,17 @@ export function useAnchoredMenu({
     };
   }, [enabled, support.positionArea, support.toggleSource, anchorToken]);
 
-  // Fallback for browsers without native focusgroup: set role="menu" + Arrow/Home/End navigation
+  // Fallback for browsers without native focusgroup: set role="menu" + inferred role="menuitem" + Arrow/Home/End navigation
   useEffect(() => {
     if (!enabled || support.focusgroup) return;
     const group = menuGroupRef.current;
     if (!group) return;
     group.setAttribute("role", "menu");
+    group
+      .querySelectorAll<HTMLElement>("button:not([role]), a[href]:not([role])")
+      .forEach((item) => {
+        item.setAttribute("role", "menuitem");
+      });
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
       const items = getEnabledMenuItems(group);

@@ -427,7 +427,7 @@ export function EarlyCloseModal({
                     ) : (
                       <span>
                         {isZh
-                          ? `卖出 ${pctLabel} · 免 Gas 拿回约 $${estimatedUsdt.toFixed(2)}`
+                          ? `卖出 ${pctLabel} · 拿回约 $${estimatedUsdt.toFixed(2)}`
                           : `Sell ${pctLabel} · Get ~$${estimatedUsdt.toFixed(2)}`}
                       </span>
                     )}
@@ -446,8 +446,8 @@ export function EarlyCloseModal({
 
                 <p className="text-center text-[11px] text-[#7e8690]">
                   {isZh
-                    ? "免 Gas 静默成交 · 价格变动超 1.5% 会先停下确认"
-                    : "Silent gasless exit · Auto-pauses if price moves > 1.5%"}
+                    ? "一键成交 · 价格变动超 1.5% 会先停下确认"
+                    : "Instant exit · Auto-pauses if price moves > 1.5%"}
                 </p>
               </div>
             </div>

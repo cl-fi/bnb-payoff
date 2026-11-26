@@ -1471,7 +1471,7 @@ export function TradePage({
     setToast({
       kind: "ok",
       text: isZh
-        ? `已免 Gas 卖出落袋 $${rfq.netProceedsUsdt.toFixed(2)}`
+        ? `已卖出落袋 $${rfq.netProceedsUsdt.toFixed(2)}`
         : `Sold early for $${rfq.netProceedsUsdt.toFixed(2)}`,
       txHash: hash,
     });
@@ -2064,6 +2064,7 @@ export function TradePage({
               onChangeCustomStart={handleChangeCustomStart}
               onChangeCustomCap={handleChangeCustomCap}
               ticket={activeTicket}
+              spot={displaySpot}
               grid={shelf.grid}
               stakeUsdt={stakeUsdt}
               onChangeStake={(val) => {
@@ -2793,6 +2794,7 @@ export function TradePage({
                 onChangeCustomStart={handleChangeCustomStart}
                 onChangeCustomCap={handleChangeCustomCap}
                 ticket={activeTicket}
+                spot={displaySpot}
                 grid={shelf.grid}
                 stakeUsdt={stakeUsdt}
                 onChangeStake={(val) => {

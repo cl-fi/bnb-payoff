@@ -17,7 +17,6 @@ import {
   LogOut,
   Mail,
   ShieldCheck,
-  Sparkles,
   TrendingUp,
 } from "lucide-react";
 import {
@@ -624,25 +623,25 @@ export function WalletPage({
           </div>
           <div className="space-y-1.5">
             <h1 className="text-xl font-bold tracking-[-0.02em] text-white">
-              {isZh ? "登录查看你的钱包" : "Sign in to open your Wallet"}
+              {isZh ? "登录查看你的资产" : "Sign in to view your Portfolio"}
             </h1>
             <p className="text-xs leading-relaxed text-[#7e8690]">
               {isZh
-                ? "邮箱一键登录，自动生成免 Gas BNB 嵌入式账户并赠送 1,000 测试 tUSDT，随时可充值、提币、查看持仓与战绩。"
-                : "Sign in with email for a gasless BNB embedded wallet with 1,000 free tUSDT — deposit, withdraw, track positions, and review history."}
+                ? "邮箱一键登录，自动生成链上钱包并赠送 1,000 测试 tUSDT，随时可充值、提币、查看持仓与战绩。"
+                : "Sign in with email for an instant BNB Chain wallet with 1,000 free tUSDT — deposit, withdraw, track positions, and review history."}
             </p>
           </div>
           <div className="rounded-2xl bg-[#2EC26B]/12 px-4 py-3 text-xs leading-relaxed text-[#cbead7]">
             {isZh ? (
               <>
-                支持<strong className="text-white">免 Gas 链上提币</strong>与
+                支持<strong className="text-white">链上提币</strong>与
                 <strong className="text-white">随时导出私钥</strong>，Payoff 不托管您的资产。
               </>
             ) : (
               <>
-                Non-custodial with{" "}
-                <strong className="text-white">gas-free on-chain transfers</strong>{" "}
-                and <strong className="text-white">private key export</strong> anytime.
+                Non-custodial wallet with{" "}
+                <strong className="text-white">on-chain transfers</strong> and{" "}
+                <strong className="text-white">private key export</strong> anytime.
               </>
             )}
           </div>
@@ -782,7 +781,7 @@ export function WalletPage({
             <div
               role="tablist"
               {...({ focusgroup: "tablist nomemory" } as Record<string, unknown>)}
-              aria-label={isZh ? "钱包视图" : "Wallet views"}
+              aria-label={isZh ? "资产视图" : "Portfolio views"}
               onKeyDown={handleTabKeyDown}
               className="flex items-center gap-6 border-b border-[#1d2025]"
             >
@@ -1384,8 +1383,8 @@ export function WalletPage({
                       <p className="mx-auto max-w-sm text-xs leading-relaxed text-[#7e8690]">
                         {historyFilter === "transfers"
                           ? isZh
-                            ? "在钱包页完成免 Gas 领水或链上提币后，交易记录与 BscScan 凭证会自动展示在这里。"
-                            : "Your gas-free faucet mints and on-chain withdrawals with BscScan links will appear here."
+                            ? "在资产页完成领水或链上提币后，交易记录与 BscScan 凭证会自动展示在这里。"
+                            : "Your faucet mints and on-chain withdrawals with BscScan links will appear here."
                           : isZh
                             ? "完成一笔提前卖出、到期结算或充提后，这里会自动统计你的战绩与链上凭证。"
                             : "Your cumulative PnL, right-direction stats, and BscScan tx proofs will appear here."}
@@ -1443,7 +1442,7 @@ export function WalletPage({
                                   <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-[#7e8690] tabular-nums">
                                     <span>{formatShortDate(tr.timestampSec)}</span>
                                     <span>·</span>
-                                    <span>{isZh ? "免 Gas 已确认" : "Gas Free · Confirmed"}</span>
+                                    <span>{isZh ? "已确认" : "Confirmed"}</span>
                                     {explorerBase && tr.txHash && (
                                       <>
                                         <span>·</span>
@@ -1670,21 +1669,15 @@ export function WalletPage({
         <aside className="lg:sticky lg:top-20 self-start">
           <div className="rounded-3xl bg-[#121417] border border-[#1d2025] p-5 space-y-5">
             {/* Account Identity */}
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-[11px] font-semibold text-[#7e8690]">
-                  {isZh ? "账户" : "Account"}
-                </div>
-                <div className="mt-0.5 text-sm font-bold text-white truncate">
-                  {wallet.email ||
-                    wallet.walletName ||
-                    (isZh ? "邮箱账户" : "Email account")}
-                </div>
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold text-[#7e8690]">
+                {isZh ? "账户" : "Account"}
               </div>
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#2EC26B]/13 px-2.5 py-1 text-[10.5px] font-bold text-[#2EC26B]">
-                <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
-                {isZh ? "免 Gas" : "Gas Free"}
-              </span>
+              <div className="mt-0.5 text-sm font-bold text-white truncate">
+                {wallet.email ||
+                  wallet.walletName ||
+                  (isZh ? "邮箱账户" : "Email account")}
+              </div>
             </div>
 
             {/* Balance Breakdown */}

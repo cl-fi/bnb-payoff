@@ -671,6 +671,8 @@ export function App() {
         claimableCount={claimablePositionsCount}
         onOpenWalletModal={handleOpenAuthOrAccount}
         onLogin={() => login({ loginMethods: ["email"] })}
+        onExportWallet={() => void handleExportWallet()}
+        onDisconnect={() => void handleLogout()}
       />
 
       {/* A4 Slim Dark Welcome Airdrop Pill Banner */}

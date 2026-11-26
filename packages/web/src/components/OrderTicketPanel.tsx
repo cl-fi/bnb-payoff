@@ -28,6 +28,7 @@ import {
 } from "@payoff/shared";
 import { formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
+import { MiniPayoffPnlChart } from "./MiniPayoffPnlChart";
 
 export type InstantBuyStage =
   | "IDLE"
@@ -74,6 +75,7 @@ export interface OrderTicketPanelProps {
   onChangeCustomStart?: (startPrice: number) => void;
   onChangeCustomCap?: (capPrice: number) => void;
   ticket: TicketSummary;
+  spot?: number;
   grid?: FixedGridMeta;
   stakeUsdt: number;
   onChangeStake: (val: number) => void;
@@ -226,6 +228,7 @@ export function OrderTicketPanel({
   onChangeCustomStart,
   onChangeCustomCap,
   ticket,
+  spot,
   grid,
   stakeUsdt,
   onChangeStake,
@@ -654,7 +657,7 @@ export function OrderTicketPanel({
                     htmlFor={customStartSliderId}
                     className="text-xs font-semibold text-[#7e8690] shrink-0"
                   >
-                    {t.startPriceLabel}
+                    {isBull ? t.startPriceLabelBull : t.startPriceLabelBear}
                   </label>
                   <span className="text-[15px] font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
                     {formatStrikePrice(
@@ -819,7 +822,7 @@ export function OrderTicketPanel({
                     htmlFor={customCapSliderId}
                     className="text-xs font-semibold text-[#7e8690] shrink-0"
                   >
-                    {t.capPriceLabel}
+                    {isBull ? t.capPriceLabelBull : t.capPriceLabelBear}
                   </label>
                   <span className="text-[15px] font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
                     {capArrow}{" "}
@@ -1013,7 +1016,7 @@ export function OrderTicketPanel({
                   htmlFor={sliderId}
                   className="text-xs font-semibold text-[#7e8690] shrink-0"
                 >
-                  {t.capPriceLabel}
+                  {isBull ? t.capPriceLabelBull : t.capPriceLabelBear}
                 </label>
                 <span className="text-base font-bold text-white tabular-nums tracking-tight whitespace-nowrap">
                   {capArrow}{" "}
@@ -1258,24 +1261,13 @@ export function OrderTicketPanel({
         </div>
       </div>
 
-      {/* 4. Single Compact Math Line */}
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-[#7e8690] tabular-nums">
-        <span>
-          {t.mathStartShort(
-            formatStrikePrice(activeTicket.startPrice, activeTicket.underlying)
-          )}{" "}
-          ·{" "}
-          {t.mathBreakevenShort(
-            formatStrikePrice(
-              activeTicket.breakevenPrice,
-              activeTicket.underlying
-            )
-          )}
-        </span>
-        <span className="font-semibold" style={{ color: accentColor }}>
-          {t.mathMaxWin(activeTicket.maxPayoutUsdt.toFixed(2))}
-        </span>
-      </div>
+      {/* 4. Option A: Polymarket-Style "To win" Readout + Compact Red/Green PnL Curve */}
+      <MiniPayoffPnlChart
+        locale={locale}
+        direction={direction}
+        ticket={activeTicket}
+        spot={spot}
+      />
 
       {/* Optional Merge Preview Callout (for B3 Add-to-Position Sheet) */}
       {mergePreview && (

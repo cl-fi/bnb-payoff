@@ -77,27 +77,27 @@ const dict = {
   zh: {
     // Navigation & Account
     navTrade: "交易",
-    navPositions: "钱包",
-    navWallet: "钱包",
+    navPositions: "资产",
+    navWallet: "资产",
     connectWallet: "邮箱登录",
     myWallet: "我的账户",
-    walletSubtitleConnected: "Privy 免 Gas 嵌入式账户 · BNB Chain 链上托管",
+    walletSubtitleConnected: "Privy 嵌入式账户 · BNB Chain 链上托管",
     walletSubtitleDisconnected:
-      "使用邮箱一键登录，自动生成免 Gas BNB 账户并赠送 1,000 tUSDT",
+      "使用邮箱一键登录，自动生成链上钱包并赠送 1,000 tUSDT",
     availableBalance: "可用余额",
     disconnectWallet: "退出登录",
     exportPrivateKey: "导出钱包私钥",
-    gasFreeBadge: "免 Gas · 0 BNB",
-    gasFreeAccountNote: "Privy 非托管嵌入式钱包 · BNB Testnet 全程免 Gas 静默签名",
+    gasFreeBadge: "0 手续费",
+    gasFreeAccountNote: "Privy 非托管嵌入式钱包 · BNB Testnet 一键静默签名",
     privyEmailAccountLabel: "邮箱账户",
     welcomeAirdropMinting: "正在为新账户免费空投 1,000 tUSDT...",
     welcomeAirdropSuccess: (amt: number) =>
-      `欢迎加入 Payoff！已自动空投 ${amt.toLocaleString()} tUSDT 到您的免 Gas 账户，可直接一键下注。`,
+      `欢迎加入 Payoff！已自动空投 ${amt.toLocaleString()} tUSDT 到您的账户，可直接一键下注。`,
     welcomeAirdropShortSuccess: (amt: number) =>
       `已自动空投 ${amt.toLocaleString()} tUSDT`,
     welcomeAirdropRetry: "重试领取",
     welcomeAirdropRetryFull: "重新领取 1,000 tUSDT",
-    initializingWallet: "正在初始化免 Gas 账户...",
+    initializingWallet: "正在初始化账户...",
     viewOnBscScan: "在 BscScan 查看",
     nonCustodialNote: "仅用于链上签名与结算，Payoff 不托管您的私钥",
     cappedLossTag: "亏损封顶 · 永不爆仓",
@@ -148,8 +148,12 @@ const dict = {
     rangeModeGroupLabel: "区间模式",
     modeQuick: "快捷",
     modeCustom: "自定义",
-    capPriceLabel: "封顶价",
+    capPriceLabel: "涨到拿满",
+    capPriceLabelBull: "涨到拿满",
+    capPriceLabelBear: "跌到拿满",
     startPriceLabel: "起赚线",
+    startPriceLabelBull: "超过即赚",
+    startPriceLabelBear: "跌破即赚",
     stepPrevLabel: (price: string) => `向左微调至 ${fmtUsd(price)}`,
     stepNextLabel: (price: string) => `向右微调至 ${fmtUsd(price)}`,
     customWidthSummary: (widthPct: string, maxWidthPct: string) =>
@@ -177,13 +181,13 @@ const dict = {
     mathStartShort: (price: string) => `起赚线 ${fmtUsd(price)}`,
     mathBreakevenShort: (price: string) => `回本 ${fmtUsd(price)}`,
     mathMaxWin: (amt: string) => `最多赢 ${fmtUsd(amt)}`,
-    buyCtaBull: (stake: string, maxWin: string) =>
-      `买涨 ${fmtUsd(stake)} · 最多赢 ${fmtUsd(maxWin)}`,
-    buyCtaBear: (stake: string, maxWin: string) =>
-      `买跌 ${fmtUsd(stake)} · 最多赢 ${fmtUsd(maxWin)}`,
+    buyCtaBull: (stake: string, _maxWin: string) =>
+      `买涨 · ${fmtUsd(stake)}`,
+    buyCtaBear: (stake: string, _maxWin: string) =>
+      `买跌 · ${fmtUsd(stake)}`,
     buyCtaSignIn: "邮箱登录买入 · 送 1,000 测试 USDT",
-    executingGasless: "正在免 Gas 成交…",
-    approvingGasless: "免 Gas 授权中…",
+    executingGasless: "正在成交…",
+    approvingGasless: "授权中…",
     chartScrubHint: "拖动模拟结算价",
     chartScrubReadout: (price: string, payout: string) =>
       `结算在 ${fmtUsd(price)} → 拿回 ${fmtUsd(payout)}`,
@@ -198,8 +202,8 @@ const dict = {
     continueTrading: "继续下单",
     lockedQuoteTitle: "已为您锁定最优一口价",
     payToWin: (s: number) => `支付 ${s} USDT 最高拿回`,
-    approvingUsdt: "免 Gas 授权 USDT 中...",
-    confirmingTx: "免 Gas 链上确认中...",
+    approvingUsdt: "授权 USDT 中...",
+    confirmingTx: "链上确认中...",
     confirmPay: (s: string) => `确认支付 ${s} USDT`,
     cancel: "取消",
     connectToBuy: "邮箱登录买入 · 送 1,000 测试 USDT",
@@ -234,7 +238,7 @@ const dict = {
     onboardingRule2Title: "2. 涨到一半也赚钱，不会归零",
     onboardingRule2Body:
       "不像全赢或归零的二元盘，价格只要过了起赚线就按比例线性赔付。",
-    onboardingRule3Title: "3. 邮箱登录免 Gas · 随时可卖",
+    onboardingRule3Title: "3. 邮箱一键登录 · 随时可卖",
     onboardingRule3Body:
       "登录即送 1,000 测试 USDT，一键静默成交，到期前 30 分钟外随时可止盈卖出。",
     onboardingCompareTitle: "同样投入 $20，到期只涨到目标一半时",
@@ -308,10 +312,10 @@ const dict = {
     autoSettleTitle: "正在自动确认结算价",
     autoSettleStep1: "30 分钟均价采样完成",
     autoSettleStep2: "验证 Atlas 链上签名",
-    autoSettleStep3: "开放免 Gas 领奖",
-    manualSettleHint: "已过缓冲期，您也可以免 Gas 触发链上结算",
-    manualSettleCta: "免 Gas 手动结算",
-    manualSettling: "免 Gas 提交结算中…",
+    autoSettleStep3: "开放领奖",
+    manualSettleHint: "已过缓冲期，您也可以手动触发链上结算",
+    manualSettleCta: "手动结算",
+    manualSettling: "提交结算中…",
     outcomeWinBadge: "猜中盈利",
     outcomePartialBadge: "没有归零",
     outcomePartialTitle: "拿回一部分",
@@ -321,10 +325,10 @@ const dict = {
     outcomeTotalClaimable: "本期合计可领",
     outcomeBatchClaimCta: (amt: string, count: number) =>
       count > 1
-        ? `一次免 Gas 领完 ${fmtUsd(amt)}（${count} 笔）`
-        : `免 Gas 领取 ${fmtUsd(amt)}`,
-    outcomeClaiming: "免 Gas 领取中…",
-    outcomeClaimedSuccess: (amt: string) => `已免 Gas 到账 ${fmtUsd(amt)}`,
+        ? `一键领完 ${fmtUsd(amt)}（${count} 笔）`
+        : `领取 ${fmtUsd(amt)}`,
+    outcomeClaiming: "领取中…",
+    outcomeClaimedSuccess: (amt: string) => `已到账 ${fmtUsd(amt)}`,
     outcomePlayAgain: "再来一局",
     outcomeZeroClaimClose: "确认归档",
     historyTitle: "历史与战绩",
@@ -344,12 +348,12 @@ const dict = {
     // Positions & Early Close (preserved for PositionsPage & EarlyCloseModal)
     positionsConnectTitle: "邮箱登录查看持仓",
     positionsConnectDesc:
-      "使用邮箱一键登录自动创建免 Gas BNB 账户（新用户免费赠送 1,000 tUSDT），实时追踪持仓与自动结算。",
+      "使用邮箱一键登录自动创建链上账户（新用户免费赠送 1,000 tUSDT），实时追踪持仓与自动结算。",
     portfolioValue: "持仓实时估值（可随时卖出）",
     liveUpdating: "实时刷新平仓报价",
     noPositions: "暂无持仓票据",
     noPositionsDesc:
-      "用 10~20 USDT 体验防插针、永不爆仓的高赔率价差票，支持免 Gas 一键领水。",
+      "用 10~20 USDT 体验防插针、永不爆仓的高赔率价差票，支持测试网一键领水。",
     goTrade: "去交易",
     statusActive: "持仓中",
     statusTwapWindow: "30m 均价锁定",
@@ -359,7 +363,7 @@ const dict = {
     statusClaimable: "待领取",
     statusSettled: "已结算",
     twapWindowCloseLocked: "30m TWAP 锁定期 · 已锁定早平",
-    settleWithAtlasTwapCta: "免 Gas 手动结算 (Atlas TWAP)",
+    settleWithAtlasTwapCta: "手动结算 (Atlas TWAP)",
     settleWaitingDelayShort: "等待 60s 结算缓冲期...",
     settleWaitingDelay: "距离开放无许可结算不足 60 秒，请稍后重试。",
     settleAlreadyDone: "该期已在链上完成结算，已刷新可领奖状态。",
@@ -380,7 +384,7 @@ const dict = {
     sellPct: (p: number) => `${p}%`,
     fetchingExitQuote: "正在获取最优即时卖出价...",
     indicativeExitTitle: "预估提前卖出到手",
-    indicativeExitSub: "点击下方按钮锁定 45 秒一口价并免 Gas 成交",
+    indicativeExitSub: "点击下方按钮锁定 45 秒一口价并成交",
     requestExitQuote: "获取实时卖出报价",
     quoteExpiredRefresh: "报价已过期，重新获取报价",
     quoteExpiredError: "当前报价已超过 45 秒有效期，请重新获取最新报价。",
@@ -395,12 +399,12 @@ const dict = {
     // Faucet & Self-trade
     faucetTitle: "免费领取测试 USDT (tUSDT)",
     faucetDesc:
-      "新用户首次登录自动空投 1,000 tUSDT；如需更多测试资金可随时免 Gas 领取（单次最高 100,000 tUSDT，无需 tBNB）。",
+      "新用户首次登录自动空投 1,000 tUSDT；如需更多测试资金可随时领取（单次最高 100,000 tUSDT）。",
     faucetBnbLink: "获取测试 BNB ↗",
     faucetBalance: "当前 tUSDT 余额",
     faucetAmountLabel: "领取数量",
-    faucetClaimBtn: (amt: number) => `免 Gas 领取 ${amt.toLocaleString()} tUSDT`,
-    faucetClaiming: "免 Gas 链上领取中...",
+    faucetClaimBtn: (amt: number) => `领取 ${amt.toLocaleString()} tUSDT`,
+    faucetClaiming: "链上领取中...",
     faucetSuccess: (amt: number) => `已成功领取 ${amt.toLocaleString()} tUSDT！`,
     selfTradeError:
       "当前账户与做市商地址相同（合约禁止自成交），请更换其他邮箱账户后再下单。",
@@ -498,40 +502,40 @@ const dict = {
     breakevenCompactLabel: "回本价",
     buyOneClickCta: (dir: string, stake: number) => `买${dir} $${stake}`,
     lockingBestPrice: "正在锁定最优成交价...",
-    openingWallet: "正在免 Gas 成交…",
+    openingWallet: "正在成交…",
     slippageTitle: "价格瞬时波动，已锁定最新一口价",
     slippageBuyDesc: (prevUsd: string, nextUsd: string, dropPct: string) =>
       `最高可赢由 ${prevUsd} USDT 调整为 ${nextUsd} USDT（-${dropPct}%），确认按新价成交？`,
     slippageConfirmBuyCta: (payout: string) =>
       `确认成交（最多赢 $${payout}）`,
     indicativeExitSubSeamless:
-      "点击下方按钮锁定 45 秒最新一口价并免 Gas 静默成交",
+      "点击下方按钮锁定 45 秒最新一口价并一键静默成交",
     confirmSellApprox: (amt: string) => `确认卖出 · 约 $${amt}`,
     slippageSellDesc: (estUsd: string, firmUsd: string, dropPct: string) =>
       `最新锁定回购价为 ${firmUsd} USDT，较参考估值 ${estUsd} USDT 变动 -${dropPct}%，确认卖出？`,
     slippageConfirmSellCta: (amt: string) => `确认按新价卖出（$${amt}）`,
-    fetchingAndSelling: "正在锁价并免 Gas 卖出…",
+    fetchingAndSelling: "正在锁价并卖出…",
   },
   en: {
     // Navigation & Account
     navTrade: "Trade",
-    navPositions: "Wallet",
-    navWallet: "Wallet",
+    navPositions: "Portfolio",
+    navWallet: "Portfolio",
     connectWallet: "Sign in",
     myWallet: "Account",
-    walletSubtitleConnected: "Gasless Privy account · 100% on-chain on BNB Chain",
+    walletSubtitleConnected: "Privy embedded wallet · 100% on-chain on BNB Chain",
     walletSubtitleDisconnected:
-      "Sign in with email for a gasless BNB account + 1,000 free welcome tUSDT",
+      "Sign in with email for an instant BNB account + 1,000 free welcome tUSDT",
     availableBalance: "Available balance",
     disconnectWallet: "Sign out",
     exportPrivateKey: "Export wallet key",
-    gasFreeBadge: "Gas Free · 0 BNB",
+    gasFreeBadge: "0 Fees",
     gasFreeAccountNote:
-      "Non-custodial Privy embedded wallet · Silent gas-sponsored execution on BNB Testnet",
+      "Non-custodial Privy embedded wallet · Silent execution on BNB Testnet",
     privyEmailAccountLabel: "Email account",
     welcomeAirdropMinting: "Sending 1,000 free welcome tUSDT to your new account...",
     welcomeAirdropSuccess: (amt: number) =>
-      `Welcome to Payoff! ${amt.toLocaleString()} tUSDT has been airdropped to your gasless account — ready to trade.`,
+      `Welcome to Payoff! ${amt.toLocaleString()} tUSDT has been airdropped to your account — ready to trade.`,
     welcomeAirdropShortSuccess: (amt: number) =>
       `${amt.toLocaleString()} tUSDT airdropped`,
     welcomeAirdropRetry: "Retry",
@@ -588,8 +592,12 @@ const dict = {
     rangeModeGroupLabel: "Range mode",
     modeQuick: "Quick",
     modeCustom: "Custom",
-    capPriceLabel: "Target cap",
+    capPriceLabel: "Full win at",
+    capPriceLabelBull: "Full win at",
+    capPriceLabelBear: "Full win at",
     startPriceLabel: "Start",
+    startPriceLabelBull: "Pays above",
+    startPriceLabelBear: "Pays below",
     stepPrevLabel: (price: string) => `Step left to ${fmtUsd(price)}`,
     stepNextLabel: (price: string) => `Step right to ${fmtUsd(price)}`,
     customWidthSummary: (widthPct: string, maxWidthPct: string) =>
@@ -617,13 +625,13 @@ const dict = {
     mathStartShort: (price: string) => `Start ${fmtUsd(price)}`,
     mathBreakevenShort: (price: string) => `Breakeven ${fmtUsd(price)}`,
     mathMaxWin: (amt: string) => `Win up to ${fmtUsd(amt)}`,
-    buyCtaBull: (stake: string, maxWin: string) =>
-      `Buy Up ${fmtUsd(stake)} · Win ${fmtUsd(maxWin)}`,
-    buyCtaBear: (stake: string, maxWin: string) =>
-      `Buy Down ${fmtUsd(stake)} · Win ${fmtUsd(maxWin)}`,
+    buyCtaBull: (stake: string, _maxWin: string) =>
+      `Buy Up · ${fmtUsd(stake)}`,
+    buyCtaBear: (stake: string, _maxWin: string) =>
+      `Buy Down · ${fmtUsd(stake)}`,
     buyCtaSignIn: "Sign in to trade · Free 1,000 tUSDT",
-    executingGasless: "Filling gas-free…",
-    approvingGasless: "Authorizing gas-free…",
+    executingGasless: "Filling order…",
+    approvingGasless: "Authorizing…",
     chartScrubHint: "Drag to simulate payout",
     chartScrubReadout: (price: string, payout: string) =>
       `At ${fmtUsd(price)} → Payout ${fmtUsd(payout)}`,
@@ -639,8 +647,8 @@ const dict = {
     continueTrading: "Buy another",
     lockedQuoteTitle: "Best firm quote locked",
     payToWin: (s: number) => `Pay ${s} USDT to win up to`,
-    approvingUsdt: "Authorizing USDT (gas-free)...",
-    confirmingTx: "Confirming gasless tx...",
+    approvingUsdt: "Authorizing USDT...",
+    confirmingTx: "Confirming transaction...",
     confirmPay: (s: string) => `Confirm & pay ${s} USDT`,
     cancel: "Cancel",
     connectToBuy: "Sign in to trade · Free 1,000 tUSDT",
@@ -675,9 +683,9 @@ const dict = {
     onboardingRule2Title: "2. Move halfway, still get paid",
     onboardingRule2Body:
       "Unlike all-or-nothing binary markets, any finish past your start line pays linearly.",
-    onboardingRule3Title: "3. Email sign-in, gas-free, exit anytime",
+    onboardingRule3Title: "3. Email sign-in · Exit anytime",
     onboardingRule3Body:
-      "Get 1,000 free test USDT on sign-in, execute silently with zero gas, or sell early anytime before the 30m lock.",
+      "Get 1,000 free test USDT on sign-in, execute with 1 click, or sell early anytime before the 30m lock.",
     onboardingCompareTitle:
       "With a $20 trade when price finishes halfway to target",
     onboardingCompareStandardLabel: "Standard prediction markets",
@@ -752,11 +760,11 @@ const dict = {
     autoSettleTitle: "Confirming settlement price",
     autoSettleStep1: "30-minute TWAP sampled",
     autoSettleStep2: "Verifying Atlas on-chain proofs",
-    autoSettleStep3: "Unlocking gas-free claim",
+    autoSettleStep3: "Unlocking claim",
     manualSettleHint:
-      "Buffer elapsed — you can also trigger gas-free settlement",
-    manualSettleCta: "Settle now (gas-free)",
-    manualSettling: "Settling gas-free…",
+      "Buffer elapsed — you can also trigger on-chain settlement",
+    manualSettleCta: "Settle now",
+    manualSettling: "Settling…",
     outcomeWinBadge: "Won",
     outcomePartialBadge: "Not zeroed out",
     outcomePartialTitle: "Partial refund",
@@ -767,9 +775,9 @@ const dict = {
     outcomeBatchClaimCta: (amt: string, count: number) =>
       count > 1
         ? `Claim all ${fmtUsd(amt)} (${count} tickets)`
-        : `Claim ${fmtUsd(amt)} (gas-free)`,
-    outcomeClaiming: "Claiming gas-free…",
-    outcomeClaimedSuccess: (amt: string) => `Claimed ${fmtUsd(amt)} gas-free`,
+        : `Claim ${fmtUsd(amt)}`,
+    outcomeClaiming: "Claiming…",
+    outcomeClaimedSuccess: (amt: string) => `Claimed ${fmtUsd(amt)}`,
     outcomePlayAgain: "Play next round",
     outcomeZeroClaimClose: "Dismiss",
     historyTitle: "History & Stats",
@@ -789,7 +797,7 @@ const dict = {
     // Positions & Early Close (preserved for PositionsPage & EarlyCloseModal)
     positionsConnectTitle: "Sign in to view portfolio",
     positionsConnectDesc:
-      "Sign in with email for an instant gasless BNB account (with 1,000 free welcome tUSDT) and track live exits or Atlas settlements.",
+      "Sign in with email for an instant BNB account (with 1,000 free welcome tUSDT) and track live exits or Atlas settlements.",
     portfolioValue: "Live portfolio exit value",
     liveUpdating: "Live exit quotes",
     noPositions: "No active tickets",
@@ -844,13 +852,13 @@ const dict = {
     // Faucet & Self-trade
     faucetTitle: "Claim Extra Test USDT (tUSDT)",
     faucetDesc:
-      "New accounts automatically receive 1,000 tUSDT on first sign-in. Mint additional testnet collateral gas-free anytime (up to 100,000 tUSDT, no BNB needed).",
+      "New accounts automatically receive 1,000 tUSDT on first sign-in. Mint additional testnet collateral anytime (up to 100,000 tUSDT).",
     faucetBnbLink: "Get test BNB ↗",
     faucetBalance: "Current tUSDT balance",
     faucetAmountLabel: "Amount to mint",
     faucetClaimBtn: (amt: number) =>
-      `Claim ${amt.toLocaleString()} tUSDT (Gas Free)`,
-    faucetClaiming: "Minting gas-free...",
+      `Claim ${amt.toLocaleString()} tUSDT`,
+    faucetClaiming: "Minting...",
     faucetSuccess: (amt: number) =>
       `Minted ${amt.toLocaleString()} tUSDT to your account!`,
     selfTradeError:
@@ -952,19 +960,19 @@ const dict = {
     breakevenCompactLabel: "Breakeven",
     buyOneClickCta: (dir: string, stake: number) => `Buy ${dir} · $${stake}`,
     lockingBestPrice: "Locking best firm price...",
-    openingWallet: "Filling gas-free…",
+    openingWallet: "Filling order…",
     slippageTitle: "Market moved — updated firm quote",
     slippageBuyDesc: (prevUsd: string, nextUsd: string, dropPct: string) =>
       `Max payout moved from ${prevUsd} to ${nextUsd} USDT (-${dropPct}%). Confirm to proceed?`,
     slippageConfirmBuyCta: (payout: string) =>
       `Confirm quote (Win $${payout})`,
     indicativeExitSubSeamless:
-      "Locks a fresh 45s firm buyback quote and executes gas-free with no wallet popups",
+      "Locks a fresh 45s firm buyback quote and executes with 1 click",
     confirmSellApprox: (amt: string) => `Confirm sell · ~$${amt}`,
     slippageSellDesc: (estUsd: string, firmUsd: string, dropPct: string) =>
       `Firm buyback quote is ${firmUsd} USDT vs estimated ${estUsd} USDT (-${dropPct}%). Confirm exit?`,
     slippageConfirmSellCta: (amt: string) => `Confirm sell ($${amt})`,
-    fetchingAndSelling: "Locking quote & selling gas-free…",
+    fetchingAndSelling: "Locking quote & selling…",
   },
 } as const;
 

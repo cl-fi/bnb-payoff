@@ -6,7 +6,6 @@ import {
   Droplets,
   ExternalLink,
   Loader2,
-  Sparkles,
   X,
 } from "lucide-react";
 import { isAddress } from "viem";
@@ -158,8 +157,8 @@ export function DepositModal({
       setFaucetResult({
         kind: "ok",
         text: isZh
-          ? `已免 Gas 到账 ${clamped.toLocaleString()} tUSDT`
-          : `Minted ${clamped.toLocaleString()} tUSDT gas-free`,
+          ? `已到账 ${clamped.toLocaleString()} tUSDT`
+          : `Minted ${clamped.toLocaleString()} tUSDT`,
         txHash: typeof txHash === "string" ? txHash : undefined,
       });
     } catch (err: unknown) {
@@ -265,23 +264,17 @@ export function DepositModal({
             </p>
           </section>
 
-          {/* Section 2: Testnet Instant Gas-Free Faucet */}
+          {/* Section 2: Testnet Instant Faucet */}
           <section className="rounded-2xl bg-[#15171b] border border-[#262a31] p-4 space-y-3">
-            <div className="flex items-start justify-between gap-2">
-              <div>
-                <h2 className="text-[13.5px] font-bold text-white">
-                  {isZh ? "测试网免 Gas 领水" : "Testnet Faucet"}
-                </h2>
-                <p className="mt-0.5 text-xs text-[#7e8690]">
-                  {isZh
-                    ? "无需 BNB 手续费，即时领取测试 tUSDT"
-                    : "Mint instant test tUSDT with zero BNB gas"}
-                </p>
-              </div>
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#2EC26B]/13 px-2 py-0.5 text-[10.5px] font-bold text-[#2EC26B]">
-                <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
-                {isZh ? "免 Gas" : "Gas Free"}
-              </span>
+            <div>
+              <h2 className="text-[13.5px] font-bold text-white">
+                {isZh ? "测试网领水" : "Testnet Faucet"}
+              </h2>
+              <p className="mt-0.5 text-xs text-[#7e8690]">
+                {isZh
+                  ? "即时领取测试网 tUSDT"
+                  : "Mint instant testnet tUSDT"}
+              </p>
             </div>
 
             <div className="flex items-center gap-1.5">
@@ -563,9 +556,8 @@ export function WithdrawModal({
               >
                 {isZh ? "提币 tUSDT" : "Withdraw tUSDT"}
               </h1>
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#2EC26B]/13 px-2 py-0.5 text-[10.5px] font-bold text-[#2EC26B]">
-                <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
-                {isZh ? "免 Gas" : "Gas Free"}
+              <span className="inline-flex shrink-0 items-center rounded-full bg-[#15171b] border border-[#262a31] px-2 py-0.5 text-[10.5px] font-semibold text-[#b8bec6]">
+                BEP-20
               </span>
             </div>
             <button
@@ -785,10 +777,10 @@ export function WithdrawModal({
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-[#7e8690]">
-                    {isZh ? "链上手续费" : "Network fee"}
+                    {isZh ? "手续费" : "Fee"}
                   </span>
                   <span className="font-semibold text-[#2EC26B]">
-                    {isZh ? "$0 · 免 Gas 代付" : "$0 · Gas Sponsored"}
+                    {isZh ? "$0" : "$0"}
                   </span>
                 </div>
               </div>
@@ -811,7 +803,7 @@ export function WithdrawModal({
                 {busy ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                    <span>{isZh ? "免 Gas 发送中..." : "Sending gas-free..."}</span>
+                    <span>{isZh ? "发送中..." : "Sending..."}</span>
                   </>
                 ) : (
                   <>
@@ -822,8 +814,8 @@ export function WithdrawModal({
                           ? `确认提币 $${parsedAmount.toFixed(2)} tUSDT`
                           : `Withdraw $${parsedAmount.toFixed(2)} tUSDT`
                         : isZh
-                          ? "确认免 Gas 提币"
-                          : "Withdraw gas-free"}
+                          ? "确认提币"
+                          : "Withdraw"}
                     </span>
                   </>
                 )}

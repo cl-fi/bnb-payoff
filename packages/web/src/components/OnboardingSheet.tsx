@@ -145,8 +145,8 @@ export function OnboardingSheet({
               </h1>
               <p className="mt-1 text-xs text-[#7e8690]">
                 {isZh
-                  ? "连续线性赔付 · 免 Gas 一键交易"
-                  : "Continuous linear payoff · Gasless 1-click trading"}
+                  ? "连续线性赔付 · 一键交易"
+                  : "Continuous linear payoff · 1-click trading"}
               </p>
             </div>
             <button
