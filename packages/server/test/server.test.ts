@@ -2542,4 +2542,203 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       await privyApp.app.close();
     }
   });
+
+  it("exposes dense Quick-mode quickTiers + Custom bounds on /api/market/shelf and enforces fair OTM/ITM guardrails on /api/rfq/open", async () => {
+    resetFixedGridCache();
+
+    // 1. BTC Daily & Weekly, ETH Daily & Weekly, NVDAB Weekly expose dense quickTiers + valid customConfig
+    for (const [underlying, tenor, expectedStep] of [
+      ["BTC", "DAILY", 500],
+      ["BTC", "WEEKLY", 500],
+      ["ETH", "DAILY", 25],
+      ["ETH", "WEEKLY", 25],
+      ["NVDAB", "WEEKLY", null],
+    ] as const) {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/market/shelf?underlying=${underlying}&direction=BULL&tenor=${tenor}&stake=20`,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as {
+        tiers: TicketSummary[];
+        quickTiers: TicketSummary[];
+        customConfig: {
+          validStarts: number[];
+          validCapsByStart: Record<string, number[]>;
+          defaultStart: number;
+          defaultCap: number;
+          maxAllowedWidthPct: number;
+        };
+        availableStrikes: number[];
+      };
+
+      expect(body.tiers).toHaveLength(4);
+      expect(body.quickTiers.length).toBeGreaterThan(4);
+      expect(body.customConfig.validStarts.length).toBeGreaterThan(4);
+
+      for (let i = 1; i < body.quickTiers.length; i++) {
+        const stepDiff =
+          body.quickTiers[i]!.capPrice - body.quickTiers[i - 1]!.capPrice;
+        if (expectedStep !== null) {
+          expect(stepDiff).toBe(expectedStep);
+        } else {
+          expect([1, 2.5, 5]).toContain(stepDiff);
+        }
+      }
+    }
+
+    // 2. Valid OTM raised-Start Custom spread succeeds on /api/market/preview-custom & /api/rfq/open
+    const btcShelfRes = await app.inject({
+      method: "GET",
+      url: "/api/market/shelf?underlying=BTC&direction=BULL&tenor=DAILY&stake=20",
+    });
+    const btcShelf = btcShelfRes.json() as {
+      availableStrikes: number[];
+      customConfig: {
+        validStarts: number[];
+        validCapsByStart: Record<string, number[]>;
+      };
+    };
+    const otmStart =
+      btcShelf.customConfig.validStarts[
+        btcShelf.customConfig.validStarts.length - 1
+      ]!;
+    const otmCap = btcShelf.customConfig.validCapsByStart[String(otmStart)]![0]!;
+
+    const validCustomPreview = await app.inject({
+      method: "POST",
+      url: "/api/market/preview-custom",
+      payload: {
+        underlying: "BTC",
+        direction: "BULL",
+        tenor: "DAILY",
+        lowerStrike: otmStart,
+        upperStrike: otmCap,
+        stakeUsdt: 20,
+      },
+    });
+    expect(validCustomPreview.statusCode).toBe(200);
+    const previewTicket = validCustomPreview.json().ticket as TicketSummary;
+    expect(previewTicket.guardrails.valid).toBe(true);
+    expect(previewTicket.guardrails.withinFairBounds).toBe(true);
+    expect(previewTicket.maxMultiplier).toBeGreaterThanOrEqual(1.15);
+    expect(previewTicket.maxMultiplier).toBeLessThanOrEqual(20.5);
+
+    const taker = "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65" as const;
+    const stateSpy = vi
+      .spyOn(services.chain, "getMakerOnChainState")
+      .mockResolvedValue({
+        whitelisted: true,
+        marginUnits: 500_000_000_000n,
+        epoch: 1n,
+      });
+
+    try {
+      const openCustomRes = await app.inject({
+        method: "POST",
+        url: "/api/rfq/open",
+        payload: {
+          taker,
+          underlying: "BTC",
+          direction: "BULL",
+          tenor: "DAILY",
+          tierKind: "CUSTOM",
+          lowerStrike: otmStart,
+          upperStrike: otmCap,
+          stakeUsdt: 20,
+        },
+      });
+      expect(openCustomRes.statusCode).toBe(200);
+      expect(openCustomRes.json().ticket.tierKind).toBe("CUSTOM");
+
+      // 3. Extreme OTM flat-clamped spread (far beyond validStarts) is hard-rejected on /api/rfq/open
+      const strikes = btcShelf.availableStrikes;
+      const extremeLower = strikes[strikes.length - 3]!;
+      const extremeUpper = strikes[strikes.length - 1]!;
+      const extremePreview = await app.inject({
+        method: "POST",
+        url: "/api/market/preview-custom",
+        payload: {
+          underlying: "BTC",
+          direction: "BULL",
+          tenor: "DAILY",
+          lowerStrike: extremeLower,
+          upperStrike: extremeUpper,
+          stakeUsdt: 20,
+        },
+      });
+      expect(extremePreview.json().ticket.guardrails.valid).toBe(false);
+      expect(extremePreview.json().ticket.guardrails.withinFairBounds).toBe(
+        false
+      );
+
+      const extremeOpen = await app.inject({
+        method: "POST",
+        url: "/api/rfq/open",
+        payload: {
+          taker,
+          underlying: "BTC",
+          direction: "BULL",
+          tenor: "DAILY",
+          tierKind: "CUSTOM",
+          lowerStrike: extremeLower,
+          upperStrike: extremeUpper,
+          stakeUsdt: 20,
+        },
+      });
+      expect(extremeOpen.statusCode).toBe(400);
+
+      // 4. Extreme ITM spread (far below spot) is hard-rejected on /api/rfq/open
+      const deepItmOpen = await app.inject({
+        method: "POST",
+        url: "/api/rfq/open",
+        payload: {
+          taker,
+          underlying: "BTC",
+          direction: "BULL",
+          tenor: "DAILY",
+          tierKind: "CUSTOM",
+          lowerStrike: strikes[0]!,
+          upperStrike: strikes[2]!,
+          stakeUsdt: 20,
+        },
+      });
+      expect(deepItmOpen.statusCode).toBe(400);
+
+      // 5. /api/market/preview-custom safely clamps malformed stakeUsdt and rejects non-finite strikes
+      const zeroStakePreview = await app.inject({
+        method: "POST",
+        url: "/api/market/preview-custom",
+        payload: {
+          underlying: "BTC",
+          direction: "BULL",
+          tenor: "DAILY",
+          lowerStrike: otmStart,
+          upperStrike: otmCap,
+          stakeUsdt: 0,
+        },
+      });
+      expect(zeroStakePreview.statusCode).toBe(200);
+      expect(zeroStakePreview.json().ticket.stakeUsdt).toBe(1);
+      expect(Number.isFinite(zeroStakePreview.json().ticket.maxMultiplier)).toBe(
+        true
+      );
+
+      const nanStrikePreview = await app.inject({
+        method: "POST",
+        url: "/api/market/preview-custom",
+        payload: {
+          underlying: "BTC",
+          direction: "BULL",
+          tenor: "DAILY",
+          lowerStrike: "bad",
+          upperStrike: otmCap,
+          stakeUsdt: 20,
+        },
+      });
+      expect(nanStrikePreview.statusCode).toBe(400);
+    } finally {
+      stateSpy.mockRestore();
+    }
+  });
 });

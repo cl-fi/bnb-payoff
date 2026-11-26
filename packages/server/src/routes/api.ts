@@ -429,7 +429,10 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
     const underlying: UnderlyingSymbol = rawUnderlying;
     const direction = (req.query.direction || "BULL").toUpperCase() as Direction;
     const tenor = (req.query.tenor || "DAILY").toUpperCase() as ExpiryTenor;
-    const stakeUsdt = Math.max(1, Math.min(50_000, Number(req.query.stake || 20)));
+    const rawStake = Number(req.query.stake ?? 20);
+    const stakeUsdt = Number.isFinite(rawStake)
+      ? Math.max(1, Math.min(50_000, rawStake))
+      : 20;
 
     const snap = svc.marketData.getSnapshot(underlying);
     const book = svc.marketData.getExpiryBook(underlying, tenor);
@@ -438,7 +441,7 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       svc.rwaRisk.getTelemetry(underlying, { expiry: book.expiry }) ??
       book.rwaTelemetry;
     const onChainFees = await svc.chain.getOnChainProtocolFees();
-    const { grid, tiers, consensusRisk, rwaRisk } =
+    const { grid, tiers, quickTiers, customConfig, consensusRisk, rwaRisk } =
       svc.shelfEngine.buildFixedGridShelf({
         book,
         direction,
@@ -478,6 +481,8 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       availableStrikes: book.availableStrikes,
       grid,
       tiers,
+      quickTiers,
+      customConfig,
     };
   });
 
@@ -507,7 +512,15 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       return reply.code(400).send({ error: UNSUPPORTED_UNDERLYING_ERR });
     }
     const underlying: UnderlyingSymbol = rawUnderlying;
-    const resolvedStake = Number(stakeUsdt ?? stake ?? 20);
+    const rawStake = Number(stakeUsdt ?? stake ?? 20);
+    const resolvedStake = Number.isFinite(rawStake)
+      ? Math.max(1, Math.min(50_000, rawStake))
+      : 20;
+    const parsedLower = Number(lowerStrike);
+    const parsedUpper = Number(upperStrike);
+    if (!Number.isFinite(parsedLower) || !Number.isFinite(parsedUpper)) {
+      return reply.code(400).send({ error: "Invalid lowerStrike or upperStrike" });
+    }
     const book = svc.marketData.getExpiryBook(underlying, tenor);
     const atlasTelemetry = svc.atlasOracle.getTelemetry(underlying);
     const rwaTelemetry =
@@ -519,8 +532,8 @@ export function registerApiRoutes(app: FastifyInstance, svc: AppServices) {
       tierKind: "CUSTOM",
       tierLabel: "Custom Range",
       direction,
-      lowerStrike: Number(lowerStrike),
-      upperStrike: Number(upperStrike),
+      lowerStrike: parsedLower,
+      upperStrike: parsedUpper,
       stakeUsdt: resolvedStake,
       protocolFeeBps: onChainFees.openFeeBps,
       mmOpenMarkupBps: 110,

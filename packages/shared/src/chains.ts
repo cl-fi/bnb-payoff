@@ -493,15 +493,19 @@ function nextOccStrike(strike: number): number {
 }
 
 /**
- * Generates exact CBOE/OCC listed equity strikes spanning ±20% around `spot`:
+ * Generates exact CBOE/OCC listed equity strikes spanning ±`rangePct` (default ±20%) around `spot`:
  * - `$1.00` steps for `K <= 150`
  * - `$2.50` steps for `150 < K <= 200`
  * - `$5.00` steps for `K > 200`
  */
-export function generateOccEquityStrikes(spot: number): number[] {
+export function generateOccEquityStrikes(
+  spot: number,
+  rangePct = 0.2
+): number[] {
   if (!Number.isFinite(spot) || spot <= 0) return [];
-  const minStrike = Math.max(1, spot * 0.8);
-  const maxStrike = Math.max(minStrike, spot * 1.2);
+  const boundedRange = Math.max(0.05, Math.min(0.6, rangePct));
+  const minStrike = Math.max(1, spot * (1 - boundedRange));
+  const maxStrike = Math.max(minStrike, spot * (1 + boundedRange));
   const strikes: number[] = [];
 
   let k = snapDownToOccStrike(minStrike);

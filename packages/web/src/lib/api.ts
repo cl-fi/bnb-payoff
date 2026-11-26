@@ -5,6 +5,7 @@ import type {
   CandleBar,
   CandlePoint,
   CloseRfqResponse,
+  CustomRangeConfig,
   DataSourceStatus,
   Direction,
   ExpiryTenor,
@@ -140,6 +141,8 @@ export interface ShelfResponse {
   availableStrikes: number[];
   grid?: FixedGridMeta;
   tiers: TicketSummary[];
+  quickTiers?: TicketSummary[];
+  customConfig?: CustomRangeConfig;
 }
 
 export interface DemoAccountInfo {

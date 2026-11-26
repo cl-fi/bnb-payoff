@@ -140,12 +140,16 @@ function generateGridStrikes(
   spot: number
 ): number[] {
   if (ASSET_SPECS[underlying].assetClass === "RWA_EQUITY") {
-    return generateOccEquityStrikes(spot);
+    return generateOccEquityStrikes(spot, 0.3);
   }
   const step = ASSET_SPECS[underlying].defaultDailyStep;
   const center = Math.round(spot / step) * step;
+  const halfSteps = Math.min(
+    60,
+    Math.max(16, Math.ceil((spot * 0.3) / step))
+  );
   const strikes: number[] = [];
-  for (let i = -16; i <= 16; i++) {
+  for (let i = -halfSteps; i <= halfSteps; i++) {
     const k = center + i * step;
     if (k > 0) strikes.push(k);
   }

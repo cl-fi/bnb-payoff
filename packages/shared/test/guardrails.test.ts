@@ -7,16 +7,21 @@ import {
   SUPPORTED_UNDERLYINGS,
   Underlying,
   assetIdToSymbol,
+  computeMaxAllowedWidthPct,
+  computeUnclampedSpreadFairRatio,
+  estimateCustomTicketPreview,
   formatSettlementLabel,
   generateOccEquityStrikes,
   getAssetSettlementUtcHour,
   getNextUsEquityOptionExpiry,
   isSupportedUnderlying,
   isUsEquityMarketHoliday,
+  resolveClampedCustomRange,
   symbolToAssetId,
   symbolToUnderlying,
   underlyingToSymbol,
   validateCustomSpreadRange,
+  type CustomRangeConfig,
 } from "../src/index.js";
 
 const btcStrikes = [
@@ -548,5 +553,316 @@ describe("@payoff/shared NVDAB metadata, OCC strikes, US equity expiry & settlem
     expect(formatSettlementLabel(utcSec("2026-11-27T16:00:00Z"))).toBe(
       "11-27 16:00 UTC (00:00 UTC+8)"
     );
+  });
+});
+
+describe("@payoff/shared Guardrail 4 (OTM/ITM fair bounds), Custom auto-clamping & preview", () => {
+  it("enforces OTM/ITM fair-pricing bounds and extended ±30% OCC strike coverage", () => {
+    const spot = 149.41;
+    const wideOcc = generateOccEquityStrikes(spot, 0.3);
+    expect(wideOcc).toContain(170);
+    expect(wideOcc).toContain(190);
+    expect(wideOcc[0]).toBeLessThanOrEqual(105);
+    expect(wideOcc[wideOcc.length - 1]).toBeGreaterThanOrEqual(195);
+
+    // Extreme OTM NVDA Weekly ($175 -> $195 at low IV 0.52) is trapped by 0.04W/0.045W floor -> must reject
+    const extremeOtm = validateCustomSpreadRange({
+      underlying: "NVDAB",
+      isCall: true,
+      spot,
+      lowerStrike: 175,
+      upperStrike: 195,
+      tenor: "WEEKLY",
+      hoursToExpiry: 144,
+      atmIv: 0.52,
+      availableStrikes: wideOcc,
+      maxMultiplier: 21.37,
+      shortLegSubsidyRatio: 0.12,
+    });
+    expect(extremeOtm.valid).toBe(false);
+    expect(extremeOtm.withinFairBounds).toBe(false);
+    expect(extremeOtm.rawFairRatio).toBeLessThan(0.045);
+
+    // High-IV NVDA Weekly ($170 -> $190 at IV 0.85, 168h) sits cleanly inside fair pricing bounds (~5.7% fair ratio, ~15.8x)
+    const fairHighConviction = validateCustomSpreadRange({
+      underlying: "NVDAB",
+      isCall: true,
+      spot,
+      lowerStrike: 170,
+      upperStrike: 190,
+      tenor: "WEEKLY",
+      hoursToExpiry: 168,
+      atmIv: 0.85,
+      availableStrikes: wideOcc,
+      maxMultiplier: 15.8,
+      shortLegSubsidyRatio: 0.25,
+    });
+    expect(fairHighConviction.valid).toBe(true);
+    expect(fairHighConviction.withinFairBounds).toBe(true);
+    expect(fairHighConviction.rawFairRatio).toBeGreaterThanOrEqual(0.045);
+
+    // Extreme ITM (< 1.12x) rejects while still setting lowMultiplierWarning
+    const extremeItm = validateCustomSpreadRange({
+      underlying: "NVDAB",
+      isCall: true,
+      spot,
+      lowerStrike: 125,
+      upperStrike: 135,
+      tenor: "WEEKLY",
+      hoursToExpiry: 144,
+      atmIv: 0.52,
+      availableStrikes: wideOcc,
+      maxMultiplier: 1.06,
+      shortLegSubsidyRatio: 0.9,
+    });
+    expect(extremeItm.valid).toBe(false);
+    expect(extremeItm.withinFairBounds).toBe(false);
+    expect(extremeItm.lowMultiplierWarning).toBe(true);
+
+    // Symmetry check: call + put unclamped fair ratios sum to 1.0
+    const callRatio = computeUnclampedSpreadFairRatio({
+      isCall: true,
+      spot,
+      lowerStrike: 150,
+      upperStrike: 170,
+      hoursToExpiry: 144,
+      atmIv: 0.52,
+    });
+    const putRatio = computeUnclampedSpreadFairRatio({
+      isCall: false,
+      spot,
+      lowerStrike: 150,
+      upperStrike: 170,
+      hoursToExpiry: 144,
+      atmIv: 0.52,
+    });
+    expect(callRatio + putRatio).toBeCloseTo(1, 8);
+    expect(computeMaxAllowedWidthPct("DAILY", 24, 0.52)).toBeCloseTo(7.2, 2);
+    expect(computeMaxAllowedWidthPct("WEEKLY", 144, 0.52)).toBeGreaterThanOrEqual(14.0);
+  });
+
+  it("auto-clamps Custom Start/Target cap selections for width cap, OTM/ITM fair bounds, and ordering (BULL & BEAR)", () => {
+    const bullConfig: CustomRangeConfig = {
+      validStarts: [130, 140, 150, 160, 165],
+      validCapsByStart: {
+        "130": [149, 150], // closer caps too deep ITM (<1.15x)
+        "140": [145, 150, 155, 160], // $160 is width cap (~13.4%)
+        "150": [152.5, 155, 160, 165, 170],
+        "160": [162.5, 165, 170, 175], // stops at $175 due to OTM fair limit (10% < 14.7% width cap)
+        "165": [167.5],
+      },
+      defaultStart: 150,
+      defaultCap: 160,
+      maxAllowedWidthPct: 14.7,
+      minMultiplier: 1.15,
+      maxMultiplier: 20,
+      pricingParams: {
+        spot: 149.41,
+        hoursToExpiry: 144,
+        baseIv: 0.52,
+        effectiveIv: 0.52,
+        varianceTimeScale: 1,
+        spreadMultiplier: 1,
+        protocolFeeBps: 400,
+        mmOpenMarkupBps: 110,
+      },
+    };
+
+    // 1. Valid pair passes untouched
+    const unchanged = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 150,
+      desiredCap: 165,
+    });
+    expect(unchanged).toMatchObject({
+      startPrice: 150,
+      capPrice: 165,
+      lowerStrike: 150,
+      upperStrike: 165,
+      capClamped: false,
+      clampReason: "NONE",
+    });
+
+    // 2. Lowering Start to 140 while keeping Cap 170 exceeds 14.7% width cap -> clamps to 160 (WIDTH_CAP)
+    const widthClamped = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 140,
+      desiredCap: 170,
+    });
+    expect(widthClamped).toMatchObject({
+      startPrice: 140,
+      capPrice: 160,
+      capClamped: true,
+      clampReason: "WIDTH_CAP",
+    });
+
+    // 3. Raising Start to 160 while keeping Cap 180 is within width cap (13.4% <= 14.7%) but hits OTM fair limit -> clamps to 175 (OTM_FAIR_LIMIT)
+    const otmClamped = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 160,
+      desiredCap: 180,
+    });
+    expect(otmClamped).toMatchObject({
+      startPrice: 160,
+      capPrice: 175,
+      capClamped: true,
+      clampReason: "OTM_FAIR_LIMIT",
+    });
+
+    // 4. Lowering Start to 130 with Cap 140 hits ITM fair floor (<1.15x) -> clamps up to 149 (ITM_FAIR_LIMIT)
+    const itmClamped = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 130,
+      desiredCap: 140,
+    });
+    expect(itmClamped).toMatchObject({
+      startPrice: 130,
+      capPrice: 149,
+      capClamped: true,
+      clampReason: "ITM_FAIR_LIMIT",
+    });
+
+    // 5. Raising Start to 165 past old Cap 160 -> shifts Cap above Start (ORDERING)
+    const orderingClamped = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 165,
+      desiredCap: 160,
+    });
+    expect(orderingClamped).toMatchObject({
+      startPrice: 165,
+      capPrice: 167.5,
+      capClamped: true,
+      clampReason: "ORDERING",
+    });
+
+    // 6. BEAR direction ordering & lower/upper strike inversion
+    const bearConfig: CustomRangeConfig = {
+      ...bullConfig,
+      validStarts: [165, 150, 135],
+      validCapsByStart: {
+        "165": [150, 145],
+        "150": [149, 145, 140, 130],
+        "135": [134, 133],
+      },
+      defaultStart: 150,
+      defaultCap: 140,
+    };
+    const bearOrder = resolveClampedCustomRange({
+      config: bearConfig,
+      direction: "BEAR",
+      desiredStart: 135,
+      desiredCap: 140,
+    });
+    expect(bearOrder).toMatchObject({
+      startPrice: 135,
+      capPrice: 134,
+      lowerStrike: 134,
+      upperStrike: 135,
+      capClamped: true,
+      clampReason: "ORDERING",
+    });
+
+    // 7. Empty config returns null safely
+    expect(
+      resolveClampedCustomRange({
+        config: { ...bullConfig, validStarts: [] },
+        direction: "BULL",
+        desiredStart: 150,
+        desiredCap: 160,
+      })
+    ).toBeNull();
+
+    // 8. Start-only clamping reports exact OTM/ITM/STRIKE_ALIGN reason (never "NONE")
+    const startOtmOnly = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 175, // above last validStart 165, while cap 167.5 remains valid for 165
+      desiredCap: 167.5,
+    });
+    expect(startOtmOnly).toMatchObject({
+      startPrice: 165,
+      capPrice: 167.5,
+      startClamped: true,
+      capClamped: false,
+      clampReason: "OTM_FAIR_LIMIT",
+    });
+
+    const startItmOnly = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 120, // below first validStart 130, while cap 150 remains valid for 130
+      desiredCap: 150,
+    });
+    expect(startItmOnly).toMatchObject({
+      startPrice: 130,
+      capPrice: 150,
+      startClamped: true,
+      capClamped: false,
+      clampReason: "ITM_FAIR_LIMIT",
+    });
+
+    // 9. Unaligned cap strictly between OTM start and firstCap reports STRIKE_ALIGN (not ITM_FAIR_LIMIT)
+    const unalignedOtmCap = resolveClampedCustomRange({
+      config: bullConfig,
+      direction: "BULL",
+      desiredStart: 165,
+      desiredCap: 166, // off-grid between 165 and 167.5 on an OTM spread
+    });
+    expect(unalignedOtmCap).toMatchObject({
+      startPrice: 165,
+      capPrice: 167.5,
+      capClamped: true,
+      clampReason: "STRIKE_ALIGN",
+    });
+
+    // 10. Synchronous preview estimator produces valid ticket matching Custom range (including skewed strikeIvs)
+    const preview = estimateCustomTicketPreview({
+      underlying: "NVDAB",
+      direction: "BULL",
+      tenor: "WEEKLY",
+      expiry: 1_795_813_200,
+      availableStrikes: generateOccEquityStrikes(149.41, 0.3),
+      lowerStrike: 155,
+      upperStrike: 175,
+      stakeUsdt: 20,
+      config: bullConfig,
+    });
+    expect(preview.tierKind).toBe("CUSTOM");
+    expect(preview.startPrice).toBe(155);
+    expect(preview.capPrice).toBe(175);
+    expect(preview.guardrails.valid).toBe(true);
+    expect(preview.maxMultiplier).toBeGreaterThan(5);
+    expect(preview.maxMultiplier).toBeLessThan(20);
+
+    // Put-wing skew: elevated strike IVs keep BEAR [128, 135] valid (~14x) instead of falsely clamping at ~21.37x
+    const skewedBearConfig: CustomRangeConfig = {
+      ...bearConfig,
+      pricingParams: {
+        ...bearConfig.pricingParams,
+        baseIv: 0.55,
+        effectiveIv: 0.55,
+        ivFloorBoost: 0,
+        strikeIvs: { "128": 0.68, "135": 0.63 },
+      },
+    };
+    const skewedBearPreview = estimateCustomTicketPreview({
+      underlying: "NVDAB",
+      direction: "BEAR",
+      tenor: "WEEKLY",
+      expiry: 1_795_813_200,
+      availableStrikes: generateOccEquityStrikes(149.41, 0.3),
+      lowerStrike: 128,
+      upperStrike: 135,
+      stakeUsdt: 20,
+      config: skewedBearConfig,
+    });
+    expect(skewedBearPreview.guardrails.valid).toBe(true);
+    expect(skewedBearPreview.maxMultiplier).toBeGreaterThan(10);
+    expect(skewedBearPreview.maxMultiplier).toBeLessThan(18);
   });
 });

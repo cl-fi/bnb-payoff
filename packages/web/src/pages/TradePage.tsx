@@ -12,6 +12,7 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
+  ChevronDown,
   Clock,
   ExternalLink,
   Info,
@@ -25,10 +26,13 @@ import {
   ASSET_SPECS,
   BSC_TESTNET,
   computeExpiryPayoffUsdt,
+  estimateCustomTicketPreview,
+  resolveClampedCustomRange,
   type AtlasFeedTelemetry,
   type CandleBar,
   type CandlePoint,
   type CloseRfqResponse,
+  type CustomClampReason,
   type Direction,
   type ExpiryTenor,
   type PositionView,
@@ -63,6 +67,7 @@ import {
   OrderTicketPanel,
   type InstantBuyStage,
   type MergePreviewInfo,
+  type RangeMode,
   type SlippagePauseState,
 } from "../components/OrderTicketPanel";
 import {
@@ -288,6 +293,31 @@ export function TradePage({
     Partial<Record<ExpiryTenor, number>>
   >({});
   const [selectedTargetKey, setSelectedTargetKey] = useState<string>("");
+  const [rangeMode, setRangeMode] = useState<RangeMode>("QUICK");
+  const [customRange, setCustomRange] = useState<{
+    startPrice: number;
+    capPrice: number;
+  } | null>(null);
+  const [customClampState, setCustomClampState] = useState<{
+    reason: CustomClampReason;
+    startClamped: boolean;
+    capClamped: boolean;
+  }>({ reason: "NONE", startClamped: false, capClamped: false });
+  const [customServerEntry, setCustomServerEntry] = useState<{
+    ticket: TicketSummary;
+    shelfRef: ShelfResponse;
+  } | null>(null);
+  const [customSyncing, setCustomSyncing] = useState(false);
+  const [shelfReloadTick, setShelfReloadTick] = useState(0);
+  const customReqSeqRef = useRef(0);
+  const lastDriftReloadMsRef = useRef(0);
+  const addMoreTargetPosRef = useRef<{
+    direction: Direction;
+    lowerStrike: number;
+    upperStrike: number;
+    startPrice: number;
+    capPrice: number;
+  } | null>(null);
 
   const [stage, setStage] = useState<InstantBuyStage>("IDLE");
   const [slippagePause, setSlippagePause] = useState<
@@ -393,6 +423,15 @@ export function TradePage({
     if (!marketFocus) return;
     setUnderlying(marketFocus.underlying);
     setSelectedTargetKey("");
+    setCustomRange(null);
+    setCustomClampState({
+      reason: "NONE",
+      startClamped: false,
+      capClamped: false,
+    });
+    setCustomServerEntry(null);
+    setCustomSyncing(false);
+    addMoreTargetPosRef.current = null;
     setSelectedPositionId(null);
     setScrubPrice(null);
     pendingFocusExpiryRef.current = marketFocus.expiry;
@@ -490,7 +529,7 @@ export function TradePage({
       cancelled = true;
       clearInterval(timer);
     };
-  }, [underlying, direction, tenor, stakeUsdt]);
+  }, [underlying, direction, tenor, stakeUsdt, shelfReloadTick]);
 
   // B3 Add-More native <dialog> showModal/close + Safari closedby="any" fallback
   useEffect(() => {
@@ -745,23 +784,237 @@ export function TradePage({
     [positions, underlying, currentExpiry]
   );
 
-  // Active shelf ticket calculation
-  const defaultIdx = Math.min(
-    Math.max(0, shelf?.grid?.defaultIndex ?? 1),
-    Math.max(0, (shelf?.tiers.length ?? 1) - 1)
+  // Active shelf ticket calculation (Quick fine-grained tiers + Custom dual-slider preview)
+  const quickTiers = useMemo(
+    () =>
+      shelf?.quickTiers && shelf.quickTiers.length > 0
+        ? shelf.quickTiers
+        : (shelf?.tiers ?? []),
+    [shelf?.quickTiers, shelf?.tiers]
   );
-  const isShelfSynced = Boolean(
+  const defaultQuickIdx = Math.min(
+    Math.max(
+      0,
+      shelf?.grid?.defaultQuickIndex ?? shelf?.grid?.defaultIndex ?? 1
+    ),
+    Math.max(0, quickTiers.length - 1)
+  );
+  const isShelfContextSynced = Boolean(
     shelf &&
       shelf.underlying === underlying &&
       shelf.direction === direction &&
-      shelf.tenor === tenor &&
+      shelf.tenor === tenor
+  );
+  const isShelfSynced = Boolean(
+    isShelfContextSynced &&
+      shelf &&
       Math.abs(shelf.stakeUsdt - stakeUsdt) < 1e-6
   );
+  const quickTicket: TicketSummary | undefined =
+    quickTiers.find((item) => getTargetKey(item) === selectedTargetKey) ??
+    quickTiers[defaultQuickIdx] ??
+    quickTiers[0];
+
+  const resolvedCustomSelection = useMemo(() => {
+    if (
+      rangeMode !== "CUSTOM" ||
+      !isShelfContextSynced ||
+      !shelf?.customConfig
+    ) {
+      return null;
+    }
+    const desiredStart =
+      customRange?.startPrice ??
+      quickTicket?.startPrice ??
+      shelf.customConfig.defaultStart;
+    const desiredCap =
+      customRange?.capPrice ??
+      quickTicket?.capPrice ??
+      shelf.customConfig.defaultCap;
+    return resolveClampedCustomRange({
+      config: shelf.customConfig,
+      direction,
+      desiredStart,
+      desiredCap,
+    });
+  }, [
+    rangeMode,
+    isShelfContextSynced,
+    shelf?.customConfig,
+    customRange,
+    quickTicket?.startPrice,
+    quickTicket?.capPrice,
+    direction,
+  ]);
+
+  const customInstantTicket = useMemo<TicketSummary | undefined>(() => {
+    if (
+      rangeMode !== "CUSTOM" ||
+      !isShelfContextSynced ||
+      !shelf?.customConfig ||
+      !resolvedCustomSelection
+    ) {
+      return undefined;
+    }
+    return estimateCustomTicketPreview({
+      underlying,
+      direction,
+      tenor,
+      expiry: shelf.expiry,
+      availableStrikes: shelf.availableStrikes,
+      lowerStrike: resolvedCustomSelection.lowerStrike,
+      upperStrike: resolvedCustomSelection.upperStrike,
+      stakeUsdt,
+      config: shelf.customConfig,
+    });
+  }, [
+    rangeMode,
+    isShelfContextSynced,
+    shelf,
+    resolvedCustomSelection,
+    underlying,
+    direction,
+    tenor,
+    stakeUsdt,
+  ]);
+
+  // B3 Add-More reconciliation: if a Quick position's strike pair is absent from the synced shelf's
+  // `quickTiers` (e.g. opposite-direction shelf loaded or 25s poll moved spot past its cap), route
+  // seamlessly to Custom mode preserving the exact position strike pair instead of falling back to defaultQuickIdx.
+  useEffect(() => {
+    const target = addMoreTargetPosRef.current;
+    if (!addMoreOpen || !target || !isShelfContextSynced) return;
+    if (target.direction !== direction || rangeMode !== "QUICK") return;
+    const targetKey = `${target.lowerStrike}-${target.upperStrike}`;
+    const stillInQuick = quickTiers.some(
+      (item) => getTargetKey(item) === targetKey
+    );
+    if (stillInQuick) return;
+    if (shelf?.customConfig && shelf.customConfig.validStarts.length > 0) {
+      setRangeMode("CUSTOM");
+      setCustomRange({
+        startPrice: target.startPrice,
+        capPrice: target.capPrice,
+      });
+      setCustomClampState({
+        reason: "NONE",
+        startClamped: false,
+        capClamped: false,
+      });
+      setCustomServerEntry(null);
+    }
+    addMoreTargetPosRef.current = null;
+  }, [
+    addMoreOpen,
+    rangeMode,
+    isShelfContextSynced,
+    direction,
+    quickTiers,
+    shelf?.customConfig,
+  ]);
+
+  // Debounced server-side Custom preview reconciliation (preserves exact live Atlas spot, ThetaData IV skew & book mids)
+  useEffect(() => {
+    if (
+      rangeMode !== "CUSTOM" ||
+      !isShelfContextSynced ||
+      !shelf ||
+      !resolvedCustomSelection
+    ) {
+      customReqSeqRef.current += 1;
+      setCustomSyncing(false);
+      return;
+    }
+
+    const activeShelf = shelf;
+    const { lowerStrike, upperStrike } = resolvedCustomSelection;
+    const reqId = ++customReqSeqRef.current;
+    setCustomSyncing(true);
+    const timer = window.setTimeout(() => {
+      api
+        .previewCustom({
+          underlying,
+          direction,
+          tenor,
+          lowerStrike,
+          upperStrike,
+          stakeUsdt,
+        })
+        .then((res) => {
+          if (reqId !== customReqSeqRef.current) return;
+          setCustomServerEntry({ ticket: res.ticket, shelfRef: activeShelf });
+          setCustomSyncing(false);
+          // If live Atlas spot drifted past fair bounds between 25s shelf polls, refresh shelf immediately to re-clamp
+          if (!res.ticket.guardrails.valid) {
+            const nowMs = Date.now();
+            if (nowMs - lastDriftReloadMsRef.current > 2_000) {
+              lastDriftReloadMsRef.current = nowMs;
+              setShelfReloadTick((n) => n + 1);
+            }
+          }
+        })
+        .catch(() => {
+          if (reqId !== customReqSeqRef.current) return;
+          setCustomSyncing(false);
+        });
+    }, 100);
+
+    return () => {
+      customReqSeqRef.current += 1;
+      window.clearTimeout(timer);
+    };
+  }, [
+    rangeMode,
+    isShelfContextSynced,
+    shelf,
+    underlying,
+    direction,
+    tenor,
+    resolvedCustomSelection?.lowerStrike,
+    resolvedCustomSelection?.upperStrike,
+    stakeUsdt,
+  ]);
+
+  const customServerTicket = customServerEntry?.ticket ?? null;
+  const isCustomServerTicketMatched = Boolean(
+    customServerEntry &&
+      customServerTicket &&
+      resolvedCustomSelection &&
+      shelf &&
+      customServerEntry.shelfRef === shelf &&
+      customServerTicket.underlying === underlying &&
+      customServerTicket.direction === direction &&
+      customServerTicket.tenor === tenor &&
+      customServerTicket.expiry === shelf.expiry &&
+      Math.abs(customServerTicket.lowerStrike - resolvedCustomSelection.lowerStrike) < 1e-6 &&
+      Math.abs(customServerTicket.upperStrike - resolvedCustomSelection.upperStrike) < 1e-6 &&
+      Math.abs(customServerTicket.stakeUsdt - stakeUsdt) < 0.015
+  );
+
   const activeTicket: TicketSummary | undefined =
-    shelf?.tiers.find((item) => getTargetKey(item) === selectedTargetKey) ??
-    shelf?.tiers[defaultIdx] ??
-    shelf?.tiers[0];
-  const effectiveTargetKey = activeTicket ? getTargetKey(activeTicket) : "";
+    rangeMode === "CUSTOM" && isShelfContextSynced && resolvedCustomSelection
+      ? isCustomServerTicketMatched && customServerTicket
+        ? customServerTicket
+        : customInstantTicket ?? quickTicket
+      : quickTicket;
+  const isActiveTicketReady =
+    rangeMode === "CUSTOM"
+      ? Boolean(
+          isShelfContextSynced &&
+            resolvedCustomSelection &&
+            activeTicket &&
+            Math.abs(activeTicket.stakeUsdt - stakeUsdt) < 0.015
+        )
+      : isShelfSynced;
+  const effectiveCustomClamp =
+    resolvedCustomSelection && resolvedCustomSelection.clampReason !== "NONE"
+      ? {
+          reason: resolvedCustomSelection.clampReason,
+          startClamped: resolvedCustomSelection.startClamped,
+          capClamped: resolvedCustomSelection.capClamped,
+        }
+      : customClampState;
+  const effectiveTargetKey = quickTicket ? getTargetKey(quickTicket) : "";
 
   // B3 explicit mergePreview: checks if selected direction + strike range matches an existing active position in this expiry
   const addMoreMergePreview = useMemo<MergePreviewInfo | null>(() => {
@@ -797,11 +1050,24 @@ export function TradePage({
     setErrorMsg(undefined);
   }, []);
 
+  const clearCustomSelection = useCallback(() => {
+    setCustomRange(null);
+    setCustomClampState({
+      reason: "NONE",
+      startClamped: false,
+      capClamped: false,
+    });
+    setCustomServerEntry(null);
+    setCustomSyncing(false);
+    addMoreTargetPosRef.current = null;
+  }, []);
+
   const handleSwitchUnderlying = (u: UnderlyingSymbol) => {
     if (u === underlying) return;
     setUnderlying(u);
     setSelectedPriorExpiry(null);
     setSelectedTargetKey("");
+    clearCustomSelection();
     setSelectedPositionId(null);
     setScrubPrice(null);
     setSettleErr(undefined);
@@ -813,6 +1079,7 @@ export function TradePage({
     if (dir === direction) return;
     setDirection(dir);
     setSelectedTargetKey("");
+    clearCustomSelection();
     resetFlowState();
   };
 
@@ -828,6 +1095,7 @@ export function TradePage({
       if (tab.tenor !== tenor) {
         setTenor(tab.tenor);
         setSelectedTargetKey("");
+        clearCustomSelection();
         resetFlowState();
       }
     }
@@ -861,7 +1129,118 @@ export function TradePage({
   };
 
   const handleSelectTarget = (item: TicketSummary) => {
+    addMoreTargetPosRef.current = null;
     setSelectedTargetKey(getTargetKey(item));
+    setSelectedPositionId(null);
+    setScrubPrice(null);
+    resetFlowState();
+  };
+
+  const handleChangeRangeMode = (nextMode: RangeMode) => {
+    if (nextMode === rangeMode) return;
+    addMoreTargetPosRef.current = null;
+    setSelectedPositionId(null);
+    setScrubPrice(null);
+    if (nextMode === "CUSTOM") {
+      if (quickTicket) {
+        setCustomRange({
+          startPrice: quickTicket.startPrice,
+          capPrice: quickTicket.capPrice,
+        });
+      }
+      setCustomClampState({
+        reason: "NONE",
+        startClamped: false,
+        capClamped: false,
+      });
+      setRangeMode("CUSTOM");
+      resetFlowState();
+      return;
+    }
+
+    // Returning to Quick mode: preserve closest Target cap on the Quick slider
+    if (resolvedCustomSelection && quickTiers.length > 0) {
+      const exact = quickTiers.find(
+        (item) =>
+          Math.abs(item.lowerStrike - resolvedCustomSelection.lowerStrike) < 1e-6 &&
+          Math.abs(item.upperStrike - resolvedCustomSelection.upperStrike) < 1e-6
+      );
+      if (exact) {
+        setSelectedTargetKey(getTargetKey(exact));
+      } else {
+        const nearest = quickTiers.reduce((best, item) =>
+          Math.abs(item.capPrice - resolvedCustomSelection.capPrice) <
+          Math.abs(best.capPrice - resolvedCustomSelection.capPrice)
+            ? item
+            : best
+        );
+        setSelectedTargetKey(getTargetKey(nearest));
+      }
+    }
+    setCustomClampState({
+      reason: "NONE",
+      startClamped: false,
+      capClamped: false,
+    });
+    setCustomServerEntry(null);
+    setCustomSyncing(false);
+    setRangeMode("QUICK");
+    resetFlowState();
+  };
+
+  const handleChangeCustomStart = (nextStart: number) => {
+    if (!shelf?.customConfig || !isShelfContextSynced) return;
+    addMoreTargetPosRef.current = null;
+    const currentCap =
+      resolvedCustomSelection?.capPrice ??
+      customRange?.capPrice ??
+      shelf.customConfig.defaultCap;
+    const clamped = resolveClampedCustomRange({
+      config: shelf.customConfig,
+      direction,
+      desiredStart: nextStart,
+      desiredCap: currentCap,
+    });
+    if (!clamped) return;
+    setSelectedPositionId(null);
+    setScrubPrice(null);
+    setCustomRange({
+      startPrice: clamped.startPrice,
+      capPrice: clamped.capPrice,
+    });
+    setCustomClampState({
+      reason: clamped.clampReason,
+      startClamped: clamped.startClamped,
+      capClamped: clamped.capClamped,
+    });
+    resetFlowState();
+  };
+
+  const handleChangeCustomCap = (nextCap: number) => {
+    if (!shelf?.customConfig || !isShelfContextSynced) return;
+    addMoreTargetPosRef.current = null;
+    const currentStart =
+      resolvedCustomSelection?.startPrice ??
+      customRange?.startPrice ??
+      shelf.customConfig.defaultStart;
+    const clamped = resolveClampedCustomRange({
+      config: shelf.customConfig,
+      direction,
+      desiredStart: currentStart,
+      desiredCap: nextCap,
+    });
+    if (!clamped) return;
+    setSelectedPositionId(null);
+    setScrubPrice(null);
+    setCustomRange({
+      startPrice: clamped.startPrice,
+      capPrice: clamped.capPrice,
+    });
+    setCustomClampState({
+      reason: clamped.clampReason,
+      startClamped: clamped.startClamped,
+      capClamped: clamped.capClamped,
+    });
     resetFlowState();
   };
 
@@ -908,6 +1287,7 @@ export function TradePage({
 
     // Stay on TradePage — close B3 sheet if open, show dark confirmation toast, keep form ready
     if (addMoreOpen) {
+      addMoreTargetPosRef.current = null;
       addMoreDialogRef.current?.close();
       setAddMoreOpen(false);
     }
@@ -920,7 +1300,7 @@ export function TradePage({
   };
 
   const handleInstantBuy = async () => {
-    if (!wallet.address || !activeTicket || !isShelfSynced) return;
+    if (!wallet.address || !activeTicket || !isActiveTicketReady) return;
     setErrorMsg(undefined);
     setTxHash(undefined);
     setSlippagePause(undefined);
@@ -964,7 +1344,7 @@ export function TradePage({
         underlying,
         direction,
         tenor,
-        tierKind: activeTicket.tierKind,
+        tierKind: rangeMode === "CUSTOM" ? "CUSTOM" : activeTicket.tierKind,
         lowerStrike: activeTicket.lowerStrike,
         upperStrike: activeTicket.upperStrike,
         stakeUsdt,
@@ -1005,10 +1385,54 @@ export function TradePage({
     }
   };
 
-  // B3 Add-More trigger from a position row
+  // B3 Add-More trigger from a position row (preserves both Quick and Custom strike ranges)
   const handleOpenAddMore = (pos: PositionView) => {
+    const posKey = `${pos.lowerStrike}-${pos.upperStrike}`;
+    const matchesCurrentQuick =
+      pos.direction === direction &&
+      quickTiers.some((item) => getTargetKey(item) === posKey);
+    const expectedAnchor =
+      pos.direction === "BULL" ? shelf?.grid?.gridLow : shelf?.grid?.gridHigh;
+    const matchesOppositeGridAnchor =
+      pos.direction !== direction &&
+      pos.tierKind !== "CUSTOM" &&
+      expectedAnchor !== undefined &&
+      Math.abs(pos.startPrice - expectedAnchor) < 1e-6;
+    const shouldUseCustom =
+      pos.tierKind === "CUSTOM" ||
+      (!matchesCurrentQuick && !matchesOppositeGridAnchor);
     setDirection(pos.direction);
-    setSelectedTargetKey(`${pos.lowerStrike}-${pos.upperStrike}`);
+    setSelectedTargetKey(posKey);
+    if (shouldUseCustom) {
+      addMoreTargetPosRef.current = null;
+      setRangeMode("CUSTOM");
+      setCustomRange({
+        startPrice: pos.startPrice,
+        capPrice: pos.capPrice,
+      });
+      setCustomClampState({
+        reason: "NONE",
+        startClamped: false,
+        capClamped: false,
+      });
+      setCustomServerEntry(null);
+    } else {
+      addMoreTargetPosRef.current = {
+        direction: pos.direction,
+        lowerStrike: pos.lowerStrike,
+        upperStrike: pos.upperStrike,
+        startPrice: pos.startPrice,
+        capPrice: pos.capPrice,
+      };
+      setRangeMode("QUICK");
+      setCustomRange(null);
+      setCustomClampState({
+        reason: "NONE",
+        startClamped: false,
+        capClamped: false,
+      });
+      setCustomServerEntry(null);
+    }
     resetFlowState();
     setAddMoreOpen(true);
   };
@@ -1250,14 +1674,16 @@ export function TradePage({
       displaySpot
     : null;
 
-  // B1 / B2 Current-expiry totals + scrubbed simulation totals
+  // B1 / B2 Current-expiry totals + scrubbed simulation totals (payout + net PnL)
   const positionTotals = useMemo(() => {
     let totalStake = 0;
     let totalValue = 0;
+    let totalUnrealizedPnl = 0;
     let totalSimulated = 0;
     for (const p of currentExpiryActivePositions) {
       totalStake += p.totalStakeUsdt;
       totalValue += p.indicativeExitUsdt;
+      totalUnrealizedPnl += p.unrealizedPnlUsdt;
       if (scrubPrice !== null) {
         totalSimulated += computeExpiryPayoffUsdt(
           p.isUp,
@@ -1268,7 +1694,14 @@ export function TradePage({
         );
       }
     }
-    return { totalStake, totalValue, totalSimulated };
+    const totalSimulatedPnl = totalSimulated - totalStake;
+    return {
+      totalStake,
+      totalValue,
+      totalUnrealizedPnl,
+      totalSimulated,
+      totalSimulatedPnl,
+    };
   }, [currentExpiryActivePositions, scrubPrice]);
 
   // C3 / C4 Grouped Outcome Summary for current expiry
@@ -1615,8 +2048,20 @@ export function TradePage({
               direction={direction}
               onChangeDirection={handleSwitchDirection}
               tiers={shelf.tiers}
+              quickTiers={quickTiers}
               selectedTargetKey={effectiveTargetKey}
               onSelectTarget={handleSelectTarget}
+              rangeMode={rangeMode}
+              onChangeRangeMode={handleChangeRangeMode}
+              customConfig={shelf.customConfig}
+              customStartPrice={resolvedCustomSelection?.startPrice}
+              customCapPrice={resolvedCustomSelection?.capPrice}
+              customClampReason={effectiveCustomClamp.reason}
+              customStartClamped={effectiveCustomClamp.startClamped}
+              customCapClamped={effectiveCustomClamp.capClamped}
+              customSyncing={customSyncing}
+              onChangeCustomStart={handleChangeCustomStart}
+              onChangeCustomCap={handleChangeCustomCap}
               ticket={activeTicket}
               grid={shelf.grid}
               stakeUsdt={stakeUsdt}
@@ -1628,7 +2073,7 @@ export function TradePage({
               }}
               walletConnected={wallet.kind !== "NONE"}
               usdtBalance={wallet.usdtBalance}
-              isShelfSynced={isShelfSynced}
+              isShelfSynced={isActiveTicketReady}
               quotingPaused={quotingPaused}
               rwaPaused={rwaCircuitBreakerActive}
               rwaPauseReason={rwaPauseReason}
@@ -2007,7 +2452,7 @@ export function TradePage({
 
                   <div className="text-xs tabular-nums">
                     {scrubPrice !== null ? (
-                      <span className="inline-flex items-center gap-1.5 text-[#b8bec6]">
+                      <span className="inline-flex flex-wrap items-baseline justify-end gap-x-1.5 gap-y-0.5 text-[#b8bec6]">
                         <span>
                           {t.positionsSimulatedTotal} (@{" "}
                           {formatStrikePrice(scrubPrice, underlying)})
@@ -2026,23 +2471,59 @@ export function TradePage({
                         >
                           ${positionTotals.totalSimulated.toFixed(2)}
                         </strong>
+                        <span
+                          className="font-semibold"
+                          style={{
+                            color:
+                              positionTotals.totalSimulatedPnl > 0.004
+                                ? "#2EC26B"
+                                : positionTotals.totalSimulatedPnl < -0.004
+                                  ? "#E85D4A"
+                                  : "#7e8690",
+                          }}
+                        >
+                          ({formatSignedUsd(positionTotals.totalSimulatedPnl)})
+                        </span>
                       </span>
                     ) : (
-                      <span className="text-[#7e8690]">
-                        {t.positionsTotalStake}{" "}
-                        <strong className="font-semibold text-[#b8bec6]">
-                          ${positionTotals.totalStake.toFixed(2)}
-                        </strong>{" "}
-                        · {t.positionsTotalValue}{" "}
-                        <strong className="font-semibold text-white">
-                          ${positionTotals.totalValue.toFixed(2)}
-                        </strong>
+                      <span className="inline-flex flex-wrap items-baseline justify-end gap-x-1 text-[#7e8690]">
+                        <span>
+                          {t.positionsTotalStake}{" "}
+                          <strong className="font-semibold text-[#b8bec6]">
+                            ${positionTotals.totalStake.toFixed(2)}
+                          </strong>
+                        </span>
+                        <span aria-hidden="true">·</span>
+                        <span>
+                          {t.positionsTotalValue}{" "}
+                          <strong className="font-semibold text-white">
+                            ${positionTotals.totalValue.toFixed(2)}
+                          </strong>{" "}
+                          <span
+                            className="font-semibold"
+                            style={{
+                              color:
+                                positionTotals.totalUnrealizedPnl > 0.004
+                                  ? "#2EC26B"
+                                  : positionTotals.totalUnrealizedPnl < -0.004
+                                    ? "#E85D4A"
+                                    : "#7e8690",
+                            }}
+                          >
+                            (
+                            {formatSignedUsd(positionTotals.totalUnrealizedPnl)}
+                            )
+                          </span>
+                        </span>
                       </span>
                     )}
                   </div>
                 </div>
 
-                <div className="divide-y divide-[#1d2025] border-t border-b border-[#1d2025]">
+                <ul
+                  role="list"
+                  className="divide-y divide-[#1d2025] border-t border-b border-[#1d2025]"
+                >
                   {currentExpiryActivePositions.map((pos) => {
                     const posId = getPosId(pos);
                     const isSelected = selectedPositionId === posId;
@@ -2070,14 +2551,31 @@ export function TradePage({
                       simulatedPayout < pos.totalStakeUsdt;
 
                     return (
-                      <div key={posId} className="py-3">
+                      <li
+                        key={posId}
+                        className={`relative transition-colors duration-150 ${
+                          isSelected ? "bg-[#121417]" : ""
+                        }`}
+                      >
+                        {isSelected && (
+                          <span
+                            aria-hidden="true"
+                            className={`pointer-events-none absolute inset-y-0 left-0 w-[2px] ${
+                              pos.isUp ? "bg-[#2EC26B]" : "bg-[#E85D4A]"
+                            }`}
+                          />
+                        )}
                         <button
                           type="button"
                           aria-expanded={isSelected}
                           onClick={() =>
                             setSelectedPositionId(isSelected ? null : posId)
                           }
-                          className="flex w-full items-center justify-between gap-3 text-left transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white rounded-lg"
+                          className={`group flex w-full items-center justify-between gap-3 px-2.5 py-3 text-left transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white ${
+                            isSelected
+                              ? ""
+                              : "hover:bg-[#14171c] active:bg-[#1a1e25]"
+                          }`}
                         >
                           <div className="min-w-0 space-y-0.5">
                             <div className="flex flex-wrap items-center gap-1.5 text-[14px] font-bold text-white tabular-nums">
@@ -2109,65 +2607,75 @@ export function TradePage({
                             </div>
                           </div>
 
-                          <div className="shrink-0 text-right tabular-nums">
-                            {simulatedPayout !== null && simDelta !== null ? (
-                              <>
-                                <div className="flex items-center justify-end gap-1.5">
-                                  {simIsPartial && (
-                                    <span className="rounded-full bg-[#E6BA5C]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
-                                      {t.outcomePartialBadge}
+                          <div className="flex shrink-0 items-center gap-2.5">
+                            <div className="text-right tabular-nums">
+                              {simulatedPayout !== null && simDelta !== null ? (
+                                <>
+                                  <div className="flex items-center justify-end gap-1.5">
+                                    {simIsPartial && (
+                                      <span className="rounded-full bg-[#E6BA5C]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
+                                        {t.outcomePartialBadge}
+                                      </span>
+                                    )}
+                                    <span
+                                      className="text-[15px] font-bold"
+                                      style={{
+                                        color:
+                                          simulatedPayout >= pos.totalStakeUsdt
+                                            ? "#2EC26B"
+                                            : simulatedPayout > 0
+                                              ? "#E6BA5C"
+                                              : "#7e8690",
+                                      }}
+                                    >
+                                      ${simulatedPayout.toFixed(2)}
                                     </span>
-                                  )}
-                                  <span
-                                    className="text-[15px] font-bold"
-                                    style={{
-                                      color:
-                                        simulatedPayout >= pos.totalStakeUsdt
-                                          ? "#2EC26B"
-                                          : simulatedPayout > 0
-                                            ? "#E6BA5C"
-                                            : "#7e8690",
-                                    }}
+                                  </div>
+                                  <div
+                                    className={`text-xs font-semibold ${
+                                      simDelta >= 0
+                                        ? "text-[#2EC26B]"
+                                        : simIsPartial
+                                          ? "text-[#E6BA5C]"
+                                          : "text-[#7e8690]"
+                                    }`}
                                   >
-                                    ${simulatedPayout.toFixed(2)}
-                                  </span>
-                                </div>
-                                <div
-                                  className={`text-xs font-semibold ${
-                                    simDelta >= 0
-                                      ? "text-[#2EC26B]"
-                                      : simIsPartial
-                                        ? "text-[#E6BA5C]"
-                                        : "text-[#7e8690]"
-                                  }`}
-                                >
-                                  {formatSignedUsd(simDelta)}
-                                </div>
-                              </>
-                            ) : (
-                              <>
-                                <div className="text-[15px] font-bold text-white">
-                                  ${pos.indicativeExitUsdt.toFixed(2)}
-                                </div>
-                                <div
-                                  className={`text-xs font-semibold ${
-                                    pos.unrealizedPnlUsdt >= 0
-                                      ? "text-[#2EC26B]"
-                                      : "text-[#E85D4A]"
-                                  }`}
-                                >
-                                  {formatSignedUsd(pos.unrealizedPnlUsdt)} (
-                                  {pos.unrealizedPnlPct >= 0 ? "+" : ""}
-                                  {pos.unrealizedPnlPct.toFixed(1)}%)
-                                </div>
-                              </>
-                            )}
+                                    {formatSignedUsd(simDelta)}
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="text-[15px] font-bold text-white">
+                                    ${pos.indicativeExitUsdt.toFixed(2)}
+                                  </div>
+                                  <div
+                                    className={`text-xs font-semibold ${
+                                      pos.unrealizedPnlUsdt >= 0
+                                        ? "text-[#2EC26B]"
+                                        : "text-[#E85D4A]"
+                                    }`}
+                                  >
+                                    {formatSignedUsd(pos.unrealizedPnlUsdt)} (
+                                    {pos.unrealizedPnlPct >= 0 ? "+" : ""}
+                                    {pos.unrealizedPnlPct.toFixed(1)}%)
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                            <ChevronDown
+                              aria-hidden="true"
+                              className={`h-4 w-4 shrink-0 transition-transform duration-200 motion-reduce:transition-none ${
+                                isSelected
+                                  ? "rotate-180 text-white"
+                                  : "text-[#525862] group-hover:text-[#b8bec6]"
+                              }`}
+                            />
                           </div>
                         </button>
 
                         {/* Inline Actions revealed on row select */}
                         {isSelected && (
-                          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 pl-3.5">
+                          <div className="pb-3 pt-0.5 flex flex-wrap items-center justify-between gap-2 px-2.5 pl-6">
                             {pos.awaitingSettlement ? (
                               <span className="text-xs font-medium text-[#E6BA5C]">
                                 {pos.expiryPaused
@@ -2187,7 +2695,7 @@ export function TradePage({
                                 <button
                                   type="button"
                                   onClick={() => handleOpenEarlyClose(pos)}
-                                  className="min-h-[36px] rounded-full bg-white px-4 py-1.5 text-xs font-bold text-black hover:bg-white/90 transition cursor-pointer"
+                                  className="min-h-[36px] rounded-full bg-white px-4 py-1.5 text-xs font-bold text-black hover:bg-white/90 active:scale-[0.98] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                                 >
                                   {t.actionSell}
                                 </button>
@@ -2195,7 +2703,7 @@ export function TradePage({
                                   <button
                                     type="button"
                                     onClick={() => handleOpenAddMore(pos)}
-                                    className="min-h-[36px] rounded-full bg-[#24282f] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#2f343d] transition cursor-pointer"
+                                    className="min-h-[36px] rounded-full bg-[#24282f] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#2f343d] active:scale-[0.98] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                                   >
                                     {t.actionAddMore}
                                   </button>
@@ -2219,10 +2727,10 @@ export function TradePage({
                             )}
                           </div>
                         )}
-                      </div>
+                      </li>
                     );
                   })}
-                </div>
+                </ul>
               </section>
             )}
           </div>
@@ -2238,6 +2746,7 @@ export function TradePage({
           if (addMoreDialogRef.current) {
             addMoreDialogRef.current.returnValue = "";
           }
+          addMoreTargetPosRef.current = null;
           setAddMoreOpen(false);
         }}
         className="payoff-sheet"
@@ -2268,8 +2777,20 @@ export function TradePage({
                 direction={direction}
                 onChangeDirection={handleSwitchDirection}
                 tiers={shelf.tiers}
+                quickTiers={quickTiers}
                 selectedTargetKey={effectiveTargetKey}
                 onSelectTarget={handleSelectTarget}
+                rangeMode={rangeMode}
+                onChangeRangeMode={handleChangeRangeMode}
+                customConfig={shelf.customConfig}
+                customStartPrice={resolvedCustomSelection?.startPrice}
+                customCapPrice={resolvedCustomSelection?.capPrice}
+                customClampReason={effectiveCustomClamp.reason}
+                customStartClamped={effectiveCustomClamp.startClamped}
+                customCapClamped={effectiveCustomClamp.capClamped}
+                customSyncing={customSyncing}
+                onChangeCustomStart={handleChangeCustomStart}
+                onChangeCustomCap={handleChangeCustomCap}
                 ticket={activeTicket}
                 grid={shelf.grid}
                 stakeUsdt={stakeUsdt}
@@ -2281,7 +2802,7 @@ export function TradePage({
                 }}
                 walletConnected={wallet.kind !== "NONE"}
                 usdtBalance={wallet.usdtBalance}
-                isShelfSynced={isShelfSynced}
+                isShelfSynced={isActiveTicketReady}
                 quotingPaused={quotingPaused}
                 rwaPaused={rwaCircuitBreakerActive}
                 rwaPauseReason={rwaPauseReason}

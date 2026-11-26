@@ -53,6 +53,13 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
+function formatSignedUsd(v: number): string {
+  const abs = Math.abs(v).toFixed(2);
+  if (v > 0.004) return `+$${abs}`;
+  if (v < -0.004) return `-$${abs}`;
+  return "$0.00";
+}
+
 function formatHoverTime(unixSec: number, locale: Locale): string {
   if (!Number.isFinite(unixSec) || unixSec <= 0) return "";
   try {
@@ -197,16 +204,28 @@ export function KlineChart({
     if (liveSpot && Number.isFinite(liveSpot) && liveSpot > 0) {
       vals.push(liveSpot);
     }
-    if (ticket) {
-      if (Number.isFinite(ticket.lowerStrike)) vals.push(ticket.lowerStrike);
-      if (Number.isFinite(ticket.upperStrike)) vals.push(ticket.upperStrike);
-      if (Number.isFinite(ticket.breakevenPrice)) {
-        vals.push(ticket.breakevenPrice);
+    if (selectedPosition) {
+      if (Number.isFinite(selectedPosition.lowerStrike)) {
+        vals.push(selectedPosition.lowerStrike);
       }
-    }
-    for (const p of activePositions) {
-      if (Number.isFinite(p.lowerStrike)) vals.push(p.lowerStrike);
-      if (Number.isFinite(p.upperStrike)) vals.push(p.upperStrike);
+      if (Number.isFinite(selectedPosition.upperStrike)) {
+        vals.push(selectedPosition.upperStrike);
+      }
+      if (Number.isFinite(selectedPosition.breakevenPrice)) {
+        vals.push(selectedPosition.breakevenPrice);
+      }
+    } else {
+      if (ticket) {
+        if (Number.isFinite(ticket.lowerStrike)) vals.push(ticket.lowerStrike);
+        if (Number.isFinite(ticket.upperStrike)) vals.push(ticket.upperStrike);
+        if (Number.isFinite(ticket.breakevenPrice)) {
+          vals.push(ticket.breakevenPrice);
+        }
+      }
+      for (const p of activePositions) {
+        if (Number.isFinite(p.lowerStrike)) vals.push(p.lowerStrike);
+        if (Number.isFinite(p.upperStrike)) vals.push(p.upperStrike);
+      }
     }
     if (
       inTwapWindow &&
@@ -244,7 +263,15 @@ export function KlineChart({
       min: Math.max(0, rawMin - pad),
       max: rawMax + pad,
     };
-  }, [seriesPoints, liveSpot, ticket, activePositions, inTwapWindow, twapAvgPrice]);
+  }, [
+    seriesPoints,
+    liveSpot,
+    selectedPosition,
+    ticket,
+    activePositions,
+    inTwapWindow,
+    twapAvgPrice,
+  ]);
 
   // Smooth rAF interpolation (~180ms cubic ease-out) of [yMin, yMax] on tier/direction/expiry changes
   const [domain, setDomain] = useState<YDomain>(targetDomain);
@@ -303,16 +330,13 @@ export function KlineChart({
     return () => cancelAnimationFrame(rafId);
   }, [targetDomain]);
 
-  // Scheme A1 Full-Bleed Spatial Split Geometry (zero wasted right text gutter)
+  // Scheme A1 Full-Bleed Spatial Split Geometry (single clean right-edge ramp bar, zero multi-position bar clutter)
   const isNarrow = width < 440;
-  const visibleBars = activePositions.slice(0, 5);
-  const hasBars = visibleBars.length > 0;
   const canScrub = Boolean(ticket || activePositions.length > 0);
-  const barsBlockW = hasBars ? visibleBars.length * 7 + 8 : 0;
 
   const rightEdgeMargin = isNarrow ? 14 : 18;
   const expiryX = Math.round(
-    clamp(width - rightEdgeMargin - barsBlockW, width * 0.72, width - 12)
+    clamp(width - rightEdgeMargin, width * 0.78, width - 12)
   );
   const nowX = Math.round(
     clamp(
@@ -322,7 +346,6 @@ export function KlineChart({
     )
   );
   const futureW = Math.max(32, expiryX - nowX);
-  const barStartX = expiryX + (canScrub ? 10 : 6);
 
   const padTop = 24;
   const padBottom = 22;
@@ -502,8 +525,9 @@ export function KlineChart({
           : "BE";
     const beLabelY = bull ? yBe - 4 : yBe + 11;
 
+    const isCustomDraft = !selectedPosition && ticket?.tierKind === "CUSTOM";
     const showStartLabel =
-      futureW >= 78 && Math.abs(yStart - yCap) >= 24;
+      futureW >= 78 && Math.abs(yStart - yCap) >= (isCustomDraft ? 14 : 24);
     const startLabelText =
       futureW >= 106
         ? `$0 · ${formatStrikePrice(src.startPrice, src.underlying)}`
@@ -515,6 +539,7 @@ export function KlineChart({
     return {
       bull,
       col,
+      isCustomDraft,
       yHigh,
       yLow,
       washTop: Math.min(yHigh, yLow),
@@ -582,6 +607,7 @@ export function KlineChart({
         price: activeScrubPrice,
         payoutUsdt: totalPayout,
         stakeUsdt: totalStake,
+        pnlUsdt: totalPayout - totalStake,
       };
     }
     if (ticket) {
@@ -591,12 +617,14 @@ export function KlineChart({
         ticket.upperStrike,
         activeScrubPrice
       );
+      const payoutUsdt = ticket.maxPayoutUsdt * frac;
       return {
         isCombined: false,
         count: 1,
         price: activeScrubPrice,
-        payoutUsdt: ticket.maxPayoutUsdt * frac,
+        payoutUsdt,
         stakeUsdt: ticket.stakeUsdt,
+        pnlUsdt: payoutUsdt - ticket.stakeUsdt,
       };
     }
     return null;
@@ -734,6 +762,18 @@ export function KlineChart({
         ? GOLD
         : SUB_TEXT;
 
+  const pnlColor =
+    scrubSummary && scrubSummary.pnlUsdt > 0.004
+      ? UP_GREEN
+      : scrubSummary && scrubSummary.pnlUsdt < -0.004
+        ? DOWN_CORAL
+        : SUB_TEXT;
+
+  const selectedPosMult =
+    selectedPosition && selectedPosition.totalStakeUsdt > 0
+      ? selectedPosition.initialMaxPayoutUsdt / selectedPosition.totalStakeUsdt
+      : 0;
+
   const scrubTagY = clamp(knobY, 18, height - padBottom - 16);
   const scrubTagRight = Math.max(16, width - expiryX + 14);
 
@@ -751,7 +791,51 @@ export function KlineChart({
         className="relative w-full overflow-hidden bg-black select-none"
         style={{ height: `${height}px` }}
       >
-        {/* Scheme A1 Track-Side Floating Scrub Readout (tracks handle smoothly, zero top-left capsule) */}
+        {/* Minimal Focused-Position Indicator Chip (only rendered when inspecting a clicked position row) */}
+        {selectedPosition && (
+          <div className="absolute left-2 top-1.5 z-20 flex max-w-[calc(100%-36px)] items-center gap-1.5 rounded-full border border-white/10 bg-[#121417]/92 pl-2.5 pr-1 py-0.5 text-[11px] leading-none text-[#d6dce4] tabular-nums shadow-[0_4px_16px_rgba(0,0,0,0.75)] backdrop-blur-sm">
+            <span
+              aria-hidden="true"
+              className="h-1.5 w-1.5 shrink-0 rounded-full"
+              style={{
+                backgroundColor:
+                  selectedPosition.direction === "BULL" ? UP_GREEN : DOWN_CORAL,
+              }}
+            />
+            <span
+              className="font-bold whitespace-nowrap"
+              style={{
+                color:
+                  selectedPosition.direction === "BULL" ? UP_GREEN : DOWN_CORAL,
+              }}
+            >
+              {selectedPosition.direction === "BULL" ? t.bull : t.bear}
+            </span>
+            {selectedPosMult > 0 && (
+              <span className="font-semibold text-white whitespace-nowrap">
+                {selectedPosMult.toFixed(2)}x
+              </span>
+            )}
+            <span className="truncate text-[#9aa2ad]">
+              {formatStrikePrice(selectedPosition.startPrice, underlying)} →{" "}
+              {formatStrikePrice(selectedPosition.capPrice, underlying)}
+            </span>
+            {onSelectPosition && (
+              <button
+                type="button"
+                onClick={() => onSelectPosition(null)}
+                aria-label={
+                  locale === "zh" ? "返回下单预览" : "Return to order preview"
+                }
+                className="inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded-full text-[#7e8690] hover:bg-white/10 hover:text-white active:bg-white/15 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-white/70"
+              >
+                <X className="h-3 w-3" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Scheme A1 Track-Side Floating Scrub Readout (tracks handle smoothly, shows payout + net PnL) */}
         {scrubSummary && (
           <div
             role="status"
@@ -760,7 +844,7 @@ export function KlineChart({
               right: `${scrubTagRight}px`,
               top: `${scrubTagY}px`,
             }}
-            className="absolute z-20 flex max-w-[calc(100%-36px)] -translate-y-1/2 items-center gap-1.5 rounded-lg border border-white/12 bg-[#121417]/95 px-2.5 py-1 text-[11px] leading-none tabular-nums shadow-[0_6px_24px_rgba(0,0,0,0.85)] backdrop-blur-sm"
+            className="absolute z-20 flex max-w-[calc(100%-36px)] -translate-y-1/2 items-center gap-1.5 rounded-lg border border-white/12 bg-[#121417]/95 pl-2.5 pr-1 py-0.5 text-[11px] leading-none tabular-nums shadow-[0_6px_24px_rgba(0,0,0,0.85)] backdrop-blur-sm"
           >
             <strong className="font-semibold text-white whitespace-nowrap">
               {formatStrikePrice(scrubSummary.price, underlying)}
@@ -779,17 +863,17 @@ export function KlineChart({
             >
               ${scrubSummary.payoutUsdt.toFixed(2)}
             </strong>
-            {scrubSummary.payoutUsdt > 0 &&
-              scrubSummary.payoutUsdt < scrubSummary.stakeUsdt && (
-                <span className="hidden sm:inline text-[10px] font-semibold text-[#E6BA5C] whitespace-nowrap">
-                  · {t.outcomePartialBadge}
-                </span>
-              )}
+            <span
+              className="font-semibold whitespace-nowrap"
+              style={{ color: pnlColor }}
+            >
+              ({formatSignedUsd(scrubSummary.pnlUsdt)})
+            </span>
             <button
               type="button"
               onClick={() => setScrubPrice(null)}
               aria-label={locale === "zh" ? "清除试算" : "Clear simulation"}
-              className="ml-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[#7e8690] hover:bg-white/10 hover:text-white transition cursor-pointer focus-visible:outline-2 focus-visible:outline-white/70"
+              className="inline-flex min-h-6 min-w-6 shrink-0 items-center justify-center rounded-md text-[#7e8690] hover:bg-white/10 hover:text-white active:bg-white/15 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-white/70"
             >
               <X className="h-3 w-3" aria-hidden="true" />
             </button>
@@ -933,18 +1017,22 @@ export function KlineChart({
                 strokeWidth={1}
                 strokeDasharray="2 4"
               />
-              {/* Subtle Start / Floor guide */}
+              {/* Start / Floor guide (emphasized when adjusting Start in Custom mode) */}
               <line
                 x1={nowX}
                 y1={activeZone.yStart}
                 x2={expiryX}
                 y2={activeZone.yStart}
-                stroke="rgba(255,255,255,0.11)"
-                strokeWidth={1}
+                stroke={
+                  activeZone.isCustomDraft
+                    ? "rgba(255,255,255,0.34)"
+                    : "rgba(255,255,255,0.11)"
+                }
+                strokeWidth={activeZone.isCustomDraft ? 1.25 : 1}
                 strokeDasharray="2 4"
               />
 
-              {/* Quiet micro inner labels (never clip, auto-hide when tight) */}
+              {/* Quiet micro inner labels (never clip, auto-hide when tight or overlapped by scrub readout) */}
               {activeZone.showBeLabel && (
                 <text
                   x={nowX + 8}
@@ -952,7 +1040,13 @@ export function KlineChart({
                   fontSize={9.5}
                   fontWeight={500}
                   fill="#6f7782"
+                  opacity={
+                    scrubSummary && Math.abs(scrubTagY - activeZone.beLabelY) < 20
+                      ? 0
+                      : 1
+                  }
                   pointerEvents="none"
+                  className="transition-opacity duration-150 motion-reduce:transition-none"
                   style={{ fontVariantNumeric: "tabular-nums" }}
                 >
                   {activeZone.beLabelText}
@@ -963,22 +1057,35 @@ export function KlineChart({
                   x={nowX + 8}
                   y={activeZone.startLabelY}
                   fontSize={9.5}
-                  fontWeight={500}
-                  fill="#525963"
+                  fontWeight={activeZone.isCustomDraft ? 600 : 500}
+                  fill={activeZone.isCustomDraft ? "#9aa2ad" : "#525963"}
+                  opacity={
+                    scrubSummary &&
+                    Math.abs(scrubTagY - activeZone.startLabelY) < 20
+                      ? 0
+                      : 1
+                  }
                   pointerEvents="none"
+                  className="transition-opacity duration-150 motion-reduce:transition-none"
                   style={{ fontVariantNumeric: "tabular-nums" }}
                 >
                   {activeZone.startLabelText}
                 </text>
               )}
 
-              {/* Borderless Editorial Cap Typography (right-aligned inside canvas, zero pill chrome) */}
+              {/* Borderless Editorial Cap Typography (right-aligned inside canvas, auto-fades if overlapped by scrub pill) */}
               <text
                 x={expiryX - 8}
                 y={activeZone.capTextY}
                 textAnchor="end"
                 fontSize={isNarrow ? 10.5 : 11}
+                opacity={
+                  scrubSummary && Math.abs(scrubTagY - activeZone.capTextY) < 24
+                    ? 0
+                    : 1
+                }
                 pointerEvents="none"
+                className="transition-opacity duration-150 motion-reduce:transition-none"
                 style={{ fontVariantNumeric: "tabular-nums" }}
               >
                 <tspan fontWeight={700} fill={activeZone.col}>
@@ -1149,7 +1256,7 @@ export function KlineChart({
               />
               <text
                 x={8}
-                y={13}
+                y={selectedPosition ? 38 : 13}
                 fontSize={10.5}
                 fontWeight={600}
                 fill={MID_TEXT}
@@ -1163,65 +1270,6 @@ export function KlineChart({
               </text>
             </g>
           )}
-
-          {/* Multi-Position Compact Vertical Profit-Zone Bars beside expiryX */}
-          {visibleBars.map((p, idx) => {
-            const posId = p.tokenId || p.seriesId;
-            const yHi = yOf(p.upperStrike);
-            const yLo = yOf(p.lowerStrike);
-            const top = Math.min(yHi, yLo);
-            const barH = Math.max(8, Math.abs(yLo - yHi));
-            const bx = barStartX + idx * 7;
-            const col = p.direction === "BEAR" ? DOWN_CORAL : UP_GREEN;
-            const isSel = Boolean(
-              selectedPositionId &&
-                (p.tokenId === selectedPositionId ||
-                  p.seriesId === selectedPositionId)
-            );
-            const hasSel = Boolean(selectedPositionId);
-            const opacity = isSel ? 1 : hasSel ? 0.34 : 0.82;
-
-            return (
-              <g
-                key={posId}
-                role={onSelectPosition ? "button" : undefined}
-                tabIndex={onSelectPosition ? 0 : undefined}
-                aria-label={`${p.direction === "BULL" ? t.bull : t.bear} ${formatStrikePrice(p.capPrice, p.underlying)}`}
-                onClick={(ev) => {
-                  if (!onSelectPosition) return;
-                  ev.stopPropagation();
-                  onSelectPosition(isSel ? null : posId);
-                }}
-                onKeyDown={(ev) => {
-                  if (!onSelectPosition) return;
-                  if (ev.key === "Enter" || ev.key === " ") {
-                    ev.preventDefault();
-                    onSelectPosition(isSel ? null : posId);
-                  }
-                }}
-                className={onSelectPosition ? "cursor-pointer" : undefined}
-              >
-                <rect
-                  x={bx - 3}
-                  y={top - 4}
-                  width={10}
-                  height={barH + 8}
-                  fill="transparent"
-                />
-                <rect
-                  x={bx}
-                  y={top}
-                  width={4}
-                  height={barH}
-                  rx={2}
-                  fill={col}
-                  fillOpacity={opacity}
-                  stroke={isSel ? "rgba(255,255,255,0.55)" : "none"}
-                  strokeWidth={isSel ? 0.8 : 0}
-                />
-              </g>
-            );
-          })}
 
           {/* Active Scrub Horizontal Guide Line (readout floats cleanly beside handle) */}
           {activeScrubPrice !== null && (
@@ -1274,7 +1322,7 @@ export function KlineChart({
               top: `${padTop - 4}px`,
               height: `${plotH + 8}px`,
             }}
-            className="absolute z-10 w-11 touch-none cursor-ns-resize focus-visible:outline-2 focus-visible:outline-white/70 focus-visible:rounded-full"
+            className="absolute z-10 w-11 touch-pan-x cursor-ns-resize focus-visible:outline-2 focus-visible:outline-white/70 focus-visible:rounded-full"
           >
             <div
               aria-hidden="true"

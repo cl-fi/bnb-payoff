@@ -143,13 +143,35 @@ const dict = {
     noLiqNote: "盘中插针不爆仓 · 满额赔付链上锁仓",
     savePct: (p: string) => `省 ${p}%`,
 
-    // Option A Target Cap Slider + Editable Amount Bar + Math Line + CTAs
+    // Option A Target Cap Slider + Quick/Custom Mode + Editable Amount Bar + Math Line + CTAs
+    rangeModeGroupLabel: "区间模式",
+    modeQuick: "快捷",
+    modeCustom: "自定义",
     capPriceLabel: "封顶价",
+    startPriceLabel: "起赚线",
+    stepPrevLabel: (price: string) => `向左微调至 ${fmtUsd(price)}`,
+    stepNextLabel: (price: string) => `向右微调至 ${fmtUsd(price)}`,
+    customWidthSummary: (widthPct: string, maxWidthPct: string) =>
+      `宽度 ${widthPct}% / 上限 ${maxWidthPct}%`,
+    customFairRangeSummary: (minMult: string, maxMult: string) =>
+      `公允范围 ${minMult}x–${maxMult}x`,
+    customClampWidthCap: (maxWidthPct: string) =>
+      `封顶价已按宽度上限（≤ ${maxWidthPct}%）自动限位`,
+    customClampOtmFair: (maxMult: string) =>
+      `封顶价已按虚值公允边界（最高约 ${maxMult}x）自动限位`,
+    customClampItmFair: (minMult: string) =>
+      `封顶价已按实值公允下限（≥ ${minMult}x）自动限位`,
+    customClampStartOtmFair: (maxMult: string) =>
+      `起赚线已按虚值公允边界（最高约 ${maxMult}x）自动限位`,
+    customClampStartItmFair: (minMult: string) =>
+      `起赚线已按实值公允下限（≥ ${minMult}x）自动限位`,
+    customClampOrdering: "封顶价已随起赚线自动顺移至有效档位",
+    customClampStrikeAlign: "区间已自动对齐至标准行权价刻度",
+    customSingleCapHint: "边界唯一有效档",
     sliderTargetHint: (op: "≥" | "≤", price: string, pct: string) =>
       `封顶价 ${op} ${fmtUsd(price)} (${pct})`,
     stakeInputLabel: "投入金额",
-    amountQuickAdd10: "+$10",
-    amountQuickAdd50: "+$50",
+    amountQuickAdd100: "+$100",
     amountMax: "最大",
     mathStartShort: (price: string) => `起赚线 ${fmtUsd(price)}`,
     mathBreakevenShort: (price: string) => `回本 ${fmtUsd(price)}`,
@@ -560,13 +582,35 @@ const dict = {
     noLiqNote: "Wick-proof · Full payout locked on-chain",
     savePct: (p: string) => `Save ${p}%`,
 
-    // Option A Target Cap Slider + Editable Amount Bar + Math Line + CTAs
+    // Option A Target Cap Slider + Quick/Custom Mode + Editable Amount Bar + Math Line + CTAs
+    rangeModeGroupLabel: "Range mode",
+    modeQuick: "Quick",
+    modeCustom: "Custom",
     capPriceLabel: "Target cap",
+    startPriceLabel: "Start",
+    stepPrevLabel: (price: string) => `Step left to ${fmtUsd(price)}`,
+    stepNextLabel: (price: string) => `Step right to ${fmtUsd(price)}`,
+    customWidthSummary: (widthPct: string, maxWidthPct: string) =>
+      `Width ${widthPct}% / ${maxWidthPct}% max`,
+    customFairRangeSummary: (minMult: string, maxMult: string) =>
+      `Fair ${minMult}x–${maxMult}x`,
+    customClampWidthCap: (maxWidthPct: string) =>
+      `Target cap auto-clamped to width limit (≤ ${maxWidthPct}%)`,
+    customClampOtmFair: (maxMult: string) =>
+      `Target cap auto-clamped to OTM fair limit (~${maxMult}x max)`,
+    customClampItmFair: (minMult: string) =>
+      `Target cap auto-clamped to ITM fair floor (≥ ${minMult}x)`,
+    customClampStartOtmFair: (maxMult: string) =>
+      `Start auto-clamped to OTM fair limit (~${maxMult}x max)`,
+    customClampStartItmFair: (minMult: string) =>
+      `Start auto-clamped to ITM fair floor (≥ ${minMult}x)`,
+    customClampOrdering: "Target cap shifted to stay past Start",
+    customClampStrikeAlign: "Range auto-aligned to standard strike ticks",
+    customSingleCapHint: "Only valid cap here",
     sliderTargetHint: (op: "≥" | "≤", price: string, pct: string) =>
       `Cap ${op} ${fmtUsd(price)} (${pct})`,
     stakeInputLabel: "Amount",
-    amountQuickAdd10: "+$10",
-    amountQuickAdd50: "+$50",
+    amountQuickAdd100: "+$100",
     amountMax: "Max",
     mathStartShort: (price: string) => `Start ${fmtUsd(price)}`,
     mathBreakevenShort: (price: string) => `Breakeven ${fmtUsd(price)}`,

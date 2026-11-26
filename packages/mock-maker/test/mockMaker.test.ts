@@ -9,10 +9,12 @@ import {
   bsOptionPrice,
   CLOSE_QUOTE_TYPES,
   computeSeriesId,
+  estimateCustomTicketPreview,
   generateOccEquityStrikes,
   getPayoffEip712Domain,
   OPEN_QUOTE_TYPES,
   priceToUnits,
+  resolveClampedCustomRange,
   usdtToUnits,
   type AtlasFeedTelemetry,
   type ExpiryBook,
@@ -1044,5 +1046,528 @@ describe("@payoff/mock-maker NVDAB RWA shelf, 24/7 regimes, Put-Call Parity & ci
       signature: signedCloseSplit.signature,
     });
     expect(recoveredClose.toLowerCase()).toBe(makerAccount.address.toLowerCase());
+  });
+});
+
+describe("@payoff/mock-maker Quick fine-step slider & Custom dual-range fair bounds", () => {
+  function buildDenseBook(
+    underlying: "BTC" | "ETH" | "NVDAB",
+    spot: number,
+    tenor: ExpiryTenor,
+    iv: number,
+    hoursToExpiry: number
+  ): ExpiryBook {
+    const expiry = 1_800_000_000;
+    let strikes: number[];
+    if (underlying === "NVDAB") {
+      strikes = generateOccEquityStrikes(spot, 0.3);
+    } else {
+      const step = underlying === "BTC" ? 500 : 25;
+      const center = Math.round(spot / step) * step;
+      const half = Math.max(16, Math.ceil((spot * 0.3) / step));
+      strikes = [];
+      for (let i = -half; i <= half; i++) {
+        const k = center + i * step;
+        if (k > 0) strikes.push(k);
+      }
+    }
+    const T = hoursToExpiry / (365 * 24);
+    const syntheticStrikes: Record<number, OptionStrikeQuote> = {};
+    for (const strike of strikes) {
+      const cFair = bsOptionPrice(true, spot, strike, T, iv);
+      const pFair = bsOptionPrice(false, spot, strike, T, iv);
+      const half = Math.max(0.01, spot * 0.0004);
+      syntheticStrikes[strike] = {
+        strike,
+        call: {
+          strike,
+          instId: `${underlying}-TEST-${strike}-C`,
+          bidUsd: Math.max(0.01, cFair - half),
+          askUsd: Math.max(0.02, cFair + half),
+          markUsd: cFair,
+          iv,
+          bidSize: 50,
+          askSize: 50,
+        },
+        put: {
+          strike,
+          instId: `${underlying}-TEST-${strike}-P`,
+          bidUsd: Math.max(0.01, pFair - half),
+          askUsd: Math.max(0.02, pFair + half),
+          markUsd: pFair,
+          iv,
+          bidSize: 50,
+          askSize: 50,
+        },
+      };
+    }
+    return {
+      underlying,
+      tenor,
+      expiry,
+      expiryIso: new Date(expiry * 1000).toISOString(),
+      hoursToExpiry,
+      spot,
+      atmIv: iv,
+      availableStrikes: strikes,
+      syntheticStrikes,
+    };
+  }
+
+  it("densifies Quick mode to native fine steps (BTC $500, ETH $25, NVDA OCC) within width & fair guardrails", () => {
+    const cases: Array<{
+      underlying: "BTC" | "ETH" | "NVDAB";
+      spot: number;
+      tenor: ExpiryTenor;
+      iv: number;
+      hours: number;
+      expectedStep?: number;
+      minBullCount: number;
+      minBearCount: number;
+    }> = [
+      { underlying: "BTC", spot: 61500, tenor: "DAILY", iv: 0.6, hours: 24, expectedStep: 500, minBullCount: 8, minBearCount: 7 },
+      { underlying: "BTC", spot: 61500, tenor: "WEEKLY", iv: 0.6, hours: 144, expectedStep: 500, minBullCount: 12, minBearCount: 12 },
+      { underlying: "ETH", spot: 1750, tenor: "DAILY", iv: 0.65, hours: 24, expectedStep: 25, minBullCount: 5, minBearCount: 4 },
+      { underlying: "ETH", spot: 1760, tenor: "DAILY", iv: 0.65, hours: 24, expectedStep: 25, minBullCount: 5, minBearCount: 5 },
+      { underlying: "ETH", spot: 1750, tenor: "WEEKLY", iv: 0.65, hours: 144, expectedStep: 25, minBullCount: 9, minBearCount: 9 },
+      { underlying: "NVDAB", spot: 142.3, tenor: "DAILY", iv: 0.52, hours: 24, minBullCount: 7, minBearCount: 9 },
+      { underlying: "NVDAB", spot: 149.41, tenor: "DAILY", iv: 0.52, hours: 24, minBullCount: 4, minBearCount: 9 },
+      { underlying: "NVDAB", spot: 149.41, tenor: "WEEKLY", iv: 0.52, hours: 144, minBullCount: 7, minBearCount: 18 },
+    ];
+
+    for (const c of cases) {
+      resetFixedGridCache();
+      const book = buildDenseBook(c.underlying, c.spot, c.tenor, c.iv, c.hours);
+      for (const direction of ["BULL", "BEAR"] as const) {
+        const shelf = buildFixedGridShelf({
+          book,
+          direction,
+          stakeUsdt: 20,
+          protocolFeeBps: 400,
+        });
+
+        expect(shelf.tiers).toHaveLength(4);
+        const expectedMin = direction === "BULL" ? c.minBullCount : c.minBearCount;
+        expect(shelf.quickTiers.length).toBeGreaterThanOrEqual(expectedMin);
+        expect(shelf.grid.defaultQuickIndex).toBeDefined();
+
+        // Default Quick tier matches canonical default tier
+        const canonicalDefault = shelf.tiers[shelf.grid.defaultIndex]!;
+        const quickDefault = shelf.quickTiers[shelf.grid.defaultQuickIndex!]!;
+        expect(quickDefault.lowerStrike).toBe(canonicalDefault.lowerStrike);
+        expect(quickDefault.upperStrike).toBe(canonicalDefault.upperStrike);
+
+        for (let i = 0; i < shelf.quickTiers.length; i++) {
+          const qt = shelf.quickTiers[i]!;
+          expect(qt.guardrails.valid).toBe(true);
+          expect(qt.guardrails.widthWithinCap).toBe(true);
+          expect(qt.guardrails.withinFairBounds).toBe(true);
+          expect(qt.tierKind).not.toBe("CUSTOM");
+          expect(qt.maxMultiplier).toBeGreaterThanOrEqual(1.15);
+          expect(qt.maxMultiplier).toBeLessThanOrEqual(20.0);
+          if (direction === "BULL") {
+            expect(qt.capPrice).toBeGreaterThan(c.spot);
+          } else {
+            expect(qt.capPrice).toBeLessThan(c.spot);
+          }
+          if (i > 0) {
+            const prev = shelf.quickTiers[i - 1]!;
+            const diff = Math.abs(qt.capPrice - prev.capPrice);
+            if (c.expectedStep) {
+              expect(diff).toBe(c.expectedStep);
+            } else {
+              expect([1, 2.5, 5]).toContain(diff);
+            }
+            if (direction === "BULL") {
+              expect(qt.capPrice).toBeGreaterThan(prev.capPrice);
+            } else {
+              expect(qt.capPrice).toBeLessThan(prev.capPrice);
+            }
+            expect(qt.maxMultiplier).toBeGreaterThan(prev.maxMultiplier);
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps Quick-mode Target caps strictly on the directional side of spot while preserving fine directional intermediate strikes", () => {
+    // 1. NVDAB:WEEKLY BULL at $149.41 (gridLow=145, gridHigh=150) must exclude [146, 147, 148, 149]
+    resetFixedGridCache();
+    const nvdaWeekly149 = buildDenseBook("NVDAB", 149.41, "WEEKLY", 0.52, 144);
+    const nvdaWeekly149Bull = buildFixedGridShelf({
+      book: nvdaWeekly149,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(nvdaWeekly149Bull.grid.gridLow).toBe(145);
+    expect(nvdaWeekly149Bull.grid.gridHigh).toBe(150);
+    const nvdaWeekly149Caps = nvdaWeekly149Bull.quickTiers.map((t) => t.capPrice);
+    for (const wrongCap of [146, 147, 148, 149]) {
+      expect(nvdaWeekly149Caps).not.toContain(wrongCap);
+    }
+    expect(nvdaWeekly149Caps[0]).toBe(150);
+    expect(nvdaWeekly149Caps).toContain(152.5);
+    expect(nvdaWeekly149Caps.every((c) => c > 149.41)).toBe(true);
+
+    // 2. NVDAB:DAILY BULL at $149.41 must exclude [148, 149]
+    resetFixedGridCache();
+    const nvdaDaily149 = buildDenseBook("NVDAB", 149.41, "DAILY", 0.52, 24);
+    const nvdaDaily149Bull = buildFixedGridShelf({
+      book: nvdaDaily149,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const nvdaDaily149Caps = nvdaDaily149Bull.quickTiers.map((t) => t.capPrice);
+    expect(nvdaDaily149Caps).not.toContain(148);
+    expect(nvdaDaily149Caps).not.toContain(149);
+    expect(nvdaDaily149Caps[0]).toBe(150);
+    expect(nvdaDaily149Caps.every((c) => c > 149.41)).toBe(true);
+
+    // 3. ETH:WEEKLY at $1,785 (gridLow=1750, gridHigh=1800): BULL excludes $1,775, BEAR preserves $1,775
+    resetFixedGridCache();
+    const ethWeekly1785 = buildDenseBook("ETH", 1785, "WEEKLY", 0.65, 144);
+    const ethWeekly1785Bull = buildFixedGridShelf({
+      book: ethWeekly1785,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const eth1785BullCaps = ethWeekly1785Bull.quickTiers.map((t) => t.capPrice);
+    expect(ethWeekly1785Bull.grid.gridLow).toBe(1750);
+    expect(ethWeekly1785Bull.grid.gridHigh).toBe(1800);
+    expect(eth1785BullCaps).not.toContain(1775);
+    expect(eth1785BullCaps[0]).toBe(1800);
+    expect(eth1785BullCaps).toContain(1825);
+    expect(eth1785BullCaps.every((c) => c > 1785)).toBe(true);
+
+    const ethWeekly1785Bear = buildFixedGridShelf({
+      book: ethWeekly1785,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const eth1785BearCaps = ethWeekly1785Bear.quickTiers.map((t) => t.capPrice);
+    expect(eth1785BearCaps[0]).toBe(1775);
+    expect(eth1785BearCaps.every((c) => c < 1785)).toBe(true);
+
+    // 4. Fine directional intermediate strikes ARE preserved when on the directional side of spot:
+    //    - NVDAB:WEEKLY at $150.5 -> BULL preserves $152.5, BEAR excludes $152.5
+    resetFixedGridCache();
+    const nvdaWeekly150_5 = buildDenseBook("NVDAB", 150.5, "WEEKLY", 0.52, 144);
+    const nvda150_5Bull = buildFixedGridShelf({
+      book: nvdaWeekly150_5,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const nvda150_5BullCaps = nvda150_5Bull.quickTiers.map((t) => t.capPrice);
+    expect(nvda150_5Bull.grid.gridLow).toBe(150);
+    expect(nvda150_5Bull.grid.gridHigh).toBe(155);
+    expect(nvda150_5BullCaps[0]).toBe(152.5);
+    expect(nvda150_5BullCaps.every((c) => c > 150.5)).toBe(true);
+
+    const nvda150_5Bear = buildFixedGridShelf({
+      book: nvdaWeekly150_5,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const nvda150_5BearCaps = nvda150_5Bear.quickTiers.map((t) => t.capPrice);
+    expect(nvda150_5BearCaps).not.toContain(152.5);
+    expect(nvda150_5BearCaps[0]).toBe(150);
+    expect(nvda150_5BearCaps.every((c) => c < 150.5)).toBe(true);
+
+    //    - ETH:WEEKLY at $1,760 -> BULL preserves $1,775, BEAR excludes $1,775
+    resetFixedGridCache();
+    const ethWeekly1760 = buildDenseBook("ETH", 1760, "WEEKLY", 0.65, 144);
+    const eth1760Bull = buildFixedGridShelf({
+      book: ethWeekly1760,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const eth1760BullCaps = eth1760Bull.quickTiers.map((t) => t.capPrice);
+    expect(eth1760Bull.grid.gridLow).toBe(1750);
+    expect(eth1760Bull.grid.gridHigh).toBe(1800);
+    expect(eth1760BullCaps[0]).toBe(1775);
+    expect(eth1760BullCaps.every((c) => c > 1760)).toBe(true);
+
+    const eth1760Bear = buildFixedGridShelf({
+      book: ethWeekly1760,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const eth1760BearCaps = eth1760Bear.quickTiers.map((t) => t.capPrice);
+    expect(eth1760BearCaps).not.toContain(1775);
+    expect(eth1760BearCaps[0]).toBe(1750);
+    expect(eth1760BearCaps.every((c) => c < 1760)).toBe(true);
+
+    //    - NVDAB:WEEKLY BEAR at $145.5 (gridLow=145, gridHigh=150) excludes [149, 148, 147, 146]
+    resetFixedGridCache();
+    const nvdaWeekly145_5 = buildDenseBook("NVDAB", 145.5, "WEEKLY", 0.52, 144);
+    const nvda145_5Bear = buildFixedGridShelf({
+      book: nvdaWeekly145_5,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const nvda145_5BearCaps = nvda145_5Bear.quickTiers.map((t) => t.capPrice);
+    for (const wrongCap of [149, 148, 147, 146]) {
+      expect(nvda145_5BearCaps).not.toContain(wrongCap);
+    }
+    expect(nvda145_5BearCaps[0]).toBe(145);
+    expect(nvda145_5BearCaps.every((c) => c < 145.5)).toBe(true);
+
+    // 5. Hysteresis drift inside buffer: cached [61000, 61500], spot drifts to 61600 (+100 <= +125 hysteresis)
+    resetFixedGridCache();
+    const btcBase = buildDenseBook("BTC", 61250, "DAILY", 0.6, 24);
+    const baseShelf = buildFixedGridShelf({
+      book: btcBase,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(baseShelf.grid.gridLow).toBe(61000);
+    expect(baseShelf.grid.gridHigh).toBe(61500);
+
+    const btcDrifted = buildDenseBook("BTC", 61600, "DAILY", 0.6, 24);
+    const driftedBull = buildFixedGridShelf({
+      book: btcDrifted,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(driftedBull.grid.gridLow).toBe(61000);
+    expect(driftedBull.grid.gridHigh).toBe(61500);
+    expect(driftedBull.quickTiers.map((t) => t.capPrice)).not.toContain(61500);
+    expect(driftedBull.quickTiers[0]!.capPrice).toBe(62000);
+    expect(driftedBull.quickTiers.every((t) => t.capPrice > 61600)).toBe(true);
+
+    const driftedBear = buildFixedGridShelf({
+      book: btcDrifted,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(driftedBear.grid.anchorStartPrice).toBe(61500);
+    expect(driftedBear.quickTiers[0]!.capPrice).toBe(61000);
+    expect(driftedBear.quickTiers.every((t) => t.capPrice < 61500)).toBe(true);
+
+    // 6. Anchor fallback when spot sits outside all available strikes (zero strikes qualify past spot)
+    resetFixedGridCache();
+    const fullBtc = buildDenseBook("BTC", 61500, "DAILY", 0.6, 24);
+    const bullCappedStrikes = fullBtc.availableStrikes.filter((k) => k <= 61000);
+    const bullCappedBook: ExpiryBook = {
+      ...fullBtc,
+      availableStrikes: bullCappedStrikes,
+      syntheticStrikes: Object.fromEntries(
+        bullCappedStrikes.map((k) => [k, fullBtc.syntheticStrikes[k]!])
+      ),
+    };
+    const bullFallbackShelf = buildFixedGridShelf({
+      book: bullCappedBook,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(bullFallbackShelf.grid.anchorStartPrice).toBe(60500);
+    expect(bullFallbackShelf.quickTiers).toHaveLength(1);
+    expect(bullFallbackShelf.quickTiers[0]!.lowerStrike).toBe(60500);
+    expect(bullFallbackShelf.quickTiers[0]!.upperStrike).toBe(61000);
+
+    resetFixedGridCache();
+    const bearFlooredStrikes = fullBtc.availableStrikes.filter((k) => k >= 62000);
+    const bearFlooredBook: ExpiryBook = {
+      ...fullBtc,
+      availableStrikes: bearFlooredStrikes,
+      syntheticStrikes: Object.fromEntries(
+        bearFlooredStrikes.map((k) => [k, fullBtc.syntheticStrikes[k]!])
+      ),
+    };
+    const bearFallbackShelf = buildFixedGridShelf({
+      book: bearFlooredBook,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(bearFallbackShelf.grid.anchorStartPrice).toBe(62500);
+    expect(bearFallbackShelf.quickTiers).toHaveLength(1);
+    expect(bearFallbackShelf.quickTiers[0]!.lowerStrike).toBe(62000);
+    expect(bearFallbackShelf.quickTiers[0]!.upperStrike).toBe(62500);
+  });
+
+  it("builds valid server-authoritative Custom bounds across ITM/OTM, supports NVDA $170->$190 in high-IV weekly, blocks flat-clamped OTM, and aligns with synchronous client preview", () => {
+    resetFixedGridCache();
+    // Scenario matching user's NVDA Weekly example (spot $149.41, high IV weekly where $150->$170 is ~3.4x)
+    const nvdaHighVol = buildDenseBook("NVDAB", 149.41, "WEEKLY", 0.85, 168);
+    const bullShelf = buildFixedGridShelf({
+      book: nvdaHighVol,
+      direction: "BULL",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const cfg = bullShelf.customConfig;
+
+    // Valid starts span ITM below spot AND OTM up to >= $170 (never extreme flat-clamped OTM)
+    expect(cfg.validStarts[0]).toBeLessThan(145);
+    expect(cfg.validStarts).toContain(170);
+    expect(cfg.validCapsByStart["170"]).toContain(190);
+
+    // Every single (start, cap) pair in customConfig passes full priceSpreadOnVenue guardrails & stays strictly out of 21.37x clamp
+    for (const start of cfg.validStarts) {
+      const caps = cfg.validCapsByStart[String(start)]!;
+      expect(caps.length).toBeGreaterThan(0);
+      for (const cap of caps) {
+        const priced = priceSpreadOnVenue({
+          book: nvdaHighVol,
+          tierKind: "CUSTOM",
+          tierLabel: "Custom Range",
+          direction: "BULL",
+          lowerStrike: start,
+          upperStrike: cap,
+          stakeUsdt: 20,
+          protocolFeeBps: 400,
+          mmOpenMarkupBps: 110,
+        });
+        expect(priced.summary.guardrails.valid).toBe(true);
+        expect(priced.summary.guardrails.widthWithinCap).toBe(true);
+        expect(priced.summary.guardrails.withinFairBounds).toBe(true);
+        expect(priced.summary.maxMultiplier).toBeGreaterThanOrEqual(1.15);
+        expect(priced.summary.maxMultiplier).toBeLessThanOrEqual(20.0);
+      }
+    }
+
+    // Extreme OTM ($180 -> $195) is rejected by fair-pricing OTM guardrail
+    const extremeOtm = priceSpreadOnVenue({
+      book: nvdaHighVol,
+      tierKind: "CUSTOM",
+      tierLabel: "Custom Range",
+      direction: "BULL",
+      lowerStrike: 180,
+      upperStrike: 195,
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+      mmOpenMarkupBps: 110,
+    });
+    expect(extremeOtm.summary.guardrails.valid).toBe(false);
+    expect(extremeOtm.summary.guardrails.withinFairBounds).toBe(false);
+
+    // Client synchronous preview matches server priceSpreadOnVenue within < 1.5% on $170 -> $190
+    const server170to190 = priceSpreadOnVenue({
+      book: nvdaHighVol,
+      tierKind: "CUSTOM",
+      tierLabel: "Custom Range",
+      direction: "BULL",
+      lowerStrike: 170,
+      upperStrike: 190,
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+      mmOpenMarkupBps: 110,
+    }).summary;
+    const client170to190 = estimateCustomTicketPreview({
+      underlying: "NVDAB",
+      direction: "BULL",
+      tenor: "WEEKLY",
+      expiry: nvdaHighVol.expiry,
+      availableStrikes: nvdaHighVol.availableStrikes,
+      lowerStrike: 170,
+      upperStrike: 190,
+      stakeUsdt: 20,
+      config: cfg,
+    });
+    const relDiff =
+      Math.abs(client170to190.maxPayoutUsdt - server170to190.maxPayoutUsdt) /
+      server170to190.maxPayoutUsdt;
+    expect(relDiff).toBeLessThan(0.015);
+
+    // Verify BEAR customConfig ordering (ITM high -> OTM low) & auto-clamping
+    const bearShelf = buildFixedGridShelf({
+      book: nvdaHighVol,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    const bearCfg = bearShelf.customConfig;
+    expect(bearCfg.validStarts.length).toBeGreaterThan(5);
+    expect(bearCfg.validStarts[0]!).toBeGreaterThan(
+      bearCfg.validStarts[bearCfg.validStarts.length - 1]!
+    );
+    const clampedBear = resolveClampedCustomRange({
+      config: bearCfg,
+      direction: "BEAR",
+      desiredStart: bearCfg.validStarts[bearCfg.validStarts.length - 1]!,
+      desiredCap: 195, // above Start -> ORDERING clamp
+    });
+    expect(clampedBear?.clampReason).toBe("ORDERING");
+    expect(clampedBear!.lowerStrike).toBeLessThan(clampedBear!.upperStrike);
+
+    // Flat IV book omits strikeIvs payload; skewed NVDA equity smile includes strikeIvs and avoids false invalid previews
+    expect(cfg.pricingParams.strikeIvs).toBeUndefined();
+    const skewedNvda = buildDenseBook("NVDAB", 149.41, "WEEKLY", 0.55, 144);
+    const Tskew = 144 / (365 * 24);
+    for (const k of skewedNvda.availableStrikes) {
+      const m = Math.log(k / 149.41);
+      const siv = Math.max(0.25, Math.min(1.5, 0.55 - 0.65 * m + 1.2 * m * m));
+      const cFair = bsOptionPrice(true, 149.41, k, Tskew, siv);
+      const pFair = bsOptionPrice(false, 149.41, k, Tskew, siv);
+      const half = Math.max(0.01, 149.41 * 0.0004);
+      skewedNvda.syntheticStrikes[k] = {
+        strike: k,
+        call: {
+          ...skewedNvda.syntheticStrikes[k]!.call,
+          bidUsd: Math.max(0.01, cFair - half),
+          askUsd: Math.max(0.02, cFair + half),
+          markUsd: cFair,
+          iv: siv,
+        },
+        put: {
+          ...skewedNvda.syntheticStrikes[k]!.put,
+          bidUsd: Math.max(0.01, pFair - half),
+          askUsd: Math.max(0.02, pFair + half),
+          markUsd: pFair,
+          iv: siv,
+        },
+      };
+    }
+    const skewedBearShelf = buildFixedGridShelf({
+      book: skewedNvda,
+      direction: "BEAR",
+      stakeUsdt: 20,
+      protocolFeeBps: 400,
+    });
+    expect(skewedBearShelf.customConfig.pricingParams.strikeIvs).toBeDefined();
+    for (const s of skewedBearShelf.customConfig.validStarts) {
+      for (const cap of skewedBearShelf.customConfig.validCapsByStart[String(s)]!) {
+        const srv = priceSpreadOnVenue({
+          book: skewedNvda,
+          tierKind: "CUSTOM",
+          tierLabel: "Custom Range",
+          direction: "BEAR",
+          lowerStrike: cap,
+          upperStrike: s,
+          stakeUsdt: 20,
+          protocolFeeBps: 400,
+          mmOpenMarkupBps: 110,
+        }).summary;
+        const cli = estimateCustomTicketPreview({
+          underlying: "NVDAB",
+          direction: "BEAR",
+          tenor: "WEEKLY",
+          expiry: skewedNvda.expiry,
+          availableStrikes: skewedNvda.availableStrikes,
+          lowerStrike: cap,
+          upperStrike: s,
+          stakeUsdt: 20,
+          config: skewedBearShelf.customConfig,
+        });
+        expect(cli.guardrails.valid).toBe(true);
+        const diff =
+          Math.abs(cli.maxPayoutUsdt - srv.maxPayoutUsdt) / srv.maxPayoutUsdt;
+        expect(diff).toBeLessThan(0.04);
+      }
+    }
   });
 });

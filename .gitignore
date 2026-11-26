@@ -18,3 +18,4 @@ data/*.sqlite*
 packages/contracts/deployments/localhost.json
 .vercel
 pitch_materials/
+docs/ui-redesign/*

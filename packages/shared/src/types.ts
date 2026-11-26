@@ -175,6 +175,10 @@ export interface GuardrailResult {
   maxAllowedWidthPct: number;
   shortLegSubsidyRatio: number;
   lowMultiplierWarning: boolean;
+  /** True when unclamped fair value & multiplier sit strictly inside fair OTM/ITM bounds (~1.15x–20x) */
+  withinFairBounds?: boolean;
+  /** Unclamped Black-Scholes fair value as a fraction of spread width in [0, 1] */
+  rawFairRatio?: number;
 }
 
 /**
@@ -235,6 +239,61 @@ export interface FixedGridMeta {
   gridHigh: number;
   anchorStartPrice: number;
   defaultIndex: number;
+  /** Default selected index within fine-grained `quickTiers` */
+  defaultQuickIndex?: number;
+}
+
+export interface CustomRangePricingParams {
+  spot: number;
+  hoursToExpiry: number;
+  baseIv: number;
+  effectiveIv: number;
+  /** Optional additive IV floor boost from Atlas/RWA risk adjustments */
+  ivFloorBoost?: number;
+  /** Optional per-strike symmetric IV map (keyed by String(strike)) when skew is non-flat */
+  strikeIvs?: Record<string, number>;
+  varianceTimeScale: number;
+  spreadMultiplier: number;
+  protocolFeeBps: number;
+  mmOpenMarkupBps: number;
+}
+
+export interface CustomRangeConfig {
+  /** Valid Start strikes ordered from conservative (ITM) -> ATM -> aggressive (OTM) */
+  validStarts: number[];
+  /** Valid Target cap strikes per Start strike (keyed by String(start)), ordered closest-to-start -> furthest-from-start */
+  validCapsByStart: Record<string, number[]>;
+  /** Default Start strike for Custom mode (matches Quick anchorStartPrice when valid) */
+  defaultStart: number;
+  /** Default Target cap strike for Custom mode */
+  defaultCap: number;
+  /** Tenor-dependent max spread width (% of spot) */
+  maxAllowedWidthPct: number;
+  /** Selectable Custom multiplier lower bound (ITM fair floor) */
+  minMultiplier: number;
+  /** Selectable Custom multiplier upper bound (OTM fair ceiling) */
+  maxMultiplier: number;
+  /** Exact server pricing inputs for zero-latency client preview while dragging */
+  pricingParams: CustomRangePricingParams;
+}
+
+export type CustomClampReason =
+  | "NONE"
+  | "ORDERING"
+  | "WIDTH_CAP"
+  | "OTM_FAIR_LIMIT"
+  | "ITM_FAIR_LIMIT"
+  | "STRIKE_ALIGN";
+
+export interface ClampedCustomSelection {
+  startPrice: number;
+  capPrice: number;
+  lowerStrike: number;
+  upperStrike: number;
+  validCaps: number[];
+  startClamped: boolean;
+  capClamped: boolean;
+  clampReason: CustomClampReason;
 }
 
 export interface HedgeEvaluation {

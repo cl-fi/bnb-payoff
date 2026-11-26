@@ -1,9 +1,15 @@
 import {
+  MAX_CUSTOM_MULTIPLIER,
+  MAX_FAIR_VALUE_RATIO,
+  MIN_CUSTOM_MULTIPLIER,
+  MIN_FAIR_VALUE_RATIO,
   bsOptionPrice,
+  computeMaxAllowedWidthPct,
   computeTicketNumbers,
   evaluateSpreadHedgeRoutes,
   validateCustomSpreadRange,
   type AtlasFeedTelemetry,
+  type CustomRangeConfig,
   type Direction,
   type ExpiryBook,
   type ExpiryTenor,
@@ -402,15 +408,13 @@ export function computeCombinedRiskAdjustments(
   };
 }
 
-/**
- * Computes the no-arbitrage fair mid price per 1.0 unit of spread `[lowerStrike, upperStrike]`
- * using European Black-Scholes anchored on live Atlas Oracle spot and synthetic reference quotes.
- *
- * Enforces strict Put-Call Parity:
- *   computeFairSpreadUnitUsd(book, true, K1, K2) + computeFairSpreadUnitUsd(book, false, K1, K2) === K2 - K1
- * with both sides clamped to `[0.04 * width, 0.96 * width]`.
- */
-export function computeFairSpreadUnitUsd(
+interface FairSpreadDetails {
+  rawFairUsd: number;
+  clampedFairUsd: number;
+  rawFairRatio: number;
+}
+
+function computeFairSpreadDetails(
   book: ExpiryBook,
   isCall: boolean,
   lowerStrike: number,
@@ -418,9 +422,11 @@ export function computeFairSpreadUnitUsd(
   hoursRemainingOverride?: number,
   atlasTelemetry?: AtlasFeedTelemetry,
   rwaTelemetry?: RwaAssetTelemetry | null
-): number {
+): FairSpreadDetails {
   const width = upperStrike - lowerStrike;
-  if (width <= 0) return 0;
+  if (width <= 0) {
+    return { rawFairUsd: 0, clampedFairUsd: 0, rawFairRatio: 0 };
+  }
 
   const effectiveRwa =
     rwaTelemetry === null ? undefined : (rwaTelemetry ?? book.rwaTelemetry);
@@ -506,8 +512,42 @@ export function computeFairSpreadUnitUsd(
     }
   }
 
+  const rawFairUsd = clamp(isCall ? rawCallFair : width - rawCallFair, 0, width);
   const clampedCallFair = clamp(rawCallFair, 0.04 * width, 0.96 * width);
-  return isCall ? clampedCallFair : width - clampedCallFair;
+  const clampedFairUsd = isCall ? clampedCallFair : width - clampedCallFair;
+  return {
+    rawFairUsd,
+    clampedFairUsd,
+    rawFairRatio: rawFairUsd / width,
+  };
+}
+
+/**
+ * Computes the no-arbitrage fair mid price per 1.0 unit of spread `[lowerStrike, upperStrike]`
+ * using European Black-Scholes anchored on live Atlas Oracle spot and synthetic reference quotes.
+ *
+ * Enforces strict Put-Call Parity:
+ *   computeFairSpreadUnitUsd(book, true, K1, K2) + computeFairSpreadUnitUsd(book, false, K1, K2) === K2 - K1
+ * with both sides clamped to `[0.04 * width, 0.96 * width]`.
+ */
+export function computeFairSpreadUnitUsd(
+  book: ExpiryBook,
+  isCall: boolean,
+  lowerStrike: number,
+  upperStrike: number,
+  hoursRemainingOverride?: number,
+  atlasTelemetry?: AtlasFeedTelemetry,
+  rwaTelemetry?: RwaAssetTelemetry | null
+): number {
+  return computeFairSpreadDetails(
+    book,
+    isCall,
+    lowerStrike,
+    upperStrike,
+    hoursRemainingOverride,
+    atlasTelemetry,
+    rwaTelemetry
+  ).clampedFairUsd;
 }
 
 /**
@@ -676,7 +716,7 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
   // When telemetry triggers an IV floor boost or off-hours variance-time scaling, use the conservative
   // upper fair bound across [baseline, adjusted] so vol/session shifts never underprice ITM spreads
   // while strictly preserving UP_ask + DOWN_ask > width.
-  const baseFairMidUsd = computeFairSpreadUnitUsd(
+  const baseDetails = computeFairSpreadDetails(
     book,
     isCall,
     lowerStrike,
@@ -685,9 +725,9 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
     undefined,
     null
   );
-  const adjustedFairMidUsd =
+  const adjustedDetails =
     consensusRisk.ivFloorBoost > 0 || consensusRisk.varianceTimeScale !== 1.0
-      ? computeFairSpreadUnitUsd(
+      ? computeFairSpreadDetails(
           book,
           isCall,
           lowerStrike,
@@ -696,8 +736,15 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
           atlasTelemetry,
           effectiveRwa
         )
-      : baseFairMidUsd;
-  const conservativeAskFairUsd = Math.max(baseFairMidUsd, adjustedFairMidUsd);
+      : baseDetails;
+  const conservativeAskFairUsd = Math.max(
+    baseDetails.clampedFairUsd,
+    adjustedDetails.clampedFairUsd
+  );
+  const conservativeRawFairRatio = Math.max(
+    baseDetails.rawFairRatio,
+    adjustedDetails.rawFairRatio
+  );
   const mmOpenUnitUsd = computeMmOpenUnitUsd(
     conservativeAskFairUsd,
     width,
@@ -759,6 +806,7 @@ export function priceSpreadOnVenue(params: PriceSpreadParams): PricedSpreadResul
     availableStrikes: book.availableStrikes,
     maxMultiplier,
     shortLegSubsidyRatio: hedge.shortLegSubsidyRatio,
+    rawFairRatio: conservativeRawFairRatio,
   });
 
   const summary = computeTicketNumbers({
@@ -985,9 +1033,224 @@ export interface FixedGridShelfParams {
 
 export interface FixedGridShelfResult {
   grid: FixedGridMeta;
+  /** 4 canonical preset tiers (preserved for backward compatibility & anchor presets) */
   tiers: TicketSummary[];
+  /** Dense Quick-mode slider options at native strike granularity within guardrails */
+  quickTiers: TicketSummary[];
+  /** Server-authoritative Custom-mode Start & Target cap bounds + live preview params */
+  customConfig: CustomRangeConfig;
   consensusRisk: ConsensusRiskAdjustment;
   rwaRisk?: RwaRiskAdjustment;
+}
+
+export interface BuildCustomRangeConfigParams {
+  book: ExpiryBook;
+  direction: Direction;
+  protocolFeeBps: number;
+  mmOpenMarkupBps?: number;
+  atlasTelemetry?: AtlasFeedTelemetry;
+  rwaTelemetry?: RwaAssetTelemetry;
+  preferredStart?: number;
+  preferredCap?: number;
+}
+
+/**
+ * Computes the exact server-authoritative Custom-mode feasibility grid:
+ * - Every Start in `validStarts` (ordered conservative ITM -> ATM -> aggressive OTM)
+ *   has at least one valid Target cap.
+ * - Every `(start, cap)` satisfies strike alignment, tenor width cap, and fair OTM/ITM
+ *   bounds (`rawFairRatio` in `[0.045, 0.85]` & multiplier in `[1.15x, 20.0x]`).
+ */
+export function buildCustomRangeConfig(
+  params: BuildCustomRangeConfigParams
+): CustomRangeConfig {
+  const {
+    book,
+    direction,
+    protocolFeeBps,
+    mmOpenMarkupBps = DEFAULT_MM_OPEN_MARKUP_BPS,
+    atlasTelemetry,
+    rwaTelemetry,
+    preferredStart,
+    preferredCap,
+  } = params;
+
+  const isCall = direction === "BULL";
+  const effectiveRwa = rwaTelemetry ?? book.rwaTelemetry;
+  const consensusRisk = computeCombinedRiskAdjustments(
+    atlasTelemetry,
+    effectiveRwa
+  );
+  const effectiveIv = clamp(
+    book.atmIv + consensusRisk.ivFloorBoost,
+    0.1,
+    3.0
+  );
+  const maxAllowedWidthPct = computeMaxAllowedWidthPct(
+    book.tenor,
+    book.hoursToExpiry,
+    effectiveIv
+  );
+  const mmNetRatio = 1 - protocolFeeBps / (10_000 + protocolFeeBps);
+  const hasRiskShift =
+    consensusRisk.ivFloorBoost > 0 || consensusRisk.varianceTimeScale !== 1.0;
+
+  const sortedStrikes = [...book.availableStrikes].sort((a, b) => a - b);
+  // Guard performance on very wide external chains (e.g. 200+ strikes) while keeping generous ±55% headroom
+  const scopedStrikes =
+    sortedStrikes.length > 120 && book.spot > 0
+      ? sortedStrikes.filter(
+          (k) => k >= book.spot * 0.45 && k <= book.spot * 1.65
+        )
+      : sortedStrikes;
+
+  const candidateStarts = isCall
+    ? scopedStrikes
+    : [...scopedStrikes].reverse();
+
+  const validStarts: number[] = [];
+  const validCapsByStart: Record<string, number[]> = {};
+
+  for (const startStrike of candidateStarts) {
+    if (!book.syntheticStrikes[startStrike]) continue;
+
+    const candidateCaps = isCall
+      ? scopedStrikes.filter((k) => k > startStrike)
+      : [...scopedStrikes].reverse().filter((k) => k < startStrike);
+
+    const validCaps: number[] = [];
+    for (const capStrike of candidateCaps) {
+      if (!book.syntheticStrikes[capStrike]) continue;
+      const lowerStrike = isCall ? startStrike : capStrike;
+      const upperStrike = isCall ? capStrike : startStrike;
+      const width = upperStrike - lowerStrike;
+      if (width <= 0 || book.spot <= 0) continue;
+
+      const widthPct = (width / book.spot) * 100;
+      if (widthPct > maxAllowedWidthPct + 0.05) {
+        // Caps are ordered outward from startStrike, so width only grows further
+        break;
+      }
+
+      const baseDetails = computeFairSpreadDetails(
+        book,
+        isCall,
+        lowerStrike,
+        upperStrike,
+        undefined,
+        undefined,
+        null
+      );
+      const adjDetails = hasRiskShift
+        ? computeFairSpreadDetails(
+            book,
+            isCall,
+            lowerStrike,
+            upperStrike,
+            undefined,
+            atlasTelemetry,
+            effectiveRwa
+          )
+        : baseDetails;
+
+      const conservativeRawFairRatio = Math.max(
+        baseDetails.rawFairRatio,
+        adjDetails.rawFairRatio
+      );
+      if (
+        conservativeRawFairRatio < MIN_FAIR_VALUE_RATIO - 1e-6 ||
+        conservativeRawFairRatio > MAX_FAIR_VALUE_RATIO + 1e-6
+      ) {
+        continue;
+      }
+
+      const conservativeAskFairUsd = Math.max(
+        baseDetails.clampedFairUsd,
+        adjDetails.clampedFairUsd
+      );
+      const mmOpenUnitUsd = computeMmOpenUnitUsd(
+        conservativeAskFairUsd,
+        width,
+        mmOpenMarkupBps,
+        consensusRisk.spreadMultiplier
+      );
+      if (mmOpenUnitUsd <= 0) continue;
+
+      const maxMultiplier = Math.max(1.01, (mmNetRatio * width) / mmOpenUnitUsd);
+      if (
+        maxMultiplier >= MIN_CUSTOM_MULTIPLIER &&
+        maxMultiplier <= MAX_CUSTOM_MULTIPLIER
+      ) {
+        validCaps.push(capStrike);
+      }
+    }
+
+    if (validCaps.length > 0) {
+      validStarts.push(startStrike);
+      validCapsByStart[String(startStrike)] = validCaps;
+    }
+  }
+
+  let defaultStart = preferredStart ?? book.spot;
+  let defaultCap = preferredCap ?? book.spot;
+  if (validStarts.length > 0) {
+    const targetStart = preferredStart ?? book.spot;
+    defaultStart = validStarts.reduce((best, s) =>
+      Math.abs(s - targetStart) < Math.abs(best - targetStart) ? s : best
+    );
+    const caps = validCapsByStart[String(defaultStart)] ?? [];
+    if (caps.length > 0) {
+      const targetCap = preferredCap ?? caps[Math.min(1, caps.length - 1)]!;
+      defaultCap = caps.reduce((best, c) =>
+        Math.abs(c - targetCap) < Math.abs(best - targetCap) ? c : best
+      );
+    }
+  }
+
+  // Attach compact per-strike symmetric IVs only when the smile deviates from flat book.atmIv
+  const usedStrikes = new Set<number>();
+  for (const s of validStarts) {
+    usedStrikes.add(s);
+    for (const c of validCapsByStart[String(s)] ?? []) {
+      usedStrikes.add(c);
+    }
+  }
+  const strikeIvEntries: Record<string, number> = {};
+  let hasSkew = false;
+  for (const k of usedStrikes) {
+    const q = book.syntheticStrikes[k];
+    const ivs = [validIv(q?.call.iv), validIv(q?.put.iv)].filter(
+      (v): v is number => v !== null
+    );
+    if (ivs.length === 0) continue;
+    const avg = ivs.reduce((a, b) => a + b, 0) / ivs.length;
+    if (Math.abs(avg - book.atmIv) > 1e-4) {
+      hasSkew = true;
+    }
+    strikeIvEntries[String(k)] = Number(avg.toFixed(4));
+  }
+
+  return {
+    validStarts,
+    validCapsByStart,
+    defaultStart,
+    defaultCap,
+    maxAllowedWidthPct: Number(maxAllowedWidthPct.toFixed(2)),
+    minMultiplier: MIN_CUSTOM_MULTIPLIER,
+    maxMultiplier: MAX_CUSTOM_MULTIPLIER,
+    pricingParams: {
+      spot: book.spot,
+      hoursToExpiry: book.hoursToExpiry,
+      baseIv: Number(clamp(book.atmIv, 0.1, 3.0).toFixed(4)),
+      effectiveIv: Number(effectiveIv.toFixed(4)),
+      ivFloorBoost: Number(consensusRisk.ivFloorBoost.toFixed(4)),
+      ...(hasSkew ? { strikeIvs: strikeIvEntries } : {}),
+      varianceTimeScale: consensusRisk.varianceTimeScale,
+      spreadMultiplier: consensusRisk.spreadMultiplier,
+      protocolFeeBps,
+      mmOpenMarkupBps,
+    },
+  };
 }
 
 const TARGET_TIER_COUNT = 4;
@@ -995,7 +1258,8 @@ const MIN_SHELF_MULTIPLIER = 1.15;
 
 /**
  * Generates the Fixed-Grid Shelf with hysteresis-locked anchor (`gridLow` for BULL,
- * `gridHigh` for BEAR) and 4 standardized target tiers snapped outward to valid grid strikes.
+ * `gridHigh` for BEAR), 4 canonical preset tiers, dense fine-grained Quick-mode slider tiers,
+ * and server-authoritative Custom-mode Start/Target cap bounds.
  */
 export function buildFixedGridShelf(
   params: FixedGridShelfParams
@@ -1042,7 +1306,10 @@ export function buildFixedGridShelf(
     }
   }
 
+  const pricedCache = new Map<number, TicketSummary>();
   const priceCap = (capStrike: number): TicketSummary => {
+    const cached = pricedCache.get(capStrike);
+    if (cached) return cached;
     const lowerStrike = isCall ? anchorStartPrice : capStrike;
     const upperStrike = isCall ? capStrike : anchorStartPrice;
     const priced = priceSpreadOnVenue({
@@ -1059,6 +1326,7 @@ export function buildFixedGridShelf(
       atlasTelemetry,
       rwaTelemetry: effectiveRwa,
     });
+    pricedCache.set(capStrike, priced.summary);
     return priced.summary;
   };
 
@@ -1217,16 +1485,154 @@ export function buildFixedGridShelf(
       };
     });
 
+  // Build dense Quick-mode fine-grained slider tiers across every available strike within guardrails
+  const canonicalByCap = new Map<number, TicketSummary>(
+    tiers.map((t) => [t.capPrice, t])
+  );
+  const effectiveIv = clamp(
+    book.atmIv + consensusRisk.ivFloorBoost,
+    0.1,
+    3.0
+  );
+  const maxAllowedWidthPct = computeMaxAllowedWidthPct(
+    book.tenor,
+    book.hoursToExpiry,
+    effectiveIv
+  );
+  const directionalThreshold =
+    book.spot > 0
+      ? isCall
+        ? Math.max(anchorStartPrice, book.spot)
+        : Math.min(anchorStartPrice, book.spot)
+      : anchorStartPrice;
+
+  const collectFineAccepted = (
+    candidates: number[]
+  ): Array<{ capStrike: number; summary: TicketSummary }> => {
+    const collected: Array<{ capStrike: number; summary: TicketSummary }> = [];
+    for (const capStrike of candidates) {
+      const widthPct =
+        book.spot > 0
+          ? (Math.abs(capStrike - anchorStartPrice) / book.spot) * 100
+          : 0;
+      if (widthPct > maxAllowedWidthPct + 0.05) {
+        break;
+      }
+      const summary = priceCap(capStrike);
+      if (
+        summary.guardrails.valid &&
+        summary.guardrails.widthWithinCap &&
+        summary.guardrails.withinFairBounds !== false &&
+        summary.maxMultiplier >= MIN_CUSTOM_MULTIPLIER &&
+        summary.maxMultiplier <= MAX_CUSTOM_MULTIPLIER
+      ) {
+        collected.push({ capStrike, summary });
+      }
+    }
+    return collected;
+  };
+
+  const fineDirectionalStrikes = isCall
+    ? sortedStrikes.filter((s) => s > directionalThreshold)
+    : [...sortedStrikes].reverse().filter((s) => s < directionalThreshold);
+
+  let fineAccepted = collectFineAccepted(fineDirectionalStrikes);
+  if (fineAccepted.length === 0 && directionalThreshold !== anchorStartPrice) {
+    const anchorFallbackStrikes = isCall
+      ? sortedStrikes.filter((s) => s > anchorStartPrice)
+      : [...sortedStrikes].reverse().filter((s) => s < anchorStartPrice);
+    fineAccepted = collectFineAccepted(anchorFallbackStrikes);
+  }
+
+  const quickTiers: TicketSummary[] =
+    fineAccepted.length > 0
+      ? fineAccepted.map((item, idx) => {
+          const canonical = canonicalByCap.get(item.capStrike);
+          if (canonical) return canonical;
+          const lowerStrike = isCall ? anchorStartPrice : item.capStrike;
+          const upperStrike = isCall ? item.capStrike : anchorStartPrice;
+          const stepSteps = Math.max(
+            1,
+            Math.round(Math.abs(item.capStrike - anchorStartPrice) / cfg.step)
+          );
+          const isSharedCenterPool =
+            lowerStrike === gridLow && upperStrike === gridHigh;
+          const progress =
+            fineAccepted.length > 1 ? idx / (fineAccepted.length - 1) : 0.5;
+          const fineTierKind: TierKind =
+            progress <= 0.25
+              ? "CONSERVATIVE"
+              : progress <= 0.6
+                ? "STANDARD"
+                : "BREAKOUT";
+          return {
+            ...item.summary,
+            tierKind: fineTierKind,
+            tierLabel: `Target $${formatStrikeLabel(item.capStrike)}`,
+            isSharedCenterPool,
+            stepSteps,
+          };
+        })
+      : tiers;
+
+  const defaultIndex = Math.min(cfg.defaultSlot, Math.max(0, tiers.length - 1));
+  const defaultCanonical = tiers[defaultIndex];
+  let defaultQuickIndex = Math.min(
+    defaultIndex,
+    Math.max(0, quickTiers.length - 1)
+  );
+  if (defaultCanonical && quickTiers.length > 0) {
+    const exactQuickIdx = quickTiers.findIndex(
+      (item) =>
+        Math.abs(item.lowerStrike - defaultCanonical.lowerStrike) < 1e-6 &&
+        Math.abs(item.upperStrike - defaultCanonical.upperStrike) < 1e-6
+    );
+    if (exactQuickIdx >= 0) {
+      defaultQuickIndex = exactQuickIdx;
+    } else {
+      let bestIdx = 0;
+      let bestDist = Math.abs(quickTiers[0]!.capPrice - defaultCanonical.capPrice);
+      for (let i = 1; i < quickTiers.length; i++) {
+        const d = Math.abs(quickTiers[i]!.capPrice - defaultCanonical.capPrice);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      defaultQuickIndex = bestIdx;
+    }
+  }
+
+  const defaultQuickTicket = quickTiers[defaultQuickIndex] ?? defaultCanonical;
+  const customConfig = buildCustomRangeConfig({
+    book,
+    direction,
+    protocolFeeBps,
+    mmOpenMarkupBps,
+    atlasTelemetry,
+    rwaTelemetry: effectiveRwa,
+    preferredStart: anchorStartPrice,
+    preferredCap: defaultQuickTicket?.capPrice,
+  });
+
   const grid: FixedGridMeta = {
     gridStep: cfg.step,
     hysteresisBuffer: cfg.hysteresis,
     gridLow,
     gridHigh,
     anchorStartPrice,
-    defaultIndex: Math.min(cfg.defaultSlot, Math.max(0, tiers.length - 1)),
+    defaultIndex,
+    defaultQuickIndex,
   };
 
-  return { grid, tiers, consensusRisk, rwaRisk: consensusRisk.rwaRisk };
+  return {
+    grid,
+    tiers,
+    quickTiers,
+    customConfig,
+    consensusRisk,
+    rwaRisk: consensusRisk.rwaRisk,
+  };
 }
 
 /** Convenience wrapper returning only the fixed-grid shelf tiers. */
@@ -1334,6 +1740,15 @@ export class ShelfEngine {
 
   buildFixedGridShelf(params: FixedGridShelfParams): FixedGridShelfResult {
     return buildFixedGridShelf({
+      ...params,
+      mmOpenMarkupBps: params.mmOpenMarkupBps ?? this.defaultMmOpenMarkupBps,
+    });
+  }
+
+  buildCustomRangeConfig(
+    params: BuildCustomRangeConfigParams
+  ): CustomRangeConfig {
+    return buildCustomRangeConfig({
       ...params,
       mmOpenMarkupBps: params.mmOpenMarkupBps ?? this.defaultMmOpenMarkupBps,
     });
