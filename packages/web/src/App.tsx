@@ -39,16 +39,15 @@ import {
   executeBatchRedeemTx,
   executeClaimTestUsdtTx,
   executeSettleWithAtlasTwapTx,
+  executeTransferUsdtTx,
   getExplorerBaseUrl,
   readUsdtBalance,
   type ConnectedWallet,
 } from "./lib/wallet";
 import { Header, type ConsumerTab } from "./components/Header";
-import { WalletModal } from "./components/WalletModal";
-import { HistoryStatsSheet } from "./components/HistoryStatsSheet";
 import { OnboardingSheet } from "./components/OnboardingSheet";
 import { TradePage } from "./pages/TradePage";
-import { PositionsPage } from "./pages/PositionsPage";
+import { WalletPage } from "./pages/WalletPage";
 import { MetricsLedgerPage } from "./pages/MetricsLedgerPage";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -101,8 +100,6 @@ export function App() {
   }, [locale]);
   const [health, setHealth] = useState<HealthResponse | undefined>();
 
-  const [accountModalOpen, setAccountModalOpen] = useState(false);
-  const [historySheetOpen, setHistorySheetOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [rulesSheetOpen, setRulesSheetOpen] = useState(false);
   const [marketPickerOpen, setMarketPickerOpen] = useState(false);
@@ -473,7 +470,8 @@ export function App() {
       login({ loginMethods: ["email"] });
       return;
     }
-    setAccountModalOpen(true);
+    setActiveTab("POSITIONS");
+    window.scrollTo({ top: 0 });
   }, [ready, authenticated, login]);
 
   const handleExportWallet = useCallback(async () => {
@@ -482,11 +480,11 @@ export function App() {
   }, [embeddedAddress, exportWallet]);
 
   const handleLogout = useCallback(async () => {
-    setAccountModalOpen(false);
     setWelcomeBanner(null);
     await logout().catch(() => {});
     setUsdtBalance(0);
     setPositions([]);
+    setActiveTab("TRADE");
   }, [logout]);
 
   const handleRefreshPositions = useCallback(async () => {
@@ -580,7 +578,7 @@ export function App() {
   );
 
   const handleClaimFaucet = useCallback(
-    async (amountUsdt = 1000) => {
+    async (amountUsdt = 1000): Promise<`0x${string}`> => {
       const curHealth = health ?? (await refreshHealth());
       const rpcUrl = curHealth?.rpcUrl || BSC_TESTNET.rpcUrl;
       const usdtAddress =
@@ -591,13 +589,38 @@ export function App() {
         throw new Error("Testnet tUSDT contract unavailable");
       }
       const clamped = Math.max(1, Math.min(100_000, amountUsdt));
-      await executeClaimTestUsdtTx({
+      const hash = await executeClaimTestUsdtTx({
         wallet,
         rpcUrl,
         usdtAddress,
         amountUsdt: clamped,
       });
       await refreshWalletAndPositions(wallet.address, curHealth);
+      return hash;
+    },
+    [health, refreshHealth, wallet, refreshWalletAndPositions]
+  );
+
+  const handleWithdrawUsdt = useCallback(
+    async (to: `0x${string}`, amountUsdt: number): Promise<`0x${string}`> => {
+      const curHealth = health ?? (await refreshHealth());
+      const rpcUrl = curHealth?.rpcUrl || BSC_TESTNET.rpcUrl;
+      const usdtAddress =
+        curHealth?.usdtAddress && curHealth.usdtAddress !== ZERO_ADDRESS
+          ? curHealth.usdtAddress
+          : BSC_TESTNET.usdtAddress;
+      if (!usdtAddress || usdtAddress === ZERO_ADDRESS) {
+        throw new Error("tUSDT contract unavailable");
+      }
+      const hash = await executeTransferUsdtTx({
+        wallet,
+        rpcUrl,
+        usdtAddress,
+        to,
+        amountUsdt,
+      });
+      await refreshWalletAndPositions(wallet.address, curHealth);
+      return hash;
     },
     [health, refreshHealth, wallet, refreshWalletAndPositions]
   );
@@ -609,16 +632,6 @@ export function App() {
     },
     []
   );
-
-  const handleOpenRulesFromDrawer = useCallback(() => {
-    setActiveTab("TRADE");
-    setRulesSheetOpen(true);
-  }, []);
-
-  const handleOpenMarketPickerFromDrawer = useCallback(() => {
-    setActiveTab("TRADE");
-    setMarketPickerOpen(true);
-  }, []);
 
   const handleOpenOnboarding = useCallback(() => {
     setRulesSheetOpen(false);
@@ -769,53 +782,24 @@ export function App() {
       )}
 
       {activeTab === "POSITIONS" && (
-        <PositionsPage
+        <WalletPage
           locale={locale}
           wallet={wallet}
           health={health}
           positions={positions}
-          onOpenWallet={handleOpenAuthOrAccount}
+          onLogin={() => login({ loginMethods: ["email"] })}
+          onExportWallet={() => void handleExportWallet()}
+          onDisconnect={() => void handleLogout()}
           onGoToTrade={() => setActiveTab("TRADE")}
           onRefresh={() => void handleRefreshPositions()}
+          onClaimFaucet={handleClaimFaucet}
+          onWithdrawUsdt={handleWithdrawUsdt}
           onBatchClaim={handleBatchClaim}
           onClaimPosition={handleClaimPosition}
           onManualSettle={handleManualSettle}
           onSelectPositionMarket={handleSelectPositionMarket}
         />
       )}
-
-      <WalletModal
-        open={accountModalOpen}
-        locale={locale}
-        wallet={wallet}
-        positions={positions}
-        health={health}
-        onClose={() => setAccountModalOpen(false)}
-        onLogin={() => {
-          setAccountModalOpen(false);
-          login({ loginMethods: ["email"] });
-        }}
-        onExportWallet={() => void handleExportWallet()}
-        onDisconnect={() => void handleLogout()}
-        onClaimFaucet={handleClaimFaucet}
-        onBatchClaim={handleBatchClaim}
-        onClaimPosition={handleClaimPosition}
-        onSelectPositionMarket={handleSelectPositionMarket}
-        onOpenMarketPicker={handleOpenMarketPickerFromDrawer}
-        onOpenHistory={() => setHistorySheetOpen(true)}
-        onOpenRules={handleOpenRulesFromDrawer}
-        onSelectLocale={handleSelectLocale}
-        onToggleLang={handleToggleLocale}
-        onRefresh={() => void handleRefreshPositions()}
-      />
-
-      <HistoryStatsSheet
-        open={historySheetOpen}
-        locale={locale}
-        positions={positions}
-        chainId={targetChainId}
-        onClose={() => setHistorySheetOpen(false)}
-      />
 
       <OnboardingSheet
         open={onboardingOpen}

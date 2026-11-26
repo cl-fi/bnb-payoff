@@ -77,7 +77,8 @@ const dict = {
   zh: {
     // Navigation & Account
     navTrade: "交易",
-    navPositions: "持仓",
+    navPositions: "钱包",
+    navWallet: "钱包",
     connectWallet: "邮箱登录",
     myWallet: "我的账户",
     walletSubtitleConnected: "Privy 免 Gas 嵌入式账户 · BNB Chain 链上托管",
@@ -514,7 +515,8 @@ const dict = {
   en: {
     // Navigation & Account
     navTrade: "Trade",
-    navPositions: "Portfolio",
+    navPositions: "Wallet",
+    navWallet: "Wallet",
     connectWallet: "Sign in",
     myWallet: "Account",
     walletSubtitleConnected: "Gasless Privy account · 100% on-chain on BNB Chain",

@@ -4,6 +4,7 @@ import {
   encodeFunctionData,
   fallback,
   http,
+  isAddress,
   maxUint256,
   parseUnits,
   type Chain,
@@ -633,6 +634,60 @@ export async function executeClaimTestUsdtTx(params: {
     abi: MOCK_USDT_ABI,
     functionName: "faucet",
     args: [amountUnits],
+  });
+
+  const hash = await sendEvmTx({
+    wallet,
+    publicClient,
+    to: usdtAddress,
+    data,
+  });
+  await waitForConfirmedReceipt(publicClient, hash);
+  return hash;
+}
+
+/**
+ * Transfers ERC-20 USDT (tUSDT) from the user's wallet to another BNB Chain address.
+ * Gas-sponsored silently when executed via the Privy embedded wallet.
+ */
+export async function executeTransferUsdtTx(params: {
+  wallet: ConnectedWallet;
+  rpcUrl: string;
+  usdtAddress: `0x${string}`;
+  to: `0x${string}`;
+  amountUsdt: number;
+  publicClient?: PublicClient;
+}): Promise<`0x${string}`> {
+  const { wallet, rpcUrl, usdtAddress, to, amountUsdt } = params;
+  if (!wallet.address) throw new Error("Please sign in first");
+  if (!isAddress(to)) {
+    throw new Error("Invalid recipient address");
+  }
+  if (to.toLowerCase() === wallet.address.toLowerCase()) {
+    throw new Error("Recipient address cannot match your own wallet");
+  }
+  if (!Number.isFinite(amountUsdt) || amountUsdt <= 0) {
+    throw new Error("Please enter an amount greater than 0");
+  }
+
+  await ensureWalletOnTargetChain(wallet);
+
+  const publicClient =
+    params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
+  const amountUnits = parseUnits(amountUsdt.toFixed(6), 6);
+
+  await publicClient.simulateContract({
+    account: wallet.address,
+    address: usdtAddress,
+    abi: MOCK_USDT_ABI,
+    functionName: "transfer",
+    args: [to, amountUnits],
+  });
+
+  const data = encodeFunctionData({
+    abi: MOCK_USDT_ABI,
+    functionName: "transfer",
+    args: [to, amountUnits],
   });
 
   const hash = await sendEvmTx({

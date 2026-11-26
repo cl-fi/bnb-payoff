@@ -452,3 +452,50 @@ dialog.payoff-sheet[open]:where(:not([data-closing]))::backdrop {
     border: 1px solid CanvasText;
   }
 }
+
+/* ============================================================================
+   Accessible Site Nav Current-Page Indicator & Wallet Tab Underline
+   Uses border-block-end on ::after so indicators survive forced-colors mode
+   and never shift button dimensions (WCAG 1.4.1).
+   ============================================================================ */
+.payoff-nav-link,
+.payoff-tab-btn {
+  position: relative;
+}
+
+.payoff-nav-link[aria-current="page"]::after,
+.payoff-tab-btn[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-end: 0;
+  border-block-end: 2px solid currentColor;
+  border-radius: 9999px;
+}
+
+@media (forced-colors: active) {
+  .payoff-nav-link[aria-current="page"]::after,
+  .payoff-tab-btn[aria-selected="true"]::after {
+    border-block-end-color: Highlight;
+  }
+}
+
+/* ============================================================================
+   Post-Interaction Form Validation (:user-invalid) + Screen Reader Utility
+   Defers error visuals until blur/submit so typing never flashes premature red.
+   ============================================================================ */
+.payoff-field-input:is(:user-invalid, [aria-invalid="true"]) {
+  border-color: var(--down);
+}
+
+.payoff-visually-hidden:where(:not(:focus-within, :active)) {
+  position: absolute !important;
+  clip-path: inset(50%) !important;
+  overflow: hidden !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: -1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  white-space: nowrap !important;
+}

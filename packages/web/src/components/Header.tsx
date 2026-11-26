@@ -44,6 +44,8 @@ function formatCompactBalance(balance: number): string {
 }
 
 export function Header({
+  activeTab,
+  activePage,
   onSelectTab,
   onNavigate,
   locale,
@@ -61,6 +63,7 @@ export function Header({
   const t = getCopy(locale);
   const currentLocale = getLocaleOption(locale);
   const isConnected = wallet.kind !== "NONE" && Boolean(wallet.address);
+  const resolvedTab: ConsumerTab = activeTab ?? activePage ?? "TRADE";
 
   const langMenu = useAnchoredMenu({ align: "end" });
 
@@ -73,7 +76,11 @@ export function Header({
       onLogin();
       return;
     }
-    (onOpenWalletModal ?? onOpenWallet)?.();
+    if (onOpenWalletModal ?? onOpenWallet) {
+      (onOpenWalletModal ?? onOpenWallet)?.();
+      return;
+    }
+    navigate("POSITIONS");
   };
 
   const handleChooseLocale = (next: Locale) => {
@@ -89,19 +96,59 @@ export function Header({
 
   return (
     <header className="sticky top-0 z-30 h-14 bg-black/90 backdrop-blur-md">
-      <div className="mx-auto flex h-full max-w-[1160px] items-center justify-between px-4 sm:px-6">
-        {/* Official Reversed #F6F7F5 Payoff Brand Lockup */}
-        <button
-          type="button"
-          onClick={() => navigate("TRADE")}
-          aria-label="Payoff home"
-          className="inline-flex items-center cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white rounded-md"
-        >
-          <PayoffLockup markSize={22} />
-        </button>
+      <div className="mx-auto grid h-full max-w-[1160px] grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 sm:px-6">
+        {/* Left: Official Reversed #F6F7F5 Payoff Brand Lockup */}
+        <div className="justify-self-start min-w-0">
+          <button
+            type="button"
+            onClick={() => navigate("TRADE")}
+            aria-label="Payoff home"
+            className="inline-flex items-center cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-white rounded-md"
+          >
+            <PayoffLockup markSize={22} />
+          </button>
+        </div>
 
-        {/* Right: Globe Language Dropdown + Account Pill */}
-        <div className="flex items-center gap-2">
+        {/* Center: Semantic Primary Site Navigation (Trade | Wallet) */}
+        <nav
+          aria-label={locale === "zh" ? "主导航" : "Primary"}
+          className="justify-self-center flex h-full items-center gap-5 sm:gap-7"
+        >
+          <button
+            type="button"
+            aria-current={resolvedTab === "TRADE" ? "page" : undefined}
+            onClick={() => navigate("TRADE")}
+            className={`payoff-nav-link inline-flex h-full items-center px-1 text-[13px] sm:text-sm font-semibold whitespace-nowrap transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-white ${
+              resolvedTab === "TRADE"
+                ? "text-white"
+                : "text-[#7e8690] hover:text-[#d0d6de]"
+            }`}
+          >
+            {t.navTrade}
+          </button>
+
+          <button
+            type="button"
+            aria-current={resolvedTab === "POSITIONS" ? "page" : undefined}
+            onClick={() => navigate("POSITIONS")}
+            className={`payoff-nav-link inline-flex h-full items-center gap-1.5 px-1 text-[13px] sm:text-sm font-semibold whitespace-nowrap transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-4px] focus-visible:outline-white ${
+              resolvedTab === "POSITIONS"
+                ? "text-white"
+                : "text-[#7e8690] hover:text-[#d0d6de]"
+            }`}
+          >
+            <span>{t.navWallet}</span>
+            {claimableCount > 0 && (
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-[#2ec26b] shrink-0"
+                aria-hidden="true"
+              />
+            )}
+          </button>
+        </nav>
+
+        {/* Right: Globe Language Dropdown + Balance / Sign-In Pill */}
+        <div className="justify-self-end flex items-center gap-1.5 sm:gap-2">
           <button
             id={langMenu.triggerId}
             ref={langMenu.triggerRef}
@@ -190,13 +237,15 @@ export function Header({
             disabled={!authReady}
             onClick={handleAccountClick}
             title={wallet.email || wallet.address || undefined}
-            aria-label={isConnected ? t.drawerTitle : t.connectWallet}
-            className={`inline-flex items-center gap-1.5 rounded-full text-xs font-semibold transition cursor-pointer disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+            aria-label={isConnected ? t.navWallet : t.connectWallet}
+            className={`inline-flex h-8 items-center gap-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition cursor-pointer disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
               isConnected
-                ? "bg-[#15171b] px-3 py-1.5 text-white hover:bg-[#24282f]"
+                ? resolvedTab === "POSITIONS"
+                  ? "bg-[#1f2329] ring-1 ring-white/25 px-2.5 sm:px-3 text-white"
+                  : "bg-[#15171b] px-2.5 sm:px-3 text-white hover:bg-[#24282f]"
                 : authInitializing
-                  ? "bg-[#15171b] px-3 py-1.5 text-[#b8bec6]"
-                  : "bg-white px-3.5 py-1.5 font-bold text-black hover:bg-[#e8eaed]"
+                  ? "bg-[#15171b] px-2.5 sm:px-3 text-[#b8bec6]"
+                  : "bg-white px-3 sm:px-3.5 font-bold text-black hover:bg-[#e8eaed]"
             }`}
           >
             {isConnected ? (
@@ -215,10 +264,6 @@ export function Header({
                     aria-hidden="true"
                   />
                 )}
-                <ChevronDown
-                  className="h-3.5 w-3.5 text-[#7e8690]"
-                  aria-hidden="true"
-                />
               </>
             ) : authInitializing ? (
               <>
@@ -226,7 +271,7 @@ export function Header({
                   className="h-3.5 w-3.5 animate-spin text-[#b8bec6]"
                   aria-hidden="true"
                 />
-                <span>{t.initializingWallet}</span>
+                <span className="hidden sm:inline">{t.initializingWallet}</span>
               </>
             ) : (
               <span>{t.connectWallet}</span>
