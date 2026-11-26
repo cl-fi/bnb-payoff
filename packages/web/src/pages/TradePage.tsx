@@ -205,6 +205,28 @@ function formatShortCountdown(expirySec: number, nowSec: number, isZh: boolean) 
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+function formatExpiryCountdown(
+  expirySec: number | undefined,
+  nowSec: number,
+  isZh: boolean
+): string {
+  if (!expirySec) return "";
+  const rem = Math.max(0, expirySec - nowSec);
+  if (rem === 0) return isZh ? "已到期" : "Expired";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (rem < 48 * 3600) {
+    const totalHours = Math.floor(rem / 3600);
+    const mins = Math.floor((rem % 3600) / 60);
+    const secs = rem % 60;
+    return `${pad(totalHours)}:${pad(mins)}:${pad(secs)}`;
+  }
+  const days = Math.floor(rem / 86400);
+  const hours = Math.floor((rem % 86400) / 3600);
+  const mins = Math.floor((rem % 3600) / 60);
+  const secs = rem % 60;
+  return `${days}d ${pad(hours)}:${pad(mins)}:${pad(secs)}`;
+}
+
 function formatSignedUsd(v: number): string {
   const sign = v >= 0 ? "+" : "−";
   return `${sign}$${Math.abs(v).toFixed(2)}`;
@@ -254,7 +276,6 @@ export function TradePage({
     null
   );
   const [stakeUsdt, setStakeUsdt] = useState<number>(20);
-  const [bar, setBar] = useState<CandleBar>("15m");
   const [candles, setCandles] = useState<CandlePoint[]>([]);
 
   const [shelf, setShelf] = useState<ShelfResponse | null>(null);
@@ -391,25 +412,6 @@ export function TradePage({
       setSelectedPriorExpiry(marketFocus.expiry);
     }
   }, [marketFocus, tenorExpiries.DAILY, tenorExpiries.WEEKLY, underlying]);
-
-  // Candles feed
-  useEffect(() => {
-    let cancelled = false;
-    const loadCandles = () => {
-      api
-        .getCandles({ underlying, bar, limit: 120 })
-        .then((res) => {
-          if (!cancelled) setCandles(res.candles);
-        })
-        .catch(() => {});
-    };
-    loadCandles();
-    const timer = setInterval(loadCandles, 15_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [underlying, bar]);
 
   // Fetch both DAILY & WEEKLY expiry timestamps when underlying changes so both tabs show real times
   useEffect(() => {
@@ -658,6 +660,57 @@ export function TradePage({
     : tenor === "DAILY"
       ? openDailyExpiry ?? shelf?.expiry
       : openWeeklyExpiry ?? shelf?.expiry;
+
+  const activeExpiryTab = useMemo(
+    () => expiryTabs.find((tab) => tab.id === activeTabId),
+    [expiryTabs, activeTabId]
+  );
+
+  // Auto-match historical candle window to active expiry (24H for Daily, 7D for Weekly)
+  const useWeeklyWindow = useMemo(() => {
+    const nowSnapshot = Math.floor(Date.now() / 1000);
+    const remSec = currentExpiry ? Math.max(0, currentExpiry - nowSnapshot) : null;
+    if (isPriorExpiry) {
+      return remSec !== null && remSec > 36 * 3600;
+    }
+    if (tenor === "WEEKLY") return true;
+    return remSec !== null && remSec > 36 * 3600;
+  }, [isPriorExpiry, tenor, currentExpiry]);
+
+  const autoBar: CandleBar = useWeeklyWindow ? "1H" : "15m";
+  const autoLimit = useWeeklyWindow ? 168 : 96;
+  const autoWindowSec = useWeeklyWindow ? 7 * 24 * 3600 : 24 * 3600;
+  const autoWindowLabel = useWeeklyWindow
+    ? isZh
+      ? "近 7 天"
+      : "7D"
+    : isZh
+      ? "近 24 小时"
+      : "24H";
+
+  // Auto-matched candles feed (sliced cleanly to 24H or 7D target window)
+  useEffect(() => {
+    let cancelled = false;
+    const loadCandles = () => {
+      api
+        .getCandles({ underlying, bar: autoBar, limit: autoLimit })
+        .then((res) => {
+          if (cancelled) return;
+          const cutoff = Math.floor(Date.now() / 1000) - autoWindowSec;
+          const filtered = res.candles.filter((c) => c.time >= cutoff);
+          setCandles(
+            filtered.length >= 2 ? filtered : res.candles.slice(-autoLimit)
+          );
+        })
+        .catch(() => {});
+    };
+    loadCandles();
+    const timer = setInterval(loadCandles, 15_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [underlying, autoBar, autoLimit, autoWindowSec]);
 
   // Positions scoped to current underlying + selected expiry
   const currentExpiryActivePositions = useMemo(
@@ -1389,57 +1442,16 @@ export function TradePage({
             </div>
           </section>
 
-          {/* White-Underline Expiry Tabs */}
-          <div
-            role="tablist"
-            aria-label={isZh ? "到期时间" : "Settlement expiry"}
-            className="flex items-center gap-6 overflow-x-auto border-b border-[#1d2025] no-scrollbar"
-          >
-            {expiryTabs.map((tab, idx) => {
-              const selected = tab.id === activeTabId;
-              return (
-                <button
-                  key={tab.id}
-                  ref={(el) => {
-                    tabRefs.current[idx] = el;
-                  }}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  tabIndex={selected ? 0 : -1}
-                  disabled={isTradeBusy}
-                  onClick={() => handleSelectExpiryTab(tab)}
-                  onKeyDown={(e) => handleTabKeyDown(e, idx)}
-                  className={`relative flex-none inline-flex items-center gap-1.5 pb-2 lg:pb-2.5 text-[13.5px] font-semibold tracking-[-0.01em] transition-colors cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
-                    selected
-                      ? "text-white after:content-[''] after:absolute after:inset-x-0 after:bottom-0 after:border-b-2 after:border-white"
-                      : "text-[#7e8690] hover:text-[#b8bec6]"
-                  }`}
-                >
-                  <span className="tabular-nums">{tab.label}</span>
-                  {tab.hasPositions && (
-                    <span
-                      aria-label={isZh ? "有持仓" : "Has positions"}
-                      className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                        tab.hasTwapOrAwaiting
-                          ? "bg-[#E6BA5C]"
-                          : "bg-[#2EC26B]"
-                      }`}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Full-Bleed Pure-Black Chart (Zero outer card border) */}
+          {/* Full-Bleed Pure-Black Forecast Chart (Past Curve + Future Payoff Zone) */}
           <KlineChart
             locale={locale}
             candles={candles}
-            bar={bar}
-            onChangeBar={setBar}
             ticket={isPriorExpiry ? undefined : activeTicket}
             liveSpot={displaySpot}
+            expiry={currentExpiry}
+            expiryLabel={activeExpiryTab?.label}
+            nowSec={nowSec}
+            windowLabel={autoWindowLabel}
             positions={currentExpiryActivePositions}
             selectedPositionId={selectedPositionId}
             onSelectPosition={setSelectedPositionId}
@@ -1447,8 +1459,64 @@ export function TradePage({
             twapAvgPrice={currentTwapAvgPrice}
             scrubPrice={scrubPrice}
             onScrubPriceChange={setScrubPrice}
-            height={isDesktop ? 288 : 204}
+            height={isDesktop ? 284 : 228}
           />
+
+          {/* White-Underline Expiry Tabs + Live Settlement Countdown */}
+          <div className="flex items-center justify-between gap-3 border-b border-[#1d2025]">
+            <div
+              role="tablist"
+              aria-label={isZh ? "到期时间" : "Settlement expiry"}
+              className="flex min-w-0 items-center gap-5 sm:gap-6 overflow-x-auto no-scrollbar"
+            >
+              {expiryTabs.map((tab, idx) => {
+                const selected = tab.id === activeTabId;
+                return (
+                  <button
+                    key={tab.id}
+                    ref={(el) => {
+                      tabRefs.current[idx] = el;
+                    }}
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    tabIndex={selected ? 0 : -1}
+                    disabled={isTradeBusy}
+                    onClick={() => handleSelectExpiryTab(tab)}
+                    onKeyDown={(e) => handleTabKeyDown(e, idx)}
+                    className={`relative flex-none inline-flex items-center gap-1.5 pb-2 lg:pb-2.5 text-[13.5px] font-semibold tracking-[-0.01em] transition-colors cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+                      selected
+                        ? "text-white after:content-[''] after:absolute after:inset-x-0 after:bottom-0 after:border-b-2 after:border-white"
+                        : "text-[#7e8690] hover:text-[#b8bec6]"
+                    }`}
+                  >
+                    <span className="tabular-nums">{tab.label}</span>
+                    {tab.hasPositions && (
+                      <span
+                        aria-label={isZh ? "有持仓" : "Has positions"}
+                        className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                          tab.hasTwapOrAwaiting
+                            ? "bg-[#E6BA5C]"
+                            : "bg-[#2EC26B]"
+                        }`}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            {currentExpiry && (
+              <span
+                aria-label={isZh ? "距结算倒计时" : "Settlement countdown"}
+                className={`shrink-0 pb-2 lg:pb-2.5 text-xs font-medium tabular-nums tracking-[0.01em] ${
+                  isCurrentExpiryInTwap ? "text-[#E6BA5C]" : "text-[#7E8690]"
+                }`}
+              >
+                {formatExpiryCountdown(currentExpiry, nowSec, isZh)}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* SECTION 2: Option-A Order Column (Mobile: right under chart; Desktop: sticky right column) */}
