@@ -7,7 +7,6 @@ import {
   useWallets,
 } from "@privy-io/react-auth";
 import {
-  CheckCircle2,
   ExternalLink,
   Loader2,
   RefreshCw,
@@ -31,12 +30,17 @@ import {
 import { getCopy, type Locale } from "./lib/i18n";
 import {
   createClientForRpc,
+  executeBatchRedeemTx,
+  executeClaimTestUsdtTx,
+  executeSettleWithAtlasTwapTx,
   getExplorerBaseUrl,
   readUsdtBalance,
   type ConnectedWallet,
 } from "./lib/wallet";
 import { Header, type ConsumerTab } from "./components/Header";
 import { WalletModal } from "./components/WalletModal";
+import { HistoryStatsSheet } from "./components/HistoryStatsSheet";
+import { OnboardingSheet } from "./components/OnboardingSheet";
 import { TradePage } from "./pages/TradePage";
 import { PositionsPage } from "./pages/PositionsPage";
 import { MetricsLedgerPage } from "./pages/MetricsLedgerPage";
@@ -48,6 +52,12 @@ type WelcomeAirdropBanner =
   | { kind: "MINTED"; amountUsdt: number; txHash: string }
   | { kind: "ERROR"; message: string }
   | null;
+
+export interface MarketFocusTarget {
+  underlying: UnderlyingSymbol;
+  expiry: number;
+  nonce: number;
+}
 
 function isOpsRoute(): boolean {
   return (
@@ -69,6 +79,14 @@ export function App() {
   const [health, setHealth] = useState<HealthResponse | undefined>();
 
   const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const [historySheetOpen, setHistorySheetOpen] = useState(false);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [rulesSheetOpen, setRulesSheetOpen] = useState(false);
+  const [marketPickerOpen, setMarketPickerOpen] = useState(false);
+  const [marketFocus, setMarketFocus] = useState<MarketFocusTarget | null>(
+    null
+  );
+
   const [usdtBalance, setUsdtBalance] = useState<number>(0);
   const [welcomeBanner, setWelcomeBanner] =
     useState<WelcomeAirdropBanner>(null);
@@ -426,27 +444,163 @@ export function App() {
     return () => ws.close();
   }, [wallet.address]);
 
-  const handleOpenAuthOrAccount = () => {
+  const handleOpenAuthOrAccount = useCallback(() => {
     if (!ready) return;
     if (!authenticated) {
       login({ loginMethods: ["email"] });
       return;
     }
     setAccountModalOpen(true);
-  };
+  }, [ready, authenticated, login]);
 
-  const handleExportWallet = async () => {
+  const handleExportWallet = useCallback(async () => {
     if (!embeddedAddress) return;
     await exportWallet({ address: embeddedAddress }).catch(() => {});
-  };
+  }, [embeddedAddress, exportWallet]);
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     setAccountModalOpen(false);
     setWelcomeBanner(null);
     await logout().catch(() => {});
     setUsdtBalance(0);
     setPositions([]);
-  };
+  }, [logout]);
+
+  const handleRefreshPositions = useCallback(async () => {
+    await refreshWalletAndPositions(wallet.address);
+  }, [refreshWalletAndPositions, wallet.address]);
+
+  const handleBatchClaim = useCallback(
+    async (seriesIds: `0x${string}`[]) => {
+      const uniqueIds = Array.from(new Set(seriesIds));
+      if (uniqueIds.length === 0) return;
+
+      const curHealth = health ?? (await refreshHealth());
+      const vaultAddress = curHealth?.vaultAddress;
+      const rpcUrl = curHealth?.rpcUrl || BSC_TESTNET.rpcUrl;
+      if (!vaultAddress || vaultAddress === ZERO_ADDRESS) {
+        throw new Error("Vault contract address unavailable");
+      }
+
+      const hash = await executeBatchRedeemTx({
+        wallet,
+        rpcUrl,
+        vaultAddress,
+        seriesIds: uniqueIds,
+      });
+      await api.ingestTx(hash).catch(() => api.syncChain());
+      await refreshWalletAndPositions(wallet.address, curHealth);
+    },
+    [health, refreshHealth, wallet, refreshWalletAndPositions]
+  );
+
+  const handleClaimPosition = useCallback(
+    async (position: PositionView) => {
+      await handleBatchClaim([position.seriesId]);
+    },
+    [handleBatchClaim]
+  );
+
+  const handleManualSettle = useCallback(
+    async (
+      underlying: UnderlyingSymbol,
+      expiry: number
+    ): Promise<{
+      status: "SETTLED" | "ALREADY_SETTLED";
+      twapPriceUsd?: number;
+    }> => {
+      const curHealth = health ?? (await refreshHealth());
+      const rpcUrl = curHealth?.rpcUrl || BSC_TESTNET.rpcUrl;
+      const tLocal = getCopy(locale);
+
+      const bundle = await api.getSettlementProof(underlying, expiry);
+      if (bundle.status === "ALREADY_SETTLED") {
+        await refreshWalletAndPositions(wallet.address, curHealth);
+        return { status: "ALREADY_SETTLED", twapPriceUsd: bundle.twapPriceUsd };
+      }
+      if (bundle.status === "DISPUTED_PAUSED") {
+        await refreshWalletAndPositions(wallet.address, curHealth);
+        throw new Error(tLocal.disputedExpiryNotice);
+      }
+      if (bundle.status === "WAITING_DELAY") {
+        throw new Error(tLocal.settleWaitingDelay);
+      }
+      if (!bundle.proofs || bundle.proofs.length === 0) {
+        throw new Error("Missing signed Atlas TWAP proofs");
+      }
+
+      try {
+        const hash = await executeSettleWithAtlasTwapTx({
+          wallet,
+          rpcUrl,
+          oracleAddress: bundle.oracleAddress,
+          assetId: bundle.assetId,
+          expiry: bundle.expiry,
+          proofs: bundle.proofs,
+        });
+        await api.ingestTx(hash).catch(() => api.syncChain());
+        await refreshWalletAndPositions(wallet.address, curHealth);
+        return { status: "SETTLED", twapPriceUsd: bundle.twapPriceUsd };
+      } catch (err: any) {
+        const rawMsg = String(err?.shortMessage || err?.message || "");
+        if (rawMsg.includes("AlreadySettled")) {
+          await refreshWalletAndPositions(wallet.address, curHealth);
+          return {
+            status: "ALREADY_SETTLED",
+            twapPriceUsd: bundle.twapPriceUsd,
+          };
+        }
+        throw err;
+      }
+    },
+    [health, refreshHealth, locale, wallet, refreshWalletAndPositions]
+  );
+
+  const handleClaimFaucet = useCallback(
+    async (amountUsdt = 1000) => {
+      const curHealth = health ?? (await refreshHealth());
+      const rpcUrl = curHealth?.rpcUrl || BSC_TESTNET.rpcUrl;
+      const usdtAddress =
+        curHealth?.usdtAddress && curHealth.usdtAddress !== ZERO_ADDRESS
+          ? curHealth.usdtAddress
+          : BSC_TESTNET.usdtAddress;
+      if (!usdtAddress || usdtAddress === ZERO_ADDRESS) {
+        throw new Error("Testnet tUSDT contract unavailable");
+      }
+      const clamped = Math.max(1, Math.min(100_000, amountUsdt));
+      await executeClaimTestUsdtTx({
+        wallet,
+        rpcUrl,
+        usdtAddress,
+        amountUsdt: clamped,
+      });
+      await refreshWalletAndPositions(wallet.address, curHealth);
+    },
+    [health, refreshHealth, wallet, refreshWalletAndPositions]
+  );
+
+  const handleSelectPositionMarket = useCallback(
+    (underlying: UnderlyingSymbol, expiry: number) => {
+      setActiveTab("TRADE");
+      setMarketFocus({ underlying, expiry, nonce: Date.now() });
+    },
+    []
+  );
+
+  const handleOpenRulesFromDrawer = useCallback(() => {
+    setActiveTab("TRADE");
+    setRulesSheetOpen(true);
+  }, []);
+
+  const handleOpenMarketPickerFromDrawer = useCallback(() => {
+    setActiveTab("TRADE");
+    setMarketPickerOpen(true);
+  }, []);
+
+  const handleOpenOnboarding = useCallback(() => {
+    setRulesSheetOpen(false);
+    setOnboardingOpen(true);
+  }, []);
 
   if (opsMode) {
     return (
@@ -459,12 +613,15 @@ export function App() {
   const activePositionsCount = positions.filter(
     (p) => p.status === "ACTIVE" || p.status === "SETTLED_CLAIMABLE"
   ).length;
+  const claimablePositionsCount = positions.filter(
+    (p) => p.status === "SETTLED_CLAIMABLE" && p.claimableUsdt > 0
+  ).length;
   const t = getCopy(locale);
   const explorerBase = getExplorerBaseUrl(targetChainId);
   const authInitializing = authenticated && !embeddedAddress;
 
   return (
-    <div className="min-h-screen bg-[#f7f8f9] text-[#14202a]">
+    <div className="min-h-screen bg-black text-white">
       <Header
         activeTab={activeTab}
         onSelectTab={setActiveTab}
@@ -474,65 +631,75 @@ export function App() {
         authReady={ready}
         authInitializing={authInitializing}
         positionCount={activePositionsCount}
+        claimableCount={claimablePositionsCount}
         onOpenWalletModal={handleOpenAuthOrAccount}
+        onLogin={() => login({ loginMethods: ["email"] })}
       />
 
+      {/* A4 Slim Dark Welcome Airdrop Pill Banner */}
       {welcomeBanner && (
-        <div
-          role={welcomeBanner.kind === "ERROR" ? "alert" : "status"}
-          aria-live="polite"
-          className={`border-b px-4 py-2.5 ${
-            welcomeBanner.kind === "ERROR"
-              ? "border-[#f1ccc6] bg-[#fbeeea] text-[#b54134]"
-              : "border-[#bfe2dc] bg-[#e9f3f1] text-[#0e7c72]"
-          }`}
-        >
-          <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-2 text-xs font-medium">
-            <div className="flex items-center gap-2">
+        <div className="mx-auto max-w-[1160px] px-4 pt-1 pb-1 sm:px-6">
+          <div
+            role={welcomeBanner.kind === "ERROR" ? "alert" : "status"}
+            aria-live="polite"
+            className={`flex flex-wrap items-center justify-between gap-2 rounded-full px-3.5 py-2 text-xs font-medium ${
+              welcomeBanner.kind === "ERROR"
+                ? "border border-[#E85D4A]/30 bg-[#121417] text-[#b8bec6]"
+                : welcomeBanner.kind === "MINTED"
+                  ? "border border-[#2EC26B]/25 bg-[#2EC26B]/12 text-[#2EC26B]"
+                  : "border border-[#262a31] bg-[#15171b] text-[#b8bec6]"
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
               {welcomeBanner.kind === "MINTING" ? (
                 <>
                   <Loader2
-                    className="h-3.5 w-3.5 animate-spin shrink-0"
+                    className="h-3.5 w-3.5 animate-spin shrink-0 text-[#2EC26B]"
                     aria-hidden="true"
                   />
-                  <span>{t.welcomeAirdropMinting}</span>
+                  <span className="truncate">{t.welcomeAirdropMinting}</span>
                 </>
               ) : welcomeBanner.kind === "MINTED" ? (
                 <>
-                  <Sparkles className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span>{t.welcomeAirdropSuccess(welcomeBanner.amountUsdt)}</span>
+                  <Sparkles
+                    className="h-3.5 w-3.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span className="font-semibold">
+                    {t.welcomeAirdropShortSuccess(welcomeBanner.amountUsdt)}
+                  </span>
                   {explorerBase && welcomeBanner.txHash && (
                     <a
                       href={`${explorerBase}/tx/${welcomeBanner.txHash}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="inline-flex items-center gap-1 font-semibold underline underline-offset-2"
+                      className="inline-flex items-center gap-0.5 text-[11px] font-semibold text-[#2EC26B]/90 underline underline-offset-2 hover:text-[#2EC26B]"
                     >
                       BscScan
-                      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                      <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
                     </a>
                   )}
                 </>
               ) : (
                 <>
-                  <CheckCircle2
-                    className="h-3.5 w-3.5 shrink-0"
+                  <span
                     aria-hidden="true"
+                    className="h-2 w-2 shrink-0 rounded-full bg-[#E85D4A]"
                   />
-                  <span>{welcomeBanner.message}</span>
+                  <span className="truncate">{welcomeBanner.message}</span>
                 </>
               )}
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 shrink-0">
               {welcomeBanner.kind === "ERROR" && embeddedAddress && (
                 <button
                   type="button"
                   onClick={() => void triggerWelcomeAirdrop(embeddedAddress)}
-                  className="inline-flex items-center gap-1 rounded-md bg-[#b54134] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#99352a] cursor-pointer"
+                  className="inline-flex items-center gap-1 rounded-full bg-[#E85D4A] px-2.5 py-1 text-[11px] font-bold text-black hover:bg-[#e85d4a]/90 transition cursor-pointer"
                 >
                   <RefreshCw className="h-3 w-3" aria-hidden="true" />
-                  {t.welcomeAirdropRetry}
+                  <span>{t.welcomeAirdropRetryFull}</span>
                 </button>
               )}
               {welcomeBanner.kind !== "MINTING" && (
@@ -540,7 +707,7 @@ export function App() {
                   type="button"
                   aria-label={t.cancel}
                   onClick={() => setWelcomeBanner(null)}
-                  className="rounded p-1 hover:bg-black/5 cursor-pointer"
+                  className="rounded-full p-1 text-current/75 hover:bg-white/10 hover:text-current transition cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
@@ -556,16 +723,24 @@ export function App() {
           wallet={wallet}
           health={health}
           rpcUrl={health?.rpcUrl || BSC_TESTNET.rpcUrl}
+          positions={positions}
           liveSpots={liveSpots}
           liveTelemetry={liveTelemetry}
           liveRwaTelemetry={liveRwaTelemetry}
           liveCircuitBreaker={liveCircuitBreaker}
+          marketFocus={marketFocus}
+          rulesSheetOpen={rulesSheetOpen}
+          onOpenRules={() => setRulesSheetOpen(true)}
+          onCloseRules={() => setRulesSheetOpen(false)}
+          marketPickerOpen={marketPickerOpen}
+          onOpenMarketPicker={() => setMarketPickerOpen(true)}
+          onCloseMarketPicker={() => setMarketPickerOpen(false)}
+          onOpenOnboarding={handleOpenOnboarding}
           onOpenWallet={handleOpenAuthOrAccount}
-          onTxSuccess={() => void refreshWalletAndPositions(wallet.address)}
-          onGoToPositions={() => {
-            void refreshWalletAndPositions(wallet.address);
-            setActiveTab("POSITIONS");
-          }}
+          onRefreshPositions={handleRefreshPositions}
+          onBatchClaim={handleBatchClaim}
+          onClaimPosition={handleClaimPosition}
+          onManualSettle={handleManualSettle}
         />
       )}
 
@@ -577,7 +752,11 @@ export function App() {
           positions={positions}
           onOpenWallet={handleOpenAuthOrAccount}
           onGoToTrade={() => setActiveTab("TRADE")}
-          onRefresh={() => void refreshWalletAndPositions(wallet.address)}
+          onRefresh={() => void handleRefreshPositions()}
+          onBatchClaim={handleBatchClaim}
+          onClaimPosition={handleClaimPosition}
+          onManualSettle={handleManualSettle}
+          onSelectPositionMarket={handleSelectPositionMarket}
         />
       )}
 
@@ -585,6 +764,8 @@ export function App() {
         open={accountModalOpen}
         locale={locale}
         wallet={wallet}
+        positions={positions}
+        health={health}
         onClose={() => setAccountModalOpen(false)}
         onLogin={() => {
           setAccountModalOpen(false);
@@ -592,6 +773,29 @@ export function App() {
         }}
         onExportWallet={() => void handleExportWallet()}
         onDisconnect={() => void handleLogout()}
+        onClaimFaucet={handleClaimFaucet}
+        onBatchClaim={handleBatchClaim}
+        onClaimPosition={handleClaimPosition}
+        onSelectPositionMarket={handleSelectPositionMarket}
+        onOpenMarketPicker={handleOpenMarketPickerFromDrawer}
+        onOpenHistory={() => setHistorySheetOpen(true)}
+        onOpenRules={handleOpenRulesFromDrawer}
+        onToggleLang={() => setLocale((l) => (l === "zh" ? "en" : "zh"))}
+        onRefresh={() => void handleRefreshPositions()}
+      />
+
+      <HistoryStatsSheet
+        open={historySheetOpen}
+        locale={locale}
+        positions={positions}
+        chainId={targetChainId}
+        onClose={() => setHistorySheetOpen(false)}
+      />
+
+      <OnboardingSheet
+        open={onboardingOpen}
+        locale={locale}
+        onClose={() => setOnboardingOpen(false)}
       />
     </div>
   );

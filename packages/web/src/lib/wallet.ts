@@ -501,7 +501,7 @@ export async function executeRedeemTx(params: {
   publicClient?: PublicClient;
 }): Promise<`0x${string}`> {
   const { wallet, rpcUrl, vaultAddress, seriesId } = params;
-  if (!wallet.address) throw new Error("Please connect a wallet first");
+  if (!wallet.address) throw new Error("Please sign in first");
   await ensureWalletOnTargetChain(wallet);
   const publicClient =
     params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
@@ -517,6 +517,48 @@ export async function executeRedeemTx(params: {
     publicClient,
     to: vaultAddress,
     data: redeemData,
+  });
+  await waitForConfirmedReceipt(publicClient, hash);
+  return hash;
+}
+
+export async function executeBatchRedeemTx(params: {
+  wallet: ConnectedWallet;
+  rpcUrl: string;
+  vaultAddress: `0x${string}`;
+  seriesIds: `0x${string}`[];
+  publicClient?: PublicClient;
+}): Promise<`0x${string}`> {
+  const { wallet, rpcUrl, vaultAddress, seriesIds } = params;
+  if (!wallet.address) throw new Error("Please sign in first");
+  const uniqueSeriesIds = Array.from(new Set(seriesIds));
+  if (uniqueSeriesIds.length === 0) {
+    throw new Error("No claimable positions selected");
+  }
+  if (uniqueSeriesIds.length === 1) {
+    return executeRedeemTx({
+      wallet,
+      rpcUrl,
+      vaultAddress,
+      seriesId: uniqueSeriesIds[0],
+      publicClient: params.publicClient,
+    });
+  }
+  await ensureWalletOnTargetChain(wallet);
+  const publicClient =
+    params.publicClient ?? createClientForRpc(wallet.chainId, rpcUrl);
+
+  const batchData = encodeFunctionData({
+    abi: PAYOFF_VAULT_ABI,
+    functionName: "batchRedeem",
+    args: [uniqueSeriesIds],
+  });
+
+  const hash = await sendEvmTx({
+    wallet,
+    publicClient,
+    to: vaultAddress,
+    data: batchData,
   });
   await waitForConfirmedReceipt(publicClient, hash);
   return hash;

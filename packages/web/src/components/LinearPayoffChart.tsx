@@ -15,6 +15,7 @@ export interface LinearPayoffChartProps {
   spot: number;
   ticket: TicketSummary;
   gridStep?: number;
+  className?: string;
 }
 
 const VIEW_W = 640;
@@ -26,12 +27,13 @@ const PAD_B = 34;
 const PLOT_W = VIEW_W - PAD_L - PAD_R;
 const PLOT_H = VIEW_H - PAD_T - PAD_B;
 
-const PAY_TEAL = "#0e7c72";
-const NEG_CRIMSON = "#b54134";
-const WARN_AMBER = "#8a6410";
-const INK = "#14202a";
-const MUTED = "#667080";
-const GRID_LINE = "#eef0f2";
+const UP_GREEN = "#2EC26B";
+const DOWN_CORAL = "#E85D4A";
+const GOLD = "#E6BA5C";
+const INK = "#FFFFFF";
+const MID = "#B8BEC6";
+const SUB = "#7E8690";
+const GRID_LINE = "#1D2025";
 
 type MilestoneKind = "start" | "spot" | "breakeven" | "multiple" | "cap";
 
@@ -106,6 +108,7 @@ export function LinearPayoffChart({
   spot,
   ticket,
   gridStep,
+  className = "",
 }: LinearPayoffChartProps): JSX.Element {
   const t = getCopy(locale);
   const uid = useId().replace(/:/g, "");
@@ -117,10 +120,10 @@ export function LinearPayoffChart({
   const scrubPrice = scrubState?.key === rangeKey ? scrubState.price : null;
 
   const isBull = direction === "BULL";
-  const accent = isBull ? PAY_TEAL : NEG_CRIMSON;
+  const accent = isBull ? UP_GREEN : DOWN_CORAL;
   const accentSoftBg = isBull
-    ? "bg-[#e9f3f1] text-[#0e7c72]"
-    : "bg-[#fbeeea] text-[#b54134]";
+    ? "bg-[#2EC26B]/12 text-[#2EC26B]"
+    : "bg-[#E85D4A]/12 text-[#E85D4A]";
 
   const lower = ticket.lowerStrike;
   const upper = ticket.upperStrike;
@@ -193,7 +196,7 @@ export function LinearPayoffChart({
       multiplier: 0,
       cx: xOf(startP),
       cy: yOf(0),
-      dotColor: MUTED,
+      dotColor: SUB,
       pillText: "0x",
     });
 
@@ -224,7 +227,7 @@ export function LinearPayoffChart({
       multiplier: 1,
       cx: xOf(breakevenPrice),
       cy: yOf(1),
-      dotColor: WARN_AMBER,
+      dotColor: GOLD,
       pillText: "1x",
     });
 
@@ -402,8 +405,8 @@ export function LinearPayoffChart({
     : `M ${xLeft} ${yCap} L ${xCap} ${yCap} L ${xBe} ${y1}`;
 
   const yTicks = [
-    { mult: 0, label: "0x", color: MUTED },
-    { mult: 1, label: "1x", color: WARN_AMBER },
+    { mult: 0, label: "0x", color: SUB },
+    { mult: 1, label: "1x", color: GOLD },
     ...(Math.abs(yOf(maxMult) - yOf(1)) >= 14
       ? [{ mult: maxMult, label: `${maxMult.toFixed(1)}x`, color: accent }]
       : []),
@@ -481,30 +484,32 @@ export function LinearPayoffChart({
   const gradBufferId = `payoff-buffer-${uid}`;
 
   return (
-    <figure className="rounded-xl border border-[#e2e5e8] bg-white p-4 space-y-3">
+    <figure
+      className={`rounded-2xl border border-[#1d2025] bg-[#121417] p-4 space-y-3 ${className}`}
+    >
       {/* Header: Title + Plain-Language Slope Formula */}
       <figcaption className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-semibold text-[#14202a]">
+          <span className="text-sm font-semibold text-white">
             {t.payoffChartTitle}
           </span>
           <span
-            className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold tabular-nums ${accentSoftBg}`}
+            className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold tabular-nums ${accentSoftBg}`}
           >
             {slopeText}
           </span>
         </div>
 
         {/* Zone Legend */}
-        <div className="flex items-center gap-3 text-[11px] font-medium text-[#667080]">
+        <div className="flex items-center gap-3 text-[11px] font-medium text-[#7e8690]">
           <span className="inline-flex items-center gap-1.5">
             <span
               aria-hidden="true"
               className="inline-block h-2 w-2 rounded-xs"
               style={{
                 backgroundColor: isBull
-                  ? "rgba(14, 124, 114, 0.35)"
-                  : "rgba(181, 65, 52, 0.32)",
+                  ? "rgba(46, 194, 107, 0.35)"
+                  : "rgba(232, 93, 74, 0.35)",
                 border: `1px solid ${accent}`,
               }}
             />
@@ -513,7 +518,7 @@ export function LinearPayoffChart({
           <span className="inline-flex items-center gap-1.5">
             <span
               aria-hidden="true"
-              className="inline-block h-2 w-2 rounded-xs border border-[#c9b382] bg-[#f6efd9]"
+              className="inline-block h-2 w-2 rounded-xs border border-[#E6BA5C] bg-[#E6BA5C]/20"
             />
             {t.payoffZoneBuffer}
           </span>
@@ -521,7 +526,7 @@ export function LinearPayoffChart({
       </figcaption>
 
       {/* Responsive Pure SVG Linear Payoff Ladder */}
-      <div className="relative w-full select-none">
+      <div className="relative w-full select-none rounded-xl bg-black/70 p-1">
         <svg
           role="img"
           aria-label={accessibleSummary}
@@ -536,15 +541,15 @@ export function LinearPayoffChart({
           <defs>
             <linearGradient id={gradProfitId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={accent} stopOpacity="0.22" />
-              <stop offset="100%" stopColor={accent} stopOpacity="0.03" />
+              <stop offset="100%" stopColor={accent} stopOpacity="0.02" />
             </linearGradient>
             <linearGradient id={gradBufferId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#c9a552" stopOpacity="0.20" />
-              <stop offset="100%" stopColor="#c9a552" stopOpacity="0.04" />
+              <stop offset="0%" stopColor={GOLD} stopOpacity="0.22" />
+              <stop offset="100%" stopColor={GOLD} stopOpacity="0.02" />
             </linearGradient>
           </defs>
 
-          {/* Horizontal Gridlines & Y-Axis Labels */}
+          {/* Horizontal Guides & Y-Axis Labels */}
           {yTicks.map((tick) => {
             const ty = yOf(tick.mult);
             const isBe = tick.mult === 1;
@@ -555,9 +560,9 @@ export function LinearPayoffChart({
                   y1={ty}
                   x2={VIEW_W - PAD_R}
                   y2={ty}
-                  stroke={isBe ? WARN_AMBER : GRID_LINE}
-                  strokeWidth={isBe ? 1.25 : 1}
-                  strokeOpacity={isBe ? 0.65 : 1}
+                  stroke={isBe ? GOLD : GRID_LINE}
+                  strokeWidth={isBe ? 1.2 : 1}
+                  strokeOpacity={isBe ? 0.5 : 0.9}
                   strokeDasharray={isBe ? "4 4" : undefined}
                 />
                 <text
@@ -585,7 +590,7 @@ export function LinearPayoffChart({
             y1={y0}
             x2={xStart}
             y2={y0 + 6}
-            stroke="#94a0ad"
+            stroke="#4c545e"
             strokeWidth={1}
           />
           <line
@@ -593,9 +598,9 @@ export function LinearPayoffChart({
             y1={y1}
             x2={xBe}
             y2={y0}
-            stroke={WARN_AMBER}
+            stroke={GOLD}
             strokeWidth={1}
-            strokeOpacity={0.35}
+            strokeOpacity={0.38}
             strokeDasharray="2 3"
           />
           <line
@@ -605,7 +610,7 @@ export function LinearPayoffChart({
             y2={y0}
             stroke={accent}
             strokeWidth={1}
-            strokeOpacity={0.28}
+            strokeOpacity={0.34}
             strokeDasharray="2 3"
           />
           {spotInRange && (
@@ -625,14 +630,14 @@ export function LinearPayoffChart({
           <path
             d={zeroTailPath}
             fill="none"
-            stroke="#c8ccd1"
+            stroke="#2f353f"
             strokeWidth={2}
             strokeLinecap="round"
           />
           <path
             d={bufferRampPath}
             fill="none"
-            stroke={WARN_AMBER}
+            stroke={GOLD}
             strokeWidth={2.5}
             strokeLinecap="round"
           />
@@ -654,8 +659,8 @@ export function LinearPayoffChart({
                   cx={m.cx}
                   cy={m.cy}
                   r={3.5}
-                  fill="#ffffff"
-                  stroke={MUTED}
+                  fill="#000000"
+                  stroke={SUB}
                   strokeWidth={2}
                 />
               );
@@ -668,13 +673,13 @@ export function LinearPayoffChart({
                     cy={m.cy}
                     r={6.5}
                     fill={INK}
-                    fillOpacity={0.12}
+                    fillOpacity={0.14}
                   />
                   <circle
                     cx={m.cx}
                     cy={m.cy}
                     r={3.8}
-                    fill="#ffffff"
+                    fill="#000000"
                     stroke={INK}
                     strokeWidth={2.2}
                   />
@@ -690,7 +695,7 @@ export function LinearPayoffChart({
                     cy={m.cy}
                     r={7.5}
                     fill={accent}
-                    fillOpacity={0.15}
+                    fillOpacity={0.18}
                   />
                 )}
                 <circle
@@ -698,7 +703,7 @@ export function LinearPayoffChart({
                   cy={m.cy}
                   r={isCap ? 4.5 : 3.8}
                   fill={m.dotColor}
-                  stroke="#ffffff"
+                  stroke="#000000"
                   strokeWidth={1.8}
                 />
               </g>
@@ -706,7 +711,7 @@ export function LinearPayoffChart({
           })}
 
           {/* Non-overlapping Milestone Callouts */}
-          <g opacity={activeScrub ? 0.35 : 1}>
+          <g opacity={activeScrub ? 0.3 : 1}>
             {placedLabels.map((lbl) => (
               <g key={lbl.id}>
                 <rect
@@ -715,10 +720,10 @@ export function LinearPayoffChart({
                   width={lbl.w}
                   height={lbl.h}
                   rx={6}
-                  fill="#ffffff"
-                  fillOpacity={0.94}
-                  stroke={lbl.isPrimary ? lbl.accent : "#e2e5e8"}
-                  strokeOpacity={lbl.isPrimary ? 0.45 : 1}
+                  fill="#15171b"
+                  fillOpacity={0.95}
+                  stroke={lbl.isPrimary ? lbl.accent : "#262b33"}
+                  strokeOpacity={lbl.isPrimary ? 0.5 : 1}
                   strokeWidth={1}
                 />
                 <text
@@ -738,7 +743,7 @@ export function LinearPayoffChart({
                   textAnchor="middle"
                   fontSize={9}
                   fontWeight={500}
-                  fill={MUTED}
+                  fill={MID}
                   style={{ fontVariantNumeric: "tabular-nums" }}
                 >
                   {lbl.subtext}
@@ -771,7 +776,7 @@ export function LinearPayoffChart({
                   textAnchor="middle"
                   fontSize={10}
                   fontWeight={600}
-                  fill={MUTED}
+                  fill={SUB}
                   style={{ fontVariantNumeric: "tabular-nums" }}
                 >
                   {startTickLabel}
@@ -804,7 +809,7 @@ export function LinearPayoffChart({
                 stroke={INK}
                 strokeWidth={1}
                 strokeDasharray="3 3"
-                strokeOpacity={0.55}
+                strokeOpacity={0.45}
               />
               <circle
                 cx={activeScrub.cx}
@@ -814,10 +819,10 @@ export function LinearPayoffChart({
                   activeScrub.multiplier >= 1
                     ? accent
                     : activeScrub.multiplier > 0
-                      ? WARN_AMBER
-                      : MUTED
+                      ? GOLD
+                      : SUB
                 }
-                stroke="#ffffff"
+                stroke="#000000"
                 strokeWidth={2}
               />
               <rect
@@ -826,15 +831,17 @@ export function LinearPayoffChart({
                 width={activeScrub.boxW}
                 height={activeScrub.boxH}
                 rx={8}
-                fill={INK}
-                fillOpacity={0.95}
+                fill="#1f2329"
+                fillOpacity={0.96}
+                stroke="#343941"
+                strokeWidth={1}
               />
               <text
                 x={activeScrub.boxX + 10}
                 y={activeScrub.boxY + 16}
                 fontSize={10}
                 fontWeight={500}
-                fill="#c8ccd1"
+                fill={MID}
                 style={{ fontVariantNumeric: "tabular-nums" }}
               >
                 {t.payoffHoverExpiryPrice}:{" "}
@@ -847,17 +854,17 @@ export function LinearPayoffChart({
                 y={activeScrub.boxY + 32}
                 fontSize={10}
                 fontWeight={500}
-                fill="#c8ccd1"
+                fill={MID}
                 style={{ fontVariantNumeric: "tabular-nums" }}
               >
                 {t.payoffHoverPayout}:{" "}
                 <tspan
                   fill={
                     activeScrub.multiplier >= 1
-                      ? isBull
-                        ? "#5eead4"
-                        : "#fca5a5"
-                      : "#fde68a"
+                      ? accent
+                      : activeScrub.multiplier > 0
+                        ? GOLD
+                        : SUB
                   }
                   fontWeight={700}
                 >
@@ -870,10 +877,10 @@ export function LinearPayoffChart({
         </svg>
       </div>
 
-      {/* Compact Milestone Pill Strip */}
+      {/* Compact Dark Milestone Pill Strip */}
       <ul
         role="list"
-        className="flex flex-wrap items-center gap-1.5 border-t border-[#eef0f2] pt-2.5"
+        className="flex flex-wrap items-center gap-1.5 border-t border-[#1d2025] pt-2.5"
       >
         {pillMilestones.map((m) => {
           const isSelected =
@@ -891,16 +898,16 @@ export function LinearPayoffChart({
                       : { key: rangeKey, price: m.price }
                   )
                 }
-                className={`inline-flex min-h-7 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] tabular-nums transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#14202a] ${
+                className={`inline-flex min-h-7 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] tabular-nums transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/70 ${
                   isSelected
-                    ? "border-[#14202a] bg-[#14202a] text-white"
+                    ? "border-white/25 bg-[#24282f] text-white"
                     : m.kind === "cap"
                       ? isBull
-                        ? "border-[#0e7c72]/25 bg-[#e9f3f1] text-[#0e7c72] hover:border-[#0e7c72]/50"
-                        : "border-[#b54134]/25 bg-[#fbeeea] text-[#b54134] hover:border-[#b54134]/50"
+                        ? "border-[#2EC26B]/25 bg-[#2EC26B]/10 text-[#2EC26B] hover:border-[#2EC26B]/50"
+                        : "border-[#E85D4A]/25 bg-[#E85D4A]/10 text-[#E85D4A] hover:border-[#E85D4A]/50"
                       : m.kind === "breakeven"
-                        ? "border-[#8a6410]/25 bg-[#fbf3dd] text-[#8a6410] hover:border-[#8a6410]/50"
-                        : "border-[#e2e5e8] bg-[#f7f8f9] text-[#3a4552] hover:border-[#c8ccd1]"
+                        ? "border-[#E6BA5C]/25 bg-[#E6BA5C]/10 text-[#E6BA5C] hover:border-[#E6BA5C]/50"
+                        : "border-transparent bg-[#15171b] text-[#b8bec6] hover:bg-[#1f2329]"
                 }`}
               >
                 <span
@@ -911,13 +918,13 @@ export function LinearPayoffChart({
                   }}
                 />
                 <span className="font-semibold">{m.label}</span>
-                <span className={isSelected ? "text-[#e2e5e8]" : "text-[#667080]"}>
+                <span className={isSelected ? "text-[#b8bec6]" : "text-[#7e8690]"}>
                   {formatAxisPrice(m.price, underlying)}
                 </span>
                 {m.kind !== "multiple" && m.kind !== "breakeven" && (
                   <span
                     className={`font-semibold ${
-                      isSelected ? "text-white" : "text-[#14202a]"
+                      isSelected ? "text-white" : "text-white/90"
                     }`}
                   >
                     {m.pillText}

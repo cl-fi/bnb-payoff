@@ -1,34 +1,77 @@
 @import "tailwindcss";
 
-/* Chrome is monochrome; colour is reserved for data (payoff received, live state, risk). */
+/* Payoff v7 · Option 1 Pure OLED Black + Calm Apple Emerald design tokens */
 :root {
-  --n-0: #ffffff;
-  --n-50: #f7f8f9;
-  --n-100: #eef0f2;
-  --n-200: #e2e5e8;
-  --n-300: #c8ccd1;
-  --n-500: #667080;
-  --n-700: #3a4552;
-  --n-900: #14202a;
-  --ink-hover: #000a12;
-  --pay: #0e7c72;
-  --pay-tint: #e9f3f1;
-  --neg: #b54134;
-  --neg-tint: #fbeeea;
-  --warn: #8a6410;
-  --warn-tint: #fbf3dd;
-  --r-sm: 8px;
-  --r-lg: 14px;
-  --shadow-1: 0 1px 2px rgba(20, 32, 42, 0.06), 0 1px 1px rgba(20, 32, 42, 0.04);
-  --shadow-2: 0 4px 12px rgba(20, 32, 42, 0.08), 0 1px 2px rgba(20, 32, 42, 0.06);
-  --shadow-3: 0 24px 64px rgba(20, 32, 42, 0.18), 0 2px 6px rgba(20, 32, 42, 0.08);
+  color-scheme: dark;
+  --scrollbar-thumb: #3a3f47;
+  --scrollbar-track: #000000;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+
+  /* Surfaces & ink */
+  --bg: #000000;
+  --sheet: #121417;
+  --surface: #15171b;
+  --surface-input: #131519;
+  --surface-hi: #24282f;
+  --surface-pill-active: #1f2329;
+  --div: #1d2025;
+  --border-subtle: #262a31;
+  --border-active: rgba(255, 255, 255, 0.22);
+  --ink: #ffffff;
+  --logo: #f6f7f5;
+  --mid: #b8bec6;
+  --sub: #7e8690;
+
+  /* Semantic data colors (reserved for data, never primary CTA chrome) */
+  --up: #2ec26b;
+  --up-tint: rgba(46, 194, 107, 0.13);
+  --down: #e85d4a;
+  --down-tint: rgba(232, 93, 74, 0.14);
+  --gold: #e6ba5c;
+  --gold-tint: rgba(230, 186, 92, 0.14);
+
+  /* Radii & elevation */
+  --r-sm: 10px;
+  --r-lg: 16px;
+  --r-sheet: 24px;
+  --shadow-thumb: 0 2px 10px rgba(0, 0, 0, 0.7);
+  --shadow-sheet: 0 -12px 48px rgba(0, 0, 0, 0.85);
+}
+
+/* WebKit fallback for browsers without scrollbar-color */
+@supports not (scrollbar-color: auto) {
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
 }
 
 @layer base {
+  html,
   body {
-    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    background-color: var(--n-50);
-    color: var(--n-900);
+    background-color: var(--bg);
+    color: var(--ink);
+  }
+
+  body {
+    font-family:
+      "IBM Plex Sans",
+      -apple-system,
+      BlinkMacSystemFont,
+      "SF Pro Display",
+      "Segoe UI",
+      "PingFang SC",
+      "Microsoft YaHei",
+      sans-serif;
     -webkit-tap-highlight-color: transparent;
   }
 }
@@ -37,30 +80,170 @@
   font-variant-numeric: tabular-nums;
 }
 
+.safe-pb {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+/* ============================================================================
+   Option-A Native Range Slider (22px pure-white thumb, black border, dark track)
+   Separate WebKit and Firefox pseudo-element blocks per cross-browser spec.
+   Consumers can set:
+     --slider-progress: 0%..100%
+     --slider-fill-color: var(--up) | var(--down)
+   ============================================================================ */
 input[type="range"] {
-  -webkit-appearance: none;
+  --slider-track-size: 4px;
+  --slider-thumb-size: 22px;
+  --slider-track-radius: 9999px;
+  --slider-thumb-radius: 9999px;
+  --slider-track-color: #22262d;
+  --slider-fill-color: var(--up);
+  --slider-thumb-color: #ffffff;
+  --slider-thumb-border: #000000;
+  --slider-progress: 0%;
+  --slider-direction: to right;
+
   appearance: none;
-  height: 4px;
-  border-radius: 9999px;
-  background: var(--n-200);
+  -webkit-appearance: none;
+  inline-size: 100%;
+  block-size: 2.25rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"]:dir(rtl) {
+  --slider-direction: to left;
+}
+
+.payoff-range--bear {
+  --slider-fill-color: var(--down);
+}
+
+.payoff-range--transparent-track {
+  --slider-track-color: transparent;
+  --slider-fill-color: transparent;
+}
+
+/* WebKit / Blink track & thumb */
+input[type="range"]::-webkit-slider-runnable-track {
+  block-size: var(--slider-track-size);
+  border: 0;
+  border-radius: var(--slider-track-radius);
+  background: linear-gradient(
+    var(--slider-direction),
+    var(--slider-fill-color) var(--slider-progress),
+    var(--slider-track-color) var(--slider-progress)
+  );
 }
 
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 20px;
-  height: 20px;
-  border-radius: 9999px;
-  background: var(--n-900);
-  border: 3px solid var(--n-0);
-  cursor: pointer;
-  box-shadow: var(--shadow-2);
+  inline-size: var(--slider-thumb-size);
+  block-size: var(--slider-thumb-size);
+  margin-block-start: calc(
+    (var(--slider-track-size) - var(--slider-thumb-size)) / 2
+  );
+  border-radius: var(--slider-thumb-radius);
+  background: var(--slider-thumb-color);
+  border: 3px solid var(--slider-thumb-border);
+  box-shadow: var(--shadow-thumb);
+  transition: transform 120ms ease;
 }
 
-.safe-pb {
-  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+input[type="range"]:active::-webkit-slider-thumb {
+  transform: scale(1.06);
 }
 
+/* Firefox track, progress & thumb (separate block so WebKit does not drop rules) */
+input[type="range"]::-moz-range-track {
+  block-size: var(--slider-track-size);
+  border: 0;
+  border-radius: var(--slider-track-radius);
+  background: var(--slider-track-color);
+}
+
+input[type="range"]::-moz-range-progress {
+  block-size: var(--slider-track-size);
+  border-radius: var(--slider-track-radius);
+  background: var(--slider-fill-color);
+}
+
+input[type="range"]::-moz-range-thumb {
+  inline-size: var(--slider-thumb-size);
+  block-size: var(--slider-thumb-size);
+  box-sizing: border-box;
+  border-radius: var(--slider-thumb-radius);
+  background: var(--slider-thumb-color);
+  border: 3px solid var(--slider-thumb-border);
+  box-shadow: var(--shadow-thumb);
+  transition: transform 120ms ease;
+}
+
+input[type="range"]:active::-moz-range-thumb {
+  transform: scale(1.06);
+}
+
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input[type="range"]::-webkit-slider-thumb {
+    transition: none;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    transition: none;
+  }
+}
+
+/* Forced Colors Mode (Windows High Contrast) fallback */
+@media (forced-colors: active) {
+  input[type="range"]::-webkit-slider-runnable-track {
+    background: CanvasText;
+    border: 1px solid ButtonBorder;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    background: ButtonText;
+    border: 2px solid Canvas;
+    box-shadow: none;
+  }
+
+  input[type="range"]::-moz-range-track {
+    background: CanvasText;
+    border: 1px solid ButtonBorder;
+  }
+
+  input[type="range"]::-moz-range-progress {
+    background: Highlight;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    background: ButtonText;
+    border: 2px solid Canvas;
+    box-shadow: none;
+  }
+
+  input[type="range"]:focus-visible {
+    outline: 2px solid Highlight;
+  }
+
+  dialog.payoff-sheet {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* ============================================================================
+   Native <dialog> Scroll Containment + Top-Layer Dark Bottom-Sheet Transitions
+   ============================================================================ */
 dialog:modal {
   overscroll-behavior: contain;
 }
@@ -68,6 +251,110 @@ dialog:modal {
 dialog::backdrop {
   overflow: hidden;
   overscroll-behavior: contain;
-  background: rgba(20, 32, 42, 0.4);
-  backdrop-filter: blur(2px);
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(4px);
+}
+
+/* Reusable dark #121417 bottom sheet (mobile) / centered modal (desktop) */
+dialog.payoff-sheet {
+  margin: auto 0 0;
+  padding: 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: 90dvh;
+  border: 0;
+  border-top: 1px solid var(--div);
+  border-radius: var(--r-sheet) var(--r-sheet) 0 0;
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: var(--shadow-sheet);
+  opacity: 0;
+  transition-property: opacity, transform, display, overlay;
+  transition-duration: 0.22s;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  transition-behavior: allow-discrete;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog.payoff-sheet {
+    transform: translateY(20px);
+  }
+}
+
+dialog.payoff-sheet[open]:where(:not([data-closing])) {
+  opacity: 1;
+
+  @starting-style {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    transform: translateY(0);
+
+    @starting-style {
+      transform: translateY(20px);
+    }
+  }
+}
+
+dialog.payoff-sheet::backdrop {
+  background-color: rgba(0, 0, 0, 0);
+  transition-property: background-color, display, overlay;
+  transition-duration: 0.22s;
+  transition-timing-function: ease-out;
+  transition-behavior: allow-discrete;
+}
+
+dialog.payoff-sheet[open]:where(:not([data-closing]))::backdrop {
+  background-color: rgba(0, 0, 0, 0.72);
+
+  @starting-style {
+    background-color: rgba(0, 0, 0, 0);
+  }
+}
+
+@media (min-width: 768px) {
+  dialog.payoff-sheet {
+    margin: auto;
+    width: min(92vw, 440px);
+    max-width: 440px;
+    max-height: 86dvh;
+    border: 1px solid var(--div);
+    border-radius: var(--r-sheet);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    dialog.payoff-sheet {
+      transform: translateY(10px) scale(0.97);
+    }
+
+    dialog.payoff-sheet[open]:where(:not([data-closing])) {
+      transform: translateY(0) scale(1);
+
+      @starting-style {
+        transform: translateY(10px) scale(0.97);
+      }
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  dialog.payoff-sheet,
+  dialog.payoff-sheet::backdrop {
+    transition-duration: 0.1s;
+  }
+}
+
+.payoff-sheet-handle {
+  margin: 10px auto 2px;
+  width: 36px;
+  height: 4px;
+  border-radius: 9999px;
+  background: #2e333b;
+}
+
+@media (min-width: 768px) {
+  .payoff-sheet-handle {
+    display: none;
+  }
 }

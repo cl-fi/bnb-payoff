@@ -13,6 +13,7 @@ const fmtUtc = (v: string) => (/utc/i.test(v) ? v : `${v} UTC`);
 
 const dict = {
   zh: {
+    // Navigation & Account
     navTrade: "交易",
     navPositions: "持仓",
     connectWallet: "邮箱登录",
@@ -29,28 +30,16 @@ const dict = {
     welcomeAirdropMinting: "正在为新账户免费空投 1,000 tUSDT...",
     welcomeAirdropSuccess: (amt: number) =>
       `欢迎加入 Payoff！已自动空投 ${amt.toLocaleString()} tUSDT 到您的免 Gas 账户，可直接一键下注。`,
+    welcomeAirdropShortSuccess: (amt: number) =>
+      `已自动空投 ${amt.toLocaleString()} tUSDT`,
     welcomeAirdropRetry: "重试领取",
+    welcomeAirdropRetryFull: "重新领取 1,000 tUSDT",
     initializingWallet: "正在初始化免 Gas 账户...",
-    scannedWalletsSection: "可用 BNB Chain 钱包连接器",
-    foundCount: (n: number) => `已检测到 ${n} 个插件`,
-    notDetected: "可直接扫码或安装插件",
-    binanceOfficialBadge: "BNB 官方",
-    binanceAppQrBadge: "App 扫码",
-    binanceAppQrDesc: "币安 App 扫码或安装官方插件直连",
-    walletConnectBadge: "扫码连接",
-    walletConnectDesc: "手机钱包扫码连接（Trust / SafePal 等）",
-    wagmiPoweredNote: "非托管 · Wagmi v2 · Binance Wallet SDK · EIP-6963",
-    bnbReady: "BNB Chain 推荐",
-    browserWallet: "EIP-6963 浏览器钱包",
-    installedBadge: "已安装",
-    noWalletHint:
-      "未检测到浏览器插件，可直接点击上方 Binance Wallet 扫码，或安装以下官方插件：",
-    getBinanceWallet: "Binance Wallet",
-    getMetaMask: "MetaMask",
-    getTrustWallet: "Trust Wallet",
     viewOnBscScan: "在 BscScan 查看",
     nonCustodialNote: "仅用于链上签名与结算，Payoff 不托管您的私钥",
     cappedLossTag: "亏损封顶 · 永不爆仓",
+
+    // Market & Direction
     past24h: "过去 24 小时",
     bull: "看涨",
     bear: "看跌",
@@ -80,7 +69,7 @@ const dict = {
     flatReturnShort: (pct: string) => `横盘返 ${pct}%`,
     breakevenShort: (pct: string) => `回本 ${pct}%`,
     maxMultiplier: "最高赔率",
-    buyAmount: "买入金额",
+    buyAmount: "投入金额",
     available: "可用",
     numStake: "投入本金（最大亏损）",
     numBreakeven: "到期回本价格",
@@ -91,6 +80,34 @@ const dict = {
     earlyExitMove: (amt: string) => `顺行 1.5% 约可退 ${amt} USDT`,
     noLiqNote: "盘中插针不爆仓 · 满额赔付链上锁仓",
     savePct: (p: string) => `省 ${p}%`,
+
+    // Option A Target Cap Slider + Editable Amount Bar + Math Line + CTAs
+    capPriceLabel: "封顶价",
+    sliderTargetHint: (op: "≥" | "≤", price: string, pct: string) =>
+      `封顶价 ${op} ${fmtUsd(price)} (${pct})`,
+    stakeInputLabel: "投入金额",
+    amountQuickAdd10: "+$10",
+    amountQuickAdd50: "+$50",
+    amountMax: "最大",
+    mathStartShort: (price: string) => `起赚线 ${fmtUsd(price)}`,
+    mathBreakevenShort: (price: string) => `回本 ${fmtUsd(price)}`,
+    mathMaxWin: (amt: string) => `最多赢 ${fmtUsd(amt)}`,
+    buyCtaBull: (stake: string, maxWin: string) =>
+      `买涨 ${fmtUsd(stake)} · 最多赢 ${fmtUsd(maxWin)}`,
+    buyCtaBear: (stake: string, maxWin: string) =>
+      `买跌 ${fmtUsd(stake)} · 最多赢 ${fmtUsd(maxWin)}`,
+    buyCtaSignIn: "邮箱登录买入 · 送 1,000 测试 USDT",
+    executingGasless: "正在免 Gas 成交…",
+    approvingGasless: "免 Gas 授权中…",
+    chartScrubHint: "拖动模拟结算价",
+    chartScrubReadout: (price: string, payout: string) =>
+      `结算在 ${fmtUsd(price)} → 拿回 ${fmtUsd(payout)}`,
+    chartScrubTotalReadout: (price: string, totalPayout: string) =>
+      `结算在 ${fmtUsd(price)} → 合计拿回 ${fmtUsd(totalPayout)}`,
+    chartCapPill: (win: string, op: "≥" | "≤", cap: string) =>
+      `赢 ${fmtUsd(win)} · ${op} ${fmtUsd(cap)}`,
+
+    // Order States
     buySuccess: "买入成功，赔付已锁定（同区间仓位自动合并）",
     viewPositions: "查看我的持仓",
     continueTrading: "继续下单",
@@ -100,14 +117,16 @@ const dict = {
     confirmingTx: "免 Gas 链上确认中...",
     confirmPay: (s: string) => `确认支付 ${s} USDT`,
     cancel: "取消",
-    connectToBuy: "邮箱登录 · 免费领 1,000 tUSDT 下单",
+    connectToBuy: "邮箱登录买入 · 送 1,000 测试 USDT",
     fetchingQuote: "正在获取实时报价...",
     insufficientUsdt: "USDT 余额不足",
     adjustRangeFirst: "请先调整价格区间",
     quotingPausedCta: "预言机熔断保护中 · 暂停新开仓",
     quotingPausedNotice:
       "Atlas ConsensusScore 检测到异常市场分歧，已自动触发风控熔断暂停新开仓（现有持仓仍可安全平仓或到期结算）。",
-    buyNowCta: (dir: string, s: number) => `买入${dir}票 · ${s} USDT`,
+    buyNowCta: (dir: string, s: number) => `买入${dir} · $${s}`,
+
+    // Chart
     chartCandle: "K线",
     chartLine: "分时",
     bar5m: "5分",
@@ -116,28 +135,146 @@ const dict = {
     bar4H: "4时",
     bar1D: "日线",
     chartCapLabel: (m: string) => `拿满 ${m}x`,
-    chartBreakevenLabel: "到期回本",
-    chartStartLabel: "起步价",
+    chartBreakevenLabel: "回本",
+    chartStartLabel: "起赚线",
     profitZone: "盈利区间",
-    perpCompare: (px: string) => `对比 50x 永续插针强平点 $${px} · 本票不爆仓`,
+    perpCompare: (px: string) => `对比 50x 永续强平点 $${px} · 本票不爆仓`,
+
+    // A1 Onboarding Sheet (uses "普通预测市场")
+    onboardingTitle: "30 秒看懂 Payoff",
+    onboardingSubtitle: "防插针、线性赔付的方向预测市场",
+    onboardingRule1Title: "1. 选方向和封顶价",
+    onboardingRule1Body:
+      "滑动刻度选封顶价与赔率，最多只亏投入本金，盘中插针绝不爆仓。",
+    onboardingRule2Title: "2. 涨到一半也赚钱，不会归零",
+    onboardingRule2Body:
+      "不像全赢或归零的二元盘，价格只要过了起赚线就按比例线性赔付。",
+    onboardingRule3Title: "3. 邮箱登录免 Gas · 随时可卖",
+    onboardingRule3Body:
+      "登录即送 1,000 测试 USDT，一键静默成交，到期前 30 分钟外随时可止盈卖出。",
+    onboardingCompareTitle: "同样投入 $20，到期只涨到目标一半时",
+    onboardingCompareStandardLabel: "普通预测市场",
+    onboardingCompareStandardValue: "$0（直接归零）",
+    onboardingComparePayoffLabel: "Payoff",
+    onboardingComparePayoffValue: "~$36（线性照付）",
+    onboardingStartCta: "开始体验",
+    onboardingReplayBtn: "重看 30 秒新手引导",
+
+    // Market Picker Sheet
+    marketPickerTitle: "选择市场",
+    marketPickerSubtitle: "全额链上抵押 · Atlas 30m TWAP 自动结算",
+    marketBtcName: "比特币",
+    marketEthName: "以太坊",
+    marketNvdaName: "英伟达 · 美股 RWA",
+    marketCadenceCrypto: "每日 16:00 / 周五结算",
+    marketCadenceRwa: "一/三/五 美股收盘结算",
+    marketActivePositionsBadge: (n: number) => `${n} 笔持仓`,
+    infoRulesTooltip: "规则与预言机",
+
+    // B1-B6 In-Page Positions, Merge Sheet (B3), Sell Sheet (B4), Account Drawer (B6)
+    currentExpiryPositionsTitle: "本期持仓",
+    positionsTotalStake: "合计投入",
+    positionsTotalValue: "当前估值",
+    positionsSimulatedTotal: "模拟合计拿回",
+    actionSell: "卖出",
+    actionAddMore: "加仓",
+    priorExpiryViewOnly: "该期已停止开仓，可提前卖出或等待自动结算",
+    jumpToNextExpiry: "前往下一期下单",
+    addMoreSheetTitle: "再买一笔",
+    mergeNoticeSameSeries: (
+      existingStake: string,
+      combinedStake: string,
+      combinedMaxPayout: string
+    ) =>
+      `将与现有同区间持仓（投入 ${fmtUsd(existingStake)}）自动合并 → 合计投入 ${fmtUsd(combinedStake)}，最高可赢 ${fmtUsd(combinedMaxPayout)}`,
+    mergeNoticeNewSeries: "将新开一笔独立区间持仓，同页实时追踪",
+    sellSheetEstPayout: "预估立即到手",
+    sellSheetCompareSellTitle: "现在卖出",
+    sellSheetCompareHoldTitle: "持有到结算",
+    sellSheetRemainingNote: (pct: number, remMax: string) =>
+      `剩余 ${pct}% 最高仍可赢 ${fmtUsd(remMax)}`,
+    sellSheetFullyClosed: "全部落袋，不再承担到期波动",
+    sellSheetHoldRange: (min: string, max: string) =>
+      `${fmtUsd(min)} ~ ${fmtUsd(max)}`,
+    sellRatio25: "25%",
+    sellRatio50: "50%",
+    sellRatio100: "全部",
+    drawerTitle: "账户与持仓",
+    drawerGasFreePill: "免 Gas",
+    drawerTotalPositionValue: "全部持仓现值",
+    drawerAvailableUsdt: "可用余额",
+    drawerQuickFaucet: "免 Gas 领水",
+    drawerClaimableSection: "待领取结算",
+    drawerActiveSection: "进行中持仓",
+    drawerNoActivePositions: "暂无进行中持仓",
+    drawerGroupCount: (n: number) => `${n} 笔`,
+    drawerHistoryStats: "历史与战绩",
+    drawerRulesSecurity: "规则与安全",
+    drawerLanguage: "语言",
+    drawerOnchainAddress: "链上地址与导出私钥",
+    drawerCopyAddress: "复制地址",
+    drawerCopied: "已复制",
+
+    // C1-C6 TWAP Lock, Settlement, 3 Outcomes, Batch Claim, History Stats, Errors
+    twapLockBannerTitle: "最后 30 分钟均价锁定期",
+    twapLockBannerDesc:
+      "早平已锁定，系统正采集 30 个整分钟 Atlas 签名价计算结算均价",
+    twapLiveAvgLabel: "实时 30m 均价",
+    autoSettleTitle: "正在自动确认结算价",
+    autoSettleStep1: "30 分钟均价采样完成",
+    autoSettleStep2: "验证 Atlas 链上签名",
+    autoSettleStep3: "开放免 Gas 领奖",
+    manualSettleHint: "已过缓冲期，您也可以免 Gas 触发链上结算",
+    manualSettleCta: "免 Gas 手动结算",
+    manualSettling: "免 Gas 提交结算中…",
+    outcomeWinBadge: "猜中盈利",
+    outcomePartialBadge: "没有归零",
+    outcomePartialTitle: "拿回一部分",
+    outcomeMissBadge: "本期未中",
+    outcomeMissTitle: "未达起赚线",
+    outcomeSettlementPriceLabel: "Atlas 30m 结算价",
+    outcomeTotalClaimable: "本期合计可领",
+    outcomeBatchClaimCta: (amt: string, count: number) =>
+      count > 1
+        ? `一次免 Gas 领完 ${fmtUsd(amt)}（${count} 笔）`
+        : `免 Gas 领取 ${fmtUsd(amt)}`,
+    outcomeClaiming: "免 Gas 领取中…",
+    outcomeClaimedSuccess: (amt: string) => `已免 Gas 到账 ${fmtUsd(amt)}`,
+    outcomePlayAgain: "再来一局",
+    outcomeZeroClaimClose: "确认归档",
+    historyTitle: "历史与战绩",
+    historyNetPnl: "累计盈亏",
+    historyTotalTrades: "已结笔数",
+    historyDirectionHits: "方向猜对",
+    historyPartialSaved: "未到封顶也拿回",
+    historyEmpty: "暂无已平仓或已结算记录",
+    historyTxOpen: "买入交易",
+    historyTxClose: "卖出交易",
+    historyTxRedeem: "领取交易",
+    rulesSettlementHistoryTitle: "近期 Atlas 链上结算记录",
+    rulesSettlementHistoryEmpty: "暂无近期链上结算记录",
+    errorGenericTitle: "交易未能完成",
+    errorRetry: "重试",
+
+    // Positions & Early Close (preserved for PositionsPage & EarlyCloseModal)
     positionsConnectTitle: "邮箱登录查看持仓",
     positionsConnectDesc:
       "使用邮箱一键登录自动创建免 Gas BNB 账户（新用户免费赠送 1,000 tUSDT），实时追踪持仓与自动结算。",
-    portfolioValue: "持仓实时估值（可随时平仓）",
+    portfolioValue: "持仓实时估值（可随时卖出）",
     liveUpdating: "实时刷新平仓报价",
     noPositions: "暂无持仓票据",
     noPositionsDesc:
-      "用 10~20 USDT 体验防插针、永不爆仓的高赔率价差票，支持 BNB Smart Chain 测试网一键领水。",
+      "用 10~20 USDT 体验防插针、永不爆仓的高赔率价差票，支持免 Gas 一键领水。",
     goTrade: "去交易",
     statusActive: "持仓中",
-    statusTwapWindow: "30m 结算观察期",
+    statusTwapWindow: "30m 均价锁定",
     statusAwaitingSettle: "待链上结算",
     statusDisputed: "争议冻结中",
-    statusClosed: "已提前止盈",
-    statusClaimable: "待领奖",
-    statusSettled: "已到期结算",
-    twapWindowCloseLocked: "30m TWAP 观察期 · 已锁定早平",
-    settleWithAtlasTwapCta: "使用 Atlas 30m TWAP 自主结算",
+    statusClosed: "已提前卖出",
+    statusClaimable: "待领取",
+    statusSettled: "已结算",
+    twapWindowCloseLocked: "30m TWAP 锁定期 · 已锁定早平",
+    settleWithAtlasTwapCta: "免 Gas 手动结算 (Atlas TWAP)",
     settleWaitingDelayShort: "等待 60s 结算缓冲期...",
     settleWaitingDelay: "距离开放无许可结算不足 60 秒，请稍后重试。",
     settleAlreadyDone: "该期已在链上完成结算，已刷新可领奖状态。",
@@ -146,44 +283,43 @@ const dict = {
     disputedExpiryNotice: "预言机健康度异常 (<40%) · 争议冻结等待管理员裁决",
     disputedShortLabel: "等待管理员透明裁决",
     awaitingTwapShortLabel: "已到期 · 待提交 30 点 TWAP",
-    canExitNow: "当前可提前平仓",
+    canExitNow: "当前可提前卖出",
     indicativeCloseLockedLabel: "参考估值 · 早平已锁定",
     claimable: "可领取收益",
     realized: "已落袋",
-    earlyCloseCta: "提前平仓止盈",
+    earlyCloseCta: "提前卖出",
     claimCta: (amt: string) => `领取 ${amt} USDT`,
-    earlyCloseTitle: "提前平仓止盈",
+    earlyCloseTitle: "提前卖出",
     chooseSellRatio: "选择卖出比例",
-    sellAll: "全部平仓",
-    sellPct: (p: number) => `卖出 ${p}%`,
-    fetchingExitQuote: "正在获取最优即时平仓价...",
-    indicativeExitTitle: "参考可提前平仓价值",
-    indicativeExitSub: "点击下方按钮向做市商获取 45 秒锁定一口价",
+    sellAll: "全部",
+    sellPct: (p: number) => `${p}%`,
+    fetchingExitQuote: "正在获取最优即时卖出价...",
+    indicativeExitTitle: "预估提前卖出到手",
+    indicativeExitSub: "点击下方按钮锁定 45 秒一口价并免 Gas 成交",
     requestExitQuote: "获取实时卖出报价",
     quoteExpiredRefresh: "报价已过期，重新获取报价",
     quoteExpiredError: "当前报价已超过 45 秒有效期，请重新获取最新报价。",
-    instantReceive: "本次平仓立即到账",
-    noSlippageNote: "一口价成交 · 无滑点 · 实时结算至您的钱包",
+    instantReceive: "本次卖出立即到账",
+    noSlippageNote: "一口价成交 · 1.5% 滑点熔断保护",
     fallbackGuarantee: (exp: string) =>
-      `如果您对当前提前平仓价不满意，可随时取消并继续持有至到期（${exp} UTC），系统将严格按 Atlas Pull Oracle 链上签名价自动结算。`,
-    confirmSell: (amt: string) => `确认卖出 (${amt} USDT)`,
+      `如果您对当前卖出价不满意，可随时取消并继续持有至到期（${exp} UTC），系统将按 Atlas 30m 均价自动结算。`,
+    confirmSell: (amt: string) => `确认卖出 · 到手 $${amt}`,
     keepHolding: "继续持有",
-    holdNotice: "盘中不爆仓 · 可随时止盈或持有到期自动结算",
-    wrongNetworkBanner:
-      "当前钱包未切换到 BNB Smart Chain 测试网（Chain ID 97），请切换网络以发起链上交易。",
-    switchToBsc: "切换到 BSC 测试网",
-    switchingNetwork: "切换中...",
+    holdNotice: "盘中不爆仓 · 可随时卖出或持有到期自动结算",
+
+    // Faucet & Self-trade
     faucetTitle: "免费领取测试 USDT (tUSDT)",
     faucetDesc:
       "新用户首次登录自动空投 1,000 tUSDT；如需更多测试资金可随时免 Gas 领取（单次最高 100,000 tUSDT，无需 tBNB）。",
     faucetBnbLink: "获取测试 BNB ↗",
-    faucetBalance: "当前钱包 tUSDT 余额",
+    faucetBalance: "当前 tUSDT 余额",
     faucetAmountLabel: "领取数量",
     faucetClaimBtn: (amt: number) => `免 Gas 领取 ${amt.toLocaleString()} tUSDT`,
     faucetClaiming: "免 Gas 链上领取中...",
     faucetSuccess: (amt: number) => `已成功领取 ${amt.toLocaleString()} tUSDT！`,
     selfTradeError:
-      "当前连接的钱包与做市商地址相同（合约禁止自成交），请切换其他钱包地址后再下单。",
+      "当前账户与做市商地址相同（合约禁止自成交），请更换其他邮箱账户后再下单。",
+
     // Linear Payoff Chart & Market Rules
     payoffChartTitle: "到期赔付阶梯图",
     payoffSlopeCall: (step: string, deltaUsd: string, deltaMult: string) =>
@@ -198,7 +334,7 @@ const dict = {
     payoffMilestoneStart: "起赚底线",
     payoffHoverExpiryPrice: "到期结算价",
     payoffHoverPayout: "到期可拿回",
-    rulesTitle: "结算规则、预言机验证与资金保障",
+    rulesTitle: "规则与预言机保障",
     rulesBadge:
       "Atlas 30m 链上 TWAP 验签结算 + 健康分争议保护 · BNB Chain 100% 全额托管",
     rulesItem1Title: "1. Atlas 30 分钟确定性 TWAP 无许可链上结算（对齐 OKX/Deribit）",
@@ -226,6 +362,7 @@ const dict = {
     rulesItem4Title: "4. RWA bStock 乘数与公司行动保护机制",
     rulesItem4Body: (shareMultiplier: string, feedId: string) =>
       `本市场锚定币安 bStocks BEP-677 资产 NVDAB/USD（Atlas Feed #${feedId}）。当前链上份额乘数为 1 NVDAB = ${shareMultiplier} NVDA，自动计入股息再投资并保持拆股前后价格连续。拆股切换哨兵实时监控份额乘数漂移与公司行动窗口：若单期乘数漂移超过 1.0% 或处于公司行动保护期，系统将自动触发新开仓熔断并冻结受影响的到期窗口，待校验通过后再安全结算。`,
+
     // Atlas Oracle Badge copy
     atlasBadgeTitle: "Atlas Oracle 实时共识护盾",
     atlasFeedLabel: "数据源 Feed",
@@ -239,7 +376,8 @@ const dict = {
     atlasBreakerNormal: "结算与报价守护正常",
     atlasBscTestnet: "BSC 测试网",
     atlasToggleDetails: "详情",
-    // TradePage & OrderTicketPanel & Seamless 1-Click RFQ
+
+    // TradePage & RWA & Slippage
     zeroLiqBadge: "0 爆仓",
     tenorDailyPill: "24H 日度",
     tenorWeeklyPill: "7D 周度",
@@ -260,39 +398,37 @@ const dict = {
       underlying === "NVDAB"
         ? "NVDA (NVDAB · RWA) · 美股收盘连续赔付预测市场"
         : `${underlying} ${isDaily ? "24h" : "7D"} 涨跌 · 连续赔付预测市场`,
-    startLineLabel: "起赚线 (Start Line)",
-    settlesCountdownLabel: "距离结算",
+    startLineLabel: "起赚线",
+    settlesCountdownLabel: "距结算",
     settledNow: "结算中",
     fixedGridNote: "固定网格锚定 · 抗插针不漂移",
-    upButtonLabel: "看涨 UP",
-    downButtonLabel: "看跌 DOWN",
+    upButtonLabel: "看涨",
+    downButtonLabel: "看跌",
     selectTargetTitle: "选择目标封顶价",
     sharedPoolTag: "多空同池",
     fixedStartLineHint: (price: string, isBull: boolean) =>
       `固定起赚底线 ${fmtUsd(price)}（${isBull ? "超过即线性赔付，自带防归零缓冲" : "跌破即线性赔付，自带防归零缓冲"}）`,
-    toWinLabel: "最高可赢 (To Win)",
+    toWinLabel: "最多赢",
     flatReturnCompactLabel: "现价横盘拿回",
-    breakevenCompactLabel: "到期回本价",
-    buyOneClickCta: (dir: string, stake: number) =>
-      `买入${dir} · $${stake} USDT`,
+    breakevenCompactLabel: "回本价",
+    buyOneClickCta: (dir: string, stake: number) => `买${dir} $${stake}`,
     lockingBestPrice: "正在锁定最优成交价...",
-    openingWallet: "免 Gas 链上确认成交中...",
+    openingWallet: "正在免 Gas 成交…",
     slippageTitle: "价格瞬时波动，已锁定最新一口价",
     slippageBuyDesc: (prevUsd: string, nextUsd: string, dropPct: string) =>
       `最高可赢由 ${prevUsd} USDT 调整为 ${nextUsd} USDT（-${dropPct}%），确认按新价成交？`,
     slippageConfirmBuyCta: (payout: string) =>
-      `确认成交（最高可赢 ${payout} USDT）`,
-    blockRfqComingSoon: "大额自定义区间（Block RFQ）· Coming Soon",
-    instantRfqFootNote: "免 Gas 静默一键成交 · 1.5% 滑点自动熔断保护",
+      `确认成交（最多赢 $${payout}）`,
     indicativeExitSubSeamless:
-      "点击下方按钮一键锁定 45 秒最新一口价并免 Gas 静默成交",
-    confirmSellApprox: (amt: string) => `确认卖出（约 $${amt} USDT）`,
+      "点击下方按钮锁定 45 秒最新一口价并免 Gas 静默成交",
+    confirmSellApprox: (amt: string) => `确认卖出 · 约 $${amt}`,
     slippageSellDesc: (estUsd: string, firmUsd: string, dropPct: string) =>
       `最新锁定回购价为 ${firmUsd} USDT，较参考估值 ${estUsd} USDT 变动 -${dropPct}%，确认卖出？`,
-    slippageConfirmSellCta: (amt: string) => `确认按新价卖出（${amt} USDT）`,
-    fetchingAndSelling: "正在锁价并免 Gas 提交...",
+    slippageConfirmSellCta: (amt: string) => `确认按新价卖出（$${amt}）`,
+    fetchingAndSelling: "正在锁价并免 Gas 卖出…",
   },
   en: {
+    // Navigation & Account
     navTrade: "Trade",
     navPositions: "Portfolio",
     connectWallet: "Sign in",
@@ -310,29 +446,17 @@ const dict = {
     welcomeAirdropMinting: "Sending 1,000 free welcome tUSDT to your new account...",
     welcomeAirdropSuccess: (amt: number) =>
       `Welcome to Payoff! ${amt.toLocaleString()} tUSDT has been airdropped to your gasless account — ready to trade.`,
+    welcomeAirdropShortSuccess: (amt: number) =>
+      `${amt.toLocaleString()} tUSDT airdropped`,
     welcomeAirdropRetry: "Retry",
-    initializingWallet: "Setting up gasless account...",
-    scannedWalletsSection: "BNB Chain Wallet Connectors",
-    foundCount: (n: number) => `${n} extension${n === 1 ? "" : "s"} detected`,
-    notDetected: "Scan QR or install extension",
-    binanceOfficialBadge: "Official",
-    binanceAppQrBadge: "App QR",
-    binanceAppQrDesc: "Scan with Binance App or connect browser extension",
-    walletConnectBadge: "QR Code",
-    walletConnectDesc: "Scan with mobile wallet (Trust, SafePal, etc.)",
-    wagmiPoweredNote: "Non-custodial · Wagmi v2 · Binance Wallet SDK · EIP-6963",
-    bnbReady: "BNB Chain ready",
-    browserWallet: "EIP-6963 browser wallet",
-    installedBadge: "Detected",
-    noWalletHint:
-      "No browser extension detected. Click Binance Wallet above to scan via Binance App, or install an extension:",
-    getBinanceWallet: "Binance Wallet",
-    getMetaMask: "MetaMask",
-    getTrustWallet: "Trust Wallet",
+    welcomeAirdropRetryFull: "Retry 1,000 tUSDT",
+    initializingWallet: "Setting up account...",
     viewOnBscScan: "View on BscScan",
     nonCustodialNote:
-      "Used for onchain signing only. Payoff never custodies your keys.",
+      "Used for on-chain signing only. Payoff never custodies your keys.",
     cappedLossTag: "Capped loss · Zero liquidation",
+
+    // Market & Direction
     past24h: "Past 24h",
     bull: "Up",
     bear: "Down",
@@ -362,7 +486,7 @@ const dict = {
     flatReturnShort: (pct: string) => `${pct}% back if flat`,
     breakevenShort: (pct: string) => `BE ${pct}%`,
     maxMultiplier: "Max payout",
-    buyAmount: "Order amount",
+    buyAmount: "Amount",
     available: "Available",
     numStake: "Cost (Max loss)",
     numBreakeven: "Breakeven at expiry",
@@ -371,9 +495,38 @@ const dict = {
     numExpiry: "Settlement time",
     numEarlyExit: "Early exit reference",
     earlyExitMove: (amt: string) => `~${amt} USDT on 1.5% move`,
-    noLiqNote: "Wick-proof · Full payout locked onchain",
+    noLiqNote: "Wick-proof · Full payout locked on-chain",
     savePct: (p: string) => `Save ${p}%`,
-    buySuccess: "Ticket filled & payout locked (same-range positions merge automatically)",
+
+    // Option A Target Cap Slider + Editable Amount Bar + Math Line + CTAs
+    capPriceLabel: "Target cap",
+    sliderTargetHint: (op: "≥" | "≤", price: string, pct: string) =>
+      `Cap ${op} ${fmtUsd(price)} (${pct})`,
+    stakeInputLabel: "Amount",
+    amountQuickAdd10: "+$10",
+    amountQuickAdd50: "+$50",
+    amountMax: "Max",
+    mathStartShort: (price: string) => `Start ${fmtUsd(price)}`,
+    mathBreakevenShort: (price: string) => `Breakeven ${fmtUsd(price)}`,
+    mathMaxWin: (amt: string) => `Win up to ${fmtUsd(amt)}`,
+    buyCtaBull: (stake: string, maxWin: string) =>
+      `Buy Up ${fmtUsd(stake)} · Win ${fmtUsd(maxWin)}`,
+    buyCtaBear: (stake: string, maxWin: string) =>
+      `Buy Down ${fmtUsd(stake)} · Win ${fmtUsd(maxWin)}`,
+    buyCtaSignIn: "Sign in to trade · Free 1,000 tUSDT",
+    executingGasless: "Filling gas-free…",
+    approvingGasless: "Authorizing gas-free…",
+    chartScrubHint: "Drag to simulate payout",
+    chartScrubReadout: (price: string, payout: string) =>
+      `At ${fmtUsd(price)} → Payout ${fmtUsd(payout)}`,
+    chartScrubTotalReadout: (price: string, totalPayout: string) =>
+      `At ${fmtUsd(price)} → Total ${fmtUsd(totalPayout)}`,
+    chartCapPill: (win: string, op: "≥" | "≤", cap: string) =>
+      `Win ${fmtUsd(win)} · ${op} ${fmtUsd(cap)}`,
+
+    // Order States
+    buySuccess:
+      "Ticket filled & payout locked (same-range positions merge automatically)",
     viewPositions: "View portfolio",
     continueTrading: "Buy another",
     lockedQuoteTitle: "Best firm quote locked",
@@ -382,14 +535,16 @@ const dict = {
     confirmingTx: "Confirming gasless tx...",
     confirmPay: (s: string) => `Confirm & pay ${s} USDT`,
     cancel: "Cancel",
-    connectToBuy: "Sign in with email · Get 1,000 tUSDT",
+    connectToBuy: "Sign in to trade · Free 1,000 tUSDT",
     fetchingQuote: "Fetching firm quote...",
     insufficientUsdt: "Insufficient USDT balance",
     adjustRangeFirst: "Adjust range within guardrails",
     quotingPausedCta: "Oracle circuit breaker active · New opens paused",
     quotingPausedNotice:
       "Atlas ConsensusScore detected severe market divergence and automatically paused new open quotes. Existing tickets remain safe for early exit or expiry settlement.",
-    buyNowCta: (dir: string, s: number) => `Buy ${dir} Ticket · ${s} USDT`,
+    buyNowCta: (dir: string, s: number) => `Buy ${dir} · $${s}`,
+
+    // Chart
     chartCandle: "Candles",
     chartLine: "Line",
     bar5m: "5m",
@@ -402,6 +557,128 @@ const dict = {
     chartStartLabel: "Start",
     profitZone: "Target zone",
     perpCompare: (px: string) => `50x perp liq at $${px} · Ticket stays safe`,
+
+    // A1 Onboarding Sheet (uses "Standard prediction markets")
+    onboardingTitle: "Understand Payoff in 30s",
+    onboardingSubtitle: "Wick-proof, continuous-payout directional markets",
+    onboardingRule1Title: "1. Pick a direction & target cap",
+    onboardingRule1Body:
+      "Slide to pick your cap price and payout multiplier. Loss is strictly capped—intraday wicks never liquidate you.",
+    onboardingRule2Title: "2. Move halfway, still get paid",
+    onboardingRule2Body:
+      "Unlike all-or-nothing binary markets, any finish past your start line pays linearly.",
+    onboardingRule3Title: "3. Email sign-in, gas-free, exit anytime",
+    onboardingRule3Body:
+      "Get 1,000 free test USDT on sign-in, execute silently with zero gas, or sell early anytime before the 30m lock.",
+    onboardingCompareTitle:
+      "With a $20 trade when price finishes halfway to target",
+    onboardingCompareStandardLabel: "Standard prediction markets",
+    onboardingCompareStandardValue: "$0 (zeroed out)",
+    onboardingComparePayoffLabel: "Payoff",
+    onboardingComparePayoffValue: "~$36 (paid linearly)",
+    onboardingStartCta: "Get started",
+    onboardingReplayBtn: "Replay 30s intro",
+
+    // Market Picker Sheet
+    marketPickerTitle: "Select market",
+    marketPickerSubtitle: "100% on-chain collateral · Atlas 30m TWAP settlement",
+    marketBtcName: "Bitcoin",
+    marketEthName: "Ethereum",
+    marketNvdaName: "NVIDIA · US Stock RWA",
+    marketCadenceCrypto: "Daily 08:00 UTC / Fri",
+    marketCadenceRwa: "Mon/Wed/Fri US Close",
+    marketActivePositionsBadge: (n: number) => `${n} open`,
+    infoRulesTooltip: "Rules & Oracle",
+
+    // B1-B6 In-Page Positions, Merge Sheet (B3), Sell Sheet (B4), Account Drawer (B6)
+    currentExpiryPositionsTitle: "Positions this expiry",
+    positionsTotalStake: "Total stake",
+    positionsTotalValue: "Current value",
+    positionsSimulatedTotal: "Simulated total",
+    actionSell: "Sell",
+    actionAddMore: "Buy more",
+    priorExpiryViewOnly:
+      "New opens closed for this expiry. Sell early or hold to settlement.",
+    jumpToNextExpiry: "Trade next expiry",
+    addMoreSheetTitle: "Buy more",
+    mergeNoticeSameSeries: (
+      existingStake: string,
+      combinedStake: string,
+      combinedMaxPayout: string
+    ) =>
+      `Merges with your existing same-range position (${fmtUsd(existingStake)}) → Combined ${fmtUsd(combinedStake)}, max win ${fmtUsd(combinedMaxPayout)}`,
+    mergeNoticeNewSeries:
+      "Opens a separate strike-range position tracked on this page",
+    sellSheetEstPayout: "Estimated instant payout",
+    sellSheetCompareSellTitle: "Sell now",
+    sellSheetCompareHoldTitle: "Hold to expiry",
+    sellSheetRemainingNote: (pct: number, remMax: string) =>
+      `${pct}% kept · up to ${fmtUsd(remMax)}`,
+    sellSheetFullyClosed: "100% locked in, no expiry risk",
+    sellSheetHoldRange: (min: string, max: string) =>
+      `${fmtUsd(min)} – ${fmtUsd(max)}`,
+    sellRatio25: "25%",
+    sellRatio50: "50%",
+    sellRatio100: "All",
+    drawerTitle: "Account & Portfolio",
+    drawerGasFreePill: "Gas Free",
+    drawerTotalPositionValue: "Active positions value",
+    drawerAvailableUsdt: "Available",
+    drawerQuickFaucet: "Gas-free faucet",
+    drawerClaimableSection: "Ready to claim",
+    drawerActiveSection: "Active positions",
+    drawerNoActivePositions: "No active positions yet",
+    drawerGroupCount: (n: number) => `${n} ${n === 1 ? "ticket" : "tickets"}`,
+    drawerHistoryStats: "History & Stats",
+    drawerRulesSecurity: "Rules & Security",
+    drawerLanguage: "Language",
+    drawerOnchainAddress: "On-chain address & export key",
+    drawerCopyAddress: "Copy address",
+    drawerCopied: "Copied",
+
+    // C1-C6 TWAP Lock, Settlement, 3 Outcomes, Batch Claim, History Stats, Errors
+    twapLockBannerTitle: "Final 30m TWAP lock window",
+    twapLockBannerDesc:
+      "Early sell locked while Atlas samples 30 one-minute signed prices",
+    twapLiveAvgLabel: "Live 30m avg",
+    autoSettleTitle: "Confirming settlement price",
+    autoSettleStep1: "30-minute TWAP sampled",
+    autoSettleStep2: "Verifying Atlas on-chain proofs",
+    autoSettleStep3: "Unlocking gas-free claim",
+    manualSettleHint:
+      "Buffer elapsed — you can also trigger gas-free settlement",
+    manualSettleCta: "Settle now (gas-free)",
+    manualSettling: "Settling gas-free…",
+    outcomeWinBadge: "Won",
+    outcomePartialBadge: "Not zeroed out",
+    outcomePartialTitle: "Partial refund",
+    outcomeMissBadge: "Missed",
+    outcomeMissTitle: "Below start line",
+    outcomeSettlementPriceLabel: "Atlas 30m settlement",
+    outcomeTotalClaimable: "Total claimable",
+    outcomeBatchClaimCta: (amt: string, count: number) =>
+      count > 1
+        ? `Claim all ${fmtUsd(amt)} (${count} tickets)`
+        : `Claim ${fmtUsd(amt)} (gas-free)`,
+    outcomeClaiming: "Claiming gas-free…",
+    outcomeClaimedSuccess: (amt: string) => `Claimed ${fmtUsd(amt)} gas-free`,
+    outcomePlayAgain: "Play next round",
+    outcomeZeroClaimClose: "Dismiss",
+    historyTitle: "History & Stats",
+    historyNetPnl: "Cumulative PnL",
+    historyTotalTrades: "Completed",
+    historyDirectionHits: "Direction right",
+    historyPartialSaved: "Partial refunds",
+    historyEmpty: "No settled or closed trades yet",
+    historyTxOpen: "Open tx",
+    historyTxClose: "Sell tx",
+    historyTxRedeem: "Claim tx",
+    rulesSettlementHistoryTitle: "Recent Atlas settlements",
+    rulesSettlementHistoryEmpty: "No recent settlements yet",
+    errorGenericTitle: "Action could not complete",
+    errorRetry: "Try again",
+
+    // Positions & Early Close (preserved for PositionsPage & EarlyCloseModal)
     positionsConnectTitle: "Sign in to view portfolio",
     positionsConnectDesc:
       "Sign in with email for an instant gasless BNB account (with 1,000 free welcome tUSDT) and track live exits or Atlas settlements.",
@@ -412,13 +689,13 @@ const dict = {
       "Start with 10–20 USDT for wick-proof, capped-loss directional trades on BNB Smart Chain Testnet.",
     goTrade: "Explore markets",
     statusActive: "Active",
-    statusTwapWindow: "30m TWAP window",
+    statusTwapWindow: "30m TWAP lock",
     statusAwaitingSettle: "Awaiting settlement",
     statusDisputed: "Disputed · Paused",
-    statusClosed: "Closed early",
+    statusClosed: "Sold early",
     statusClaimable: "Claimable",
     statusSettled: "Settled",
-    twapWindowCloseLocked: "30m TWAP window · Early close locked",
+    twapWindowCloseLocked: "30m TWAP lock · Early sell locked",
     settleWithAtlasTwapCta: "Settle with Atlas 30m TWAP",
     settleWaitingDelayShort: "60s settlement buffer...",
     settleWaitingDelay:
@@ -434,43 +711,43 @@ const dict = {
     indicativeCloseLockedLabel: "Indicative value · Close locked",
     claimable: "Claimable payout",
     realized: "Realized",
-    earlyCloseCta: "Take profit / Exit",
+    earlyCloseCta: "Sell early",
     claimCta: (amt: string) => `Claim ${amt} USDT`,
-    earlyCloseTitle: "Close ticket early",
-    chooseSellRatio: "Select portion to close",
-    sellAll: "Close 100%",
-    sellPct: (p: number) => `Close ${p}%`,
+    earlyCloseTitle: "Sell early",
+    chooseSellRatio: "Select portion to sell",
+    sellAll: "All",
+    sellPct: (p: number) => `${p}%`,
     fetchingExitQuote: "Getting best instant buyback quote...",
-    indicativeExitTitle: "Estimated exit value",
+    indicativeExitTitle: "Estimated instant payout",
     indicativeExitSub: "Click below to lock a 45s firm buyback quote",
     requestExitQuote: "Get firm exit quote",
     quoteExpiredRefresh: "Quote expired · Refresh quote",
     quoteExpiredError:
       "This 45s firm quote has expired. Please request a fresh quote.",
-    instantReceive: "Instant payout to wallet",
-    noSlippageNote: "Firm quote · Zero slippage · Instant USDT settlement",
+    instantReceive: "Instant payout to account",
+    noSlippageNote: "Firm quote · 1.5% slippage guard",
     fallbackGuarantee: (exp: string) =>
-      `Not happy with the exit quote? Cancel anytime and hold to expiry (${exp} UTC) for permissionless onchain Atlas Pull Oracle settlement.`,
-    confirmSell: (amt: string) => `Confirm exit (${amt} USDT)`,
+      `Not happy with the exit quote? Cancel anytime and hold to expiry (${exp} UTC) for permissionless on-chain Atlas 30m TWAP settlement.`,
+    confirmSell: (amt: string) => `Confirm sell · $${amt}`,
     keepHolding: "Keep holding",
     holdNotice:
-      "Zero liquidation · Exit early anytime or hold to Atlas cryptographic settlement",
-    wrongNetworkBanner:
-      "Your wallet is not on BNB Smart Chain Testnet (Chain ID 97). Switch networks to send transactions.",
-    switchToBsc: "Switch to BSC Testnet",
-    switchingNetwork: "Switching...",
+      "Zero liquidation · Sell early anytime or hold to Atlas settlement",
+
+    // Faucet & Self-trade
     faucetTitle: "Claim Extra Test USDT (tUSDT)",
     faucetDesc:
       "New accounts automatically receive 1,000 tUSDT on first sign-in. Mint additional testnet collateral gas-free anytime (up to 100,000 tUSDT, no BNB needed).",
     faucetBnbLink: "Get test BNB ↗",
     faucetBalance: "Current tUSDT balance",
     faucetAmountLabel: "Amount to mint",
-    faucetClaimBtn: (amt: number) => `Claim ${amt.toLocaleString()} tUSDT (Gas Free)`,
+    faucetClaimBtn: (amt: number) =>
+      `Claim ${amt.toLocaleString()} tUSDT (Gas Free)`,
     faucetClaiming: "Minting gas-free...",
     faucetSuccess: (amt: number) =>
       `Minted ${amt.toLocaleString()} tUSDT to your account!`,
     selfTradeError:
-      "Connected wallet matches the market maker address (self-trade is blocked on-chain). Please switch to another wallet address.",
+      "Signed-in account matches the market maker address (self-trade is blocked on-chain). Please sign in with another email.",
+
     // Linear Payoff Chart & Market Rules
     payoffChartTitle: "Linear Payoff at Expiry",
     payoffSlopeCall: (step: string, deltaUsd: string, deltaMult: string) =>
@@ -485,11 +762,13 @@ const dict = {
     payoffMilestoneStart: "Start Line",
     payoffHoverExpiryPrice: "Expiry Price",
     payoffHoverPayout: "Expiry Payout",
-    rulesTitle: "Settlement Rules & Oracle Security",
+    rulesTitle: "Rules & Oracle Security",
     rulesBadge:
       "Atlas 30m On-Chain TWAP Settlement + Health Dispute Guard · 100% On-Chain Collateral on BNB Chain",
-    rulesItem1Title: "1. Permissionless 30-Minute Atlas TWAP Settlement (OKX / Deribit Standard)",
-    rulesItem1TitleRwa: "1. Permissionless 30-Minute Atlas TWAP Settlement (US Market Close)",
+    rulesItem1Title:
+      "1. Permissionless 30-Minute Atlas TWAP Settlement (OKX / Deribit Standard)",
+    rulesItem1TitleRwa:
+      "1. Permissionless 30-Minute Atlas TWAP Settlement (US Market Close)",
     rulesItem1Body: (
       underlying: string,
       feedId: string,
@@ -514,6 +793,7 @@ const dict = {
     rulesItem4Title: "4. RWA bStock & Corporate Action Protection",
     rulesItem4Body: (shareMultiplier: string, feedId: string) =>
       `Tracks Binance bStocks BEP-677 NVDAB/USD via Atlas Feed #${feedId}. Each NVDAB token currently represents ${shareMultiplier} NVDA shares (live shareMultiplier), automatically compounding dividends and keeping Atlas pricing continuous across stock splits. A live Split-Cutover Sentinel monitors multiplier drift and corporate action blackouts: if multiplier drift exceeds 1.0% or a blackout window is active, new opens halt automatically and affected expiries pause for verified settlement.`,
+
     // Atlas Oracle Badge copy
     atlasBadgeTitle: "Atlas Oracle Live Shield",
     atlasFeedLabel: "Oracle Feed",
@@ -527,7 +807,8 @@ const dict = {
     atlasBreakerNormal: "Settlement & Quoting Guard Active",
     atlasBscTestnet: "BSC Testnet",
     atlasToggleDetails: "Details",
-    // TradePage & OrderTicketPanel & Seamless 1-Click RFQ
+
+    // TradePage & RWA & Slippage
     zeroLiqBadge: "Zero Liquidation",
     tenorDailyPill: "24H Daily",
     tenorWeeklyPill: "7D Weekly",
@@ -552,33 +833,30 @@ const dict = {
     settlesCountdownLabel: "Settles in",
     settledNow: "Settling",
     fixedGridNote: "Fixed grid anchor · Hysteresis locked",
-    upButtonLabel: "UP",
-    downButtonLabel: "DOWN",
+    upButtonLabel: "Up",
+    downButtonLabel: "Down",
     selectTargetTitle: "Select target cap",
     sharedPoolTag: "Shared Pool",
     fixedStartLineHint: (price: string, isBull: boolean) =>
       `Fixed Start Line ${fmtUsd(price)} (${isBull ? "linear payout starts above with built-in buffer" : "linear payout starts below with built-in buffer"})`,
-    toWinLabel: "To Win",
+    toWinLabel: "Max win",
     flatReturnCompactLabel: "If flat at expiry",
     breakevenCompactLabel: "Breakeven",
-    buyOneClickCta: (dir: string, stake: number) =>
-      `Buy ${dir} · $${stake} USDT`,
+    buyOneClickCta: (dir: string, stake: number) => `Buy ${dir} · $${stake}`,
     lockingBestPrice: "Locking best firm price...",
-    openingWallet: "Confirming gasless order...",
+    openingWallet: "Filling gas-free…",
     slippageTitle: "Market moved — updated firm quote",
     slippageBuyDesc: (prevUsd: string, nextUsd: string, dropPct: string) =>
       `Max payout moved from ${prevUsd} to ${nextUsd} USDT (-${dropPct}%). Confirm to proceed?`,
     slippageConfirmBuyCta: (payout: string) =>
-      `Confirm updated quote (Win ${payout} USDT)`,
-    blockRfqComingSoon: "Custom Range (Block RFQ) · Coming Soon",
-    instantRfqFootNote: "Silent gasless 1-click · 1.5% slippage guard",
+      `Confirm quote (Win $${payout})`,
     indicativeExitSubSeamless:
-      "1-click locks a fresh 45s firm buyback quote and executes gas-free with no wallet popups",
-    confirmSellApprox: (amt: string) => `Confirm Sell (~$${amt} USDT)`,
+      "Locks a fresh 45s firm buyback quote and executes gas-free with no wallet popups",
+    confirmSellApprox: (amt: string) => `Confirm sell · ~$${amt}`,
     slippageSellDesc: (estUsd: string, firmUsd: string, dropPct: string) =>
       `Firm buyback quote is ${firmUsd} USDT vs estimated ${estUsd} USDT (-${dropPct}%). Confirm exit?`,
-    slippageConfirmSellCta: (amt: string) => `Confirm Sell (${amt} USDT)`,
-    fetchingAndSelling: "Locking quote & executing gas-free...",
+    slippageConfirmSellCta: (amt: string) => `Confirm sell ($${amt})`,
+    fetchingAndSelling: "Locking quote & selling gas-free…",
   },
 } as const;
 

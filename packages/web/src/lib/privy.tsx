@@ -30,8 +30,8 @@ export const privyConfig: PrivyClientConfig = {
     showWalletUIs: false,
   },
   appearance: {
-    theme: "light",
-    accentColor: "#14202a",
+    theme: "#000000",
+    accentColor: "#FFFFFF",
     showWalletLoginFirst: false,
   },
 };
@@ -71,10 +71,12 @@ export function PrivyBootProvider({ children }: { children: ReactNode }) {
 
   if (bootError) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#f7f8f9] p-6 text-[#14202a]">
-        <div className="max-w-md rounded-2xl border border-[#e2e5e8] bg-white p-6 text-center space-y-3 shadow-xs">
-          <h1 className="text-base font-bold">Privy Configuration Required</h1>
-          <p className="text-xs text-[#667080] leading-relaxed">{bootError}</p>
+      <div className="min-h-screen flex items-center justify-center bg-black p-6 text-white">
+        <div className="max-w-md rounded-2xl border border-[#1d2025] bg-[#121417] p-6 text-center space-y-3">
+          <h1 className="text-base font-bold text-white">
+            Privy Configuration Required
+          </h1>
+          <p className="text-xs text-[#7e8690] leading-relaxed">{bootError}</p>
         </div>
       </div>
     );
@@ -82,7 +84,7 @@ export function PrivyBootProvider({ children }: { children: ReactNode }) {
 
   if (!appId) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[#f7f8f9] text-[#667080] text-xs font-medium">
+      <div className="min-h-screen flex items-center justify-center bg-black text-[#7e8690] text-xs font-medium">
         Loading Payoff...
       </div>
     );

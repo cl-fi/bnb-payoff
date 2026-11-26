@@ -1,48 +1,137 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   Copy,
+  Droplets,
   ExternalLink,
+  Globe,
+  History,
   KeyRound,
+  Loader2,
   LogOut,
   Mail,
   ShieldCheck,
   Sparkles,
   X,
 } from "lucide-react";
-import { BSC_TESTNET } from "@payoff/shared";
-import { getExplorerBaseUrl, type ConnectedWallet } from "../lib/wallet";
+import {
+  ASSET_SPECS,
+  BSC_TESTNET,
+  type PositionView,
+  type UnderlyingSymbol,
+} from "@payoff/shared";
+import type { HealthResponse } from "../lib/api";
 import { getCopy, type Locale } from "../lib/i18n";
-import { UsdtIcon } from "./PayoffMark";
+import {
+  executeClaimTestUsdtTx,
+  extractWalletErrorMessage,
+  getExplorerBaseUrl,
+  type ConnectedWallet,
+} from "../lib/wallet";
 
-interface Props {
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+export interface WalletModalProps {
   open: boolean;
   locale: Locale;
   wallet: ConnectedWallet;
+  positions?: PositionView[];
+  health?: HealthResponse;
   onClose: () => void;
   onLogin: () => void;
   onExportWallet: () => void;
   onDisconnect: () => void;
+  onClaimFaucet?: (amountUsdt?: number) => Promise<void> | void;
+  onBatchClaim?: (seriesIds: `0x${string}`[]) => Promise<void> | void;
+  onClaimPosition?: (position: PositionView) => Promise<void> | void;
+  onSelectPositionMarket?: (
+    underlying: UnderlyingSymbol,
+    expiry: number
+  ) => void;
+  onOpenMarketPicker?: () => void;
+  onOpenHistory?: () => void;
+  onOpenRules?: () => void;
+  onToggleLang?: () => void;
+  onRefresh?: () => void;
+}
+
+function formatExpiryGroupTitle(expirySec: number, isZh: boolean): string {
+  const d = new Date(expirySec * 1000);
+  if (Number.isNaN(d.getTime())) return "--";
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const tomorrow = new Date(now.getTime() + 86_400_000);
+  const isTomorrow =
+    d.getFullYear() === tomorrow.getFullYear() &&
+    d.getMonth() === tomorrow.getMonth() &&
+    d.getDate() === tomorrow.getDate();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  if (sameDay) return isZh ? `今天 ${hh}:${mm}` : `Today ${hh}:${mm}`;
+  if (isTomorrow) return isZh ? `明天 ${hh}:${mm}` : `Tomorrow ${hh}:${mm}`;
+  const mon = d.getMonth() + 1;
+  const day = d.getDate();
+  return isZh ? `${mon}/${day} ${hh}:${mm}` : `${mon}/${day} ${hh}:${mm}`;
+}
+
+function formatRemainingShort(expirySec: number, isZh: boolean): string {
+  const diff = Math.max(0, expirySec - Math.floor(Date.now() / 1000));
+  if (diff === 0) return isZh ? "已到期" : "Expired";
+  const days = Math.floor(diff / 86400);
+  const hours = Math.floor((diff % 86400) / 3600);
+  const mins = Math.floor((diff % 3600) / 60);
+  if (days >= 1) return isZh ? `还剩 ${days} 天` : `${days}d left`;
+  if (hours >= 1) return isZh ? `还剩 ${hours} 小时` : `${hours}h left`;
+  return isZh ? `还剩 ${Math.max(1, mins)} 分钟` : `${Math.max(1, mins)}m left`;
+}
+
+function formatSignedUsd(v: number): string {
+  const sign = v >= 0 ? "+" : "−";
+  return `${sign}$${Math.abs(v).toFixed(2)}`;
 }
 
 export function WalletModal({
   open,
   locale,
   wallet,
+  positions = [],
+  health,
   onClose,
   onLogin,
   onExportWallet,
   onDisconnect,
-}: Props) {
-  const [copied, setCopied] = useState(false);
+  onClaimFaucet,
+  onBatchClaim,
+  onClaimPosition,
+  onSelectPositionMarket,
+  onOpenMarketPicker,
+  onOpenHistory,
+  onOpenRules,
+  onToggleLang,
+  onRefresh,
+}: WalletModalProps) {
+  const isZh = locale === "zh";
+  const t = getCopy(locale);
   const titleId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const t = getCopy(locale);
+
+  const [copied, setCopied] = useState(false);
+  const [addressExpanded, setAddressExpanded] = useState(false);
+  const [faucetBusy, setFaucetBusy] = useState(false);
+  const [faucetMsg, setFaucetMsg] = useState<{
+    kind: "ok" | "err";
+    text: string;
+  } | null>(null);
+  const [claimingId, setClaimingId] = useState<string | null>(null);
 
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
-
     if (open && !dialog.open) {
       dialog.showModal();
     } else if (!open && dialog.open) {
@@ -50,7 +139,7 @@ export function WalletModal({
     }
   }, [open]);
 
-  // Fallback light-dismiss for browsers without native <dialog closedby="any"> (e.g. Safari)
+  // Safari fallback for declarative <dialog closedby="any">
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!open || !dialog) return;
@@ -85,6 +174,105 @@ export function WalletModal({
     };
   }, [open]);
 
+  const {
+    claimablePositions,
+    claimableSeriesIds,
+    claimableTotalUsdt,
+    activeGroups,
+    activePortfolioValue,
+    activeUnrealizedPnl,
+    historyCount,
+    historyNetPnl,
+  } = useMemo(() => {
+    const claimable = positions
+      .filter((p) => p.status === "SETTLED_CLAIMABLE" && p.claimableUsdt > 0)
+      .sort((a, b) => a.expiry - b.expiry);
+
+    const uniqueSeries = Array.from(
+      new Set(claimable.map((p) => p.seriesId))
+    ) as `0x${string}`[];
+    const claimableSum = claimable.reduce((s, p) => s + p.claimableUsdt, 0);
+
+    const active = positions
+      .filter((p) => p.status === "ACTIVE")
+      .sort((a, b) => a.expiry - b.expiry);
+
+    const groupMap = new Map<
+      string,
+      {
+        key: string;
+        underlying: UnderlyingSymbol;
+        expiry: number;
+        items: PositionView[];
+        totalStake: number;
+        totalValue: number;
+        totalPnl: number;
+        bullCount: number;
+        bearCount: number;
+      }
+    >();
+
+    for (const p of active) {
+      const key = `${p.underlying}:${p.expiry}`;
+      const existing = groupMap.get(key);
+      if (existing) {
+        existing.items.push(p);
+        existing.totalStake += p.totalStakeUsdt;
+        existing.totalValue += p.indicativeExitUsdt;
+        existing.totalPnl += p.unrealizedPnlUsdt;
+        if (p.isUp) existing.bullCount += 1;
+        else existing.bearCount += 1;
+      } else {
+        groupMap.set(key, {
+          key,
+          underlying: p.underlying,
+          expiry: p.expiry,
+          items: [p],
+          totalStake: p.totalStakeUsdt,
+          totalValue: p.indicativeExitUsdt,
+          totalPnl: p.unrealizedPnlUsdt,
+          bullCount: p.isUp ? 1 : 0,
+          bearCount: p.isUp ? 0 : 1,
+        });
+      }
+    }
+
+    const groups = Array.from(groupMap.values()).sort(
+      (a, b) => a.expiry - b.expiry
+    );
+
+    const portfolioVal =
+      active.reduce((s, p) => s + p.indicativeExitUsdt, 0) + claimableSum;
+    const portfolioPnl =
+      active.reduce((s, p) => s + p.unrealizedPnlUsdt, 0) +
+      claimable.reduce((s, p) => s + (p.claimableUsdt - p.totalStakeUsdt), 0);
+
+    const finished = positions.filter(
+      (p) =>
+        p.status === "CLOSED_EARLY" ||
+        p.status === "SETTLED_CLAIMED" ||
+        p.status === "SETTLED_CLAIMABLE"
+    );
+    const histPnl = finished.reduce((sum, p) => {
+      const payout =
+        p.earlyCloseProceedsUsdt +
+        p.redeemedUsdt +
+        (p.status === "SETTLED_CLAIMABLE" ? p.claimableUsdt : 0);
+      return sum + (payout - p.totalStakeUsdt);
+    }, 0);
+
+    return {
+      claimablePositions: claimable,
+      claimableSeriesIds: uniqueSeries,
+      claimableTotalUsdt: claimableSum,
+      activeGroups: groups,
+      activePortfolioValue: portfolioVal,
+      activeUnrealizedPnl: portfolioPnl,
+      historyCount: finished.length,
+      historyNetPnl: histPnl,
+    };
+  }, [positions]);
+
   if (!open) return null;
 
   const isConnected = wallet.kind !== "NONE" && Boolean(wallet.address);
@@ -97,6 +285,85 @@ export function WalletModal({
     setTimeout(() => setCopied(false), 1800);
   };
 
+  const handleFaucet = async () => {
+    if (faucetBusy || !isConnected) return;
+    setFaucetBusy(true);
+    setFaucetMsg(null);
+    try {
+      if (onClaimFaucet) {
+        await onClaimFaucet(1000);
+      } else {
+        const rpcUrl = health?.rpcUrl || BSC_TESTNET.rpcUrl;
+        const usdtAddress =
+          health?.usdtAddress && health.usdtAddress !== ZERO_ADDRESS
+            ? health.usdtAddress
+            : BSC_TESTNET.usdtAddress;
+        if (!usdtAddress || usdtAddress === ZERO_ADDRESS) {
+          throw new Error(
+            isZh
+              ? "测试网 tUSDT 合约未就绪"
+              : "Testnet tUSDT contract unavailable"
+          );
+        }
+        await executeClaimTestUsdtTx({
+          wallet,
+          rpcUrl,
+          usdtAddress,
+          amountUsdt: 1000,
+        });
+        onRefresh?.();
+      }
+      setFaucetMsg({
+        kind: "ok",
+        text: isZh
+          ? "已免 Gas 领取 1,000 tUSDT"
+          : "Claimed 1,000 tUSDT gas-free",
+      });
+    } catch (err: unknown) {
+      setFaucetMsg({
+        kind: "err",
+        text: extractWalletErrorMessage(
+          err,
+          isZh ? "领水失败，请重试" : "Faucet claim failed"
+        ),
+      });
+    } finally {
+      setFaucetBusy(false);
+    }
+  };
+
+  const handleClaimSingle = async (pos: PositionView) => {
+    if (claimingId) return;
+    setClaimingId(pos.seriesId);
+    try {
+      if (onClaimPosition) {
+        await onClaimPosition(pos);
+      } else if (onBatchClaim) {
+        await onBatchClaim([pos.seriesId]);
+      }
+    } finally {
+      setClaimingId(null);
+    }
+  };
+
+  const handleClaimAll = async () => {
+    if (claimingId || claimableSeriesIds.length === 0) return;
+    setClaimingId("ALL");
+    try {
+      if (onBatchClaim) {
+        await onBatchClaim(claimableSeriesIds);
+      } else if (onClaimPosition && claimablePositions[0]) {
+        await onClaimPosition(claimablePositions[0]);
+      }
+    } finally {
+      setClaimingId(null);
+    }
+  };
+
+  const shortAddr = wallet.address
+    ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}`
+    : "";
+
   return (
     <dialog
       ref={dialogRef}
@@ -104,166 +371,591 @@ export function WalletModal({
       {...({ closedby: "any" } as Record<string, unknown>)}
       onClose={() => {
         if (dialogRef.current) dialogRef.current.returnValue = "";
+        setFaucetMsg(null);
         onClose();
       }}
-      className="m-auto w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-white p-6 shadow-2xl border border-[#e2e5e8] space-y-5 text-[#14202a]"
+      className="payoff-sheet md:!w-[min(92vw,460px)] md:!max-w-[460px]"
     >
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 id={titleId} className="text-lg font-bold text-[#14202a]">
-            {isConnected ? t.myWallet : t.connectWallet}
-          </h1>
-          <p className="text-xs text-[#667080] mt-0.5">
-            {isConnected
-              ? t.walletSubtitleConnected
-              : t.walletSubtitleDisconnected}
-          </p>
-        </div>
-        <button
-          type="button"
-          autoFocus
-          aria-label={t.cancel}
-          onClick={() => dialogRef.current?.close()}
-          className="rounded-lg p-1.5 text-[#667080] hover:bg-[#eef0f2] hover:text-[#14202a] cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#14202a]"
-        >
-          <X className="h-5 w-5" aria-hidden="true" />
-        </button>
-      </div>
+      <div className="flex max-h-[90dvh] flex-col md:max-h-[86dvh]">
+        <div aria-hidden="true" className="payoff-sheet-handle" />
 
-      {isConnected && wallet.address ? (
-        <div className="space-y-4">
-          <div className="rounded-xl bg-[#f7f8f9] border border-[#e2e5e8] p-4 space-y-3">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#14202a] text-white shrink-0">
-                  <Mail className="h-4 w-4" aria-hidden="true" />
+        <div className="overflow-y-auto px-5 pt-3 pb-6 sm:px-6 safe-pb space-y-4">
+          {isConnected && wallet.address ? (
+            <>
+              {/* Header: Email + Gas Free pill + Logout + Close */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <h1
+                    id={titleId}
+                    className="text-[15px] font-bold text-white truncate"
+                  >
+                    {wallet.email ||
+                      wallet.walletName ||
+                      (isZh ? "邮箱账户" : "Email account")}
+                  </h1>
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#2EC26B]/13 px-2 py-0.5 text-[10.5px] font-bold text-[#2EC26B]">
+                    <Sparkles className="h-2.5 w-2.5" aria-hidden="true" />
+                    {isZh ? "免 Gas" : "Gas Free"}
+                  </span>
                 </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-semibold text-[#14202a] truncate">
-                    {wallet.email || wallet.walletName || t.privyEmailAccountLabel}
-                  </div>
-                  <div className="flex items-center gap-1.5 text-xs text-[#667080] font-mono">
-                    <span>
-                      {wallet.address.slice(0, 8)}...{wallet.address.slice(-6)}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={handleCopy}
-                      aria-label="Copy address"
-                      className="text-[#667080] hover:text-[#14202a] cursor-pointer"
-                    >
-                      {copied ? (
-                        <Check
-                          className="h-3.5 w-3.5 text-[#0e7c72]"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      dialogRef.current?.close();
+                      onDisconnect();
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold text-[#7e8690] hover:bg-[#24282f] hover:text-white transition cursor-pointer"
+                  >
+                    <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{isZh ? "退出" : "Sign out"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    autoFocus
+                    aria-label={t.cancel}
+                    onClick={() => dialogRef.current?.close()}
+                    className="rounded-full p-1.5 text-[#7e8690] hover:bg-[#24282f] hover:text-white transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                  >
+                    <X className="h-4.5 w-4.5" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Portfolio Summary */}
+              <div className="border-b border-[#1d2025] pb-4 space-y-2.5">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <div className="text-[11.5px] font-semibold text-[#7e8690]">
+                      {isZh ? "全部持仓现值" : "Active portfolio value"}
+                    </div>
+                    <div className="mt-0.5 text-[28px] font-bold leading-tight tracking-[-0.03em] text-white tabular-nums">
+                      $
+                      {activePortfolioValue.toLocaleString("en-US", {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs font-semibold tabular-nums">
+                      {activePortfolioValue > 0 && (
+                        <>
+                          <span
+                            className={
+                              activeUnrealizedPnl >= 0
+                                ? "text-[#2EC26B]"
+                                : "text-[#E85D4A]"
+                            }
+                          >
+                            {formatSignedUsd(activeUnrealizedPnl)}
+                          </span>
+                          <span className="text-[#7e8690]">·</span>
+                        </>
                       )}
-                    </button>
+                      <span className="font-medium text-[#7e8690]">
+                        {isZh ? "可用" : "Available"}{" "}
+                        <span className="text-[#b8bec6] font-semibold">
+                          $
+                          {wallet.usdtBalance.toLocaleString("en-US", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </span>
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    disabled={faucetBusy}
+                    onClick={() => void handleFaucet()}
+                    className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-[#24282f] px-3.5 text-xs font-bold text-white hover:bg-[#2f343d] disabled:opacity-50 transition cursor-pointer"
+                  >
+                    {faucetBusy ? (
+                      <Loader2
+                        className="h-3.5 w-3.5 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : (
+                      <Droplets className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    <span>
+                      {faucetBusy
+                        ? isZh
+                          ? "领取中..."
+                          : "Minting..."
+                        : isZh
+                          ? "免 Gas 领水"
+                          : "Faucet +1k"}
+                    </span>
+                  </button>
+                </div>
+
+                {faucetMsg && (
+                  <div
+                    role={faucetMsg.kind === "err" ? "alert" : "status"}
+                    className={`rounded-xl px-3 py-2 text-xs font-medium ${
+                      faucetMsg.kind === "ok"
+                        ? "bg-[#2EC26B]/13 text-[#2EC26B]"
+                        : "bg-[#E85D4A]/13 text-[#E85D4A]"
+                    }`}
+                  >
+                    {faucetMsg.text}
+                  </div>
+                )}
+              </div>
+
+              {/* Claimable Positions First */}
+              {claimablePositions.length > 0 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11.5px] font-bold tracking-[0.02em] text-[#7e8690]">
+                      {isZh ? "待领取" : "Claimable"}
+                    </span>
+                    {claimableSeriesIds.length > 1 && onBatchClaim && (
+                      <button
+                        type="button"
+                        disabled={Boolean(claimingId)}
+                        onClick={() => void handleClaimAll()}
+                        className="inline-flex h-7 items-center gap-1 rounded-full bg-white px-3 text-[11.5px] font-bold text-black hover:bg-white/90 disabled:opacity-50 transition cursor-pointer tabular-nums"
+                      >
+                        {claimingId === "ALL" && (
+                          <Loader2
+                            className="h-3 w-3 animate-spin"
+                            aria-hidden="true"
+                          />
+                        )}
+                        <span>
+                          {isZh
+                            ? `一键领取 $${claimableTotalUsdt.toFixed(2)}`
+                            : `Claim all $${claimableTotalUsdt.toFixed(2)}`}
+                        </span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="divide-y divide-[#1d2025]">
+                    {claimablePositions.map((pos) => {
+                      const spec = ASSET_SPECS[pos.underlying];
+                      const mult =
+                        pos.totalStakeUsdt > 0
+                          ? pos.initialMaxPayoutUsdt / pos.totalStakeUsdt
+                          : 0;
+                      const isThisClaiming =
+                        claimingId === pos.seriesId || claimingId === "ALL";
+                      return (
+                        <div
+                          key={`${pos.seriesId}:${pos.isUp ? "UP" : "DOWN"}`}
+                          className="flex items-center justify-between gap-3 py-2.5"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[14px] font-bold text-white tabular-nums">
+                                {spec.displaySymbol}{" "}
+                                {pos.isUp ? t.bull : t.bear}
+                                {mult > 0 ? ` ${mult.toFixed(2)}x` : ""}
+                              </span>
+                              <span className="rounded-full bg-[#E6BA5C]/12 px-2 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
+                                {isZh ? "已结算" : "Settled"}
+                              </span>
+                            </div>
+                            <div className="mt-0.5 text-xs text-[#7e8690] tabular-nums">
+                              {isZh
+                                ? `投入 $${pos.totalStakeUsdt.toFixed(2)} · 拿回 $${pos.claimableUsdt.toFixed(2)}`
+                                : `Stake $${pos.totalStakeUsdt.toFixed(2)} · Payout $${pos.claimableUsdt.toFixed(2)}`}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            disabled={Boolean(claimingId)}
+                            onClick={() => void handleClaimSingle(pos)}
+                            className="inline-flex h-8 shrink-0 items-center gap-1 rounded-full bg-white px-3.5 text-xs font-bold text-black hover:bg-white/90 disabled:opacity-50 transition cursor-pointer tabular-nums"
+                          >
+                            {isThisClaiming && (
+                              <Loader2
+                                className="h-3 w-3 animate-spin"
+                                aria-hidden="true"
+                              />
+                            )}
+                            <span>
+                              {isZh
+                                ? `领取 $${pos.claimableUsdt.toFixed(2)}`
+                                : `Claim $${pos.claimableUsdt.toFixed(2)}`}
+                            </span>
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
+              )}
+
+              {/* Active Positions Grouped by Underlying + Expiry */}
+              {activeGroups.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[11.5px] font-bold tracking-[0.02em] text-[#7e8690]">
+                    {isZh ? "持仓中（按到期从近到远）" : "Active positions"}
+                  </div>
+                  <div className="divide-y divide-[#1d2025]">
+                    {activeGroups.map((group) => {
+                      const spec = ASSET_SPECS[group.underlying];
+                      const single =
+                        group.items.length === 1 ? group.items[0] : null;
+                      const singleMult =
+                        single && single.totalStakeUsdt > 0
+                          ? single.initialMaxPayoutUsdt / single.totalStakeUsdt
+                          : 0;
+                      const expiryTitle = formatExpiryGroupTitle(
+                        group.expiry,
+                        isZh
+                      );
+                      const titleText = single
+                        ? `${spec.displaySymbol} ${single.isUp ? t.bull : t.bear}${singleMult > 0 ? ` ${singleMult.toFixed(2)}x` : ""}`
+                        : isZh
+                          ? `${spec.displaySymbol} · ${group.items.length} 笔`
+                          : `${spec.displaySymbol} · ${group.items.length} tickets`;
+
+                      const metaText = single
+                        ? `${expiryTitle} · ${formatRemainingShort(group.expiry, isZh)} · ${isZh ? "投入" : "Stake"} $${group.totalStake.toFixed(0)}`
+                        : `${expiryTitle} · ${
+                            group.bullCount > 0
+                              ? `${group.bullCount} ${t.bull}`
+                              : ""
+                          }${
+                            group.bullCount > 0 && group.bearCount > 0
+                              ? " · "
+                              : ""
+                          }${
+                            group.bearCount > 0
+                              ? `${group.bearCount} ${t.bear}`
+                              : ""
+                          } · ${isZh ? "投入" : "Stake"} $${group.totalStake.toFixed(0)}`;
+
+                      const hasTwap = group.items.some((i) => i.inTwapWindow);
+
+                      return (
+                        <button
+                          key={group.key}
+                          type="button"
+                          onClick={() => {
+                            dialogRef.current?.close();
+                            onSelectPositionMarket?.(
+                              group.underlying,
+                              group.expiry
+                            );
+                          }}
+                          className="flex w-full items-center justify-between gap-3 py-2.5 text-left hover:bg-[#15171b] -mx-2 px-2 rounded-xl transition cursor-pointer"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[14.5px] font-bold text-white tabular-nums">
+                                {titleText}
+                              </span>
+                              {hasTwap && (
+                                <span className="rounded-full bg-[#E6BA5C] px-1.5 py-0.5 text-[10px] font-bold text-black">
+                                  {isZh ? "锁定期" : "TWAP"}
+                                </span>
+                              )}
+                            </div>
+                            <div className="mt-0.5 text-xs text-[#7e8690] tabular-nums truncate">
+                              {metaText}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="text-right tabular-nums">
+                              <div className="text-[15px] font-bold text-white tracking-[-0.02em]">
+                                ${group.totalValue.toFixed(2)}
+                              </div>
+                              <div
+                                className={`text-xs font-semibold ${
+                                  group.totalPnl >= 0
+                                    ? "text-[#2EC26B]"
+                                    : "text-[#E85D4A]"
+                                }`}
+                              >
+                                {formatSignedUsd(group.totalPnl)}
+                              </div>
+                            </div>
+                            <ChevronRight
+                              className="h-4 w-4 text-[#7e8690]"
+                              aria-hidden="true"
+                            />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Footer Actions */}
+              <div className="border-t border-[#1d2025] divide-y divide-[#1d2025] pt-1">
+                {onOpenHistory && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      dialogRef.current?.close();
+                      onOpenHistory();
+                    }}
+                    className="flex w-full items-center justify-between gap-2 py-3 text-left text-[13.5px] font-semibold text-white hover:text-white/90 cursor-pointer"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <History
+                        className="h-4 w-4 text-[#7e8690]"
+                        aria-hidden="true"
+                      />
+                      <span>{isZh ? "历史与战绩" : "History & Stats"}</span>
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[#7e8690] tabular-nums">
+                      {historyCount > 0 ? (
+                        <>
+                          <span>
+                            {isZh ? `${historyCount} 笔` : `${historyCount}`} ·{" "}
+                            <span
+                              className={
+                                historyNetPnl >= 0
+                                  ? "text-[#2EC26B]"
+                                  : "text-[#E85D4A]"
+                              }
+                            >
+                              {formatSignedUsd(historyNetPnl)}
+                            </span>
+                          </span>
+                        </>
+                      ) : (
+                        <span>{isZh ? "暂无记录" : "Empty"}</span>
+                      )}
+                      <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                  </button>
+                )}
+
+                {onOpenMarketPicker && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      dialogRef.current?.close();
+                      onOpenMarketPicker();
+                    }}
+                    className="flex w-full items-center justify-between gap-2 py-3 text-left text-[13.5px] font-semibold text-white hover:text-white/90 cursor-pointer"
+                  >
+                    <span>
+                      {isZh
+                        ? "切换市场 · BTC / ETH / NVDA"
+                        : "Switch market · BTC / ETH / NVDA"}
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[#7e8690]">
+                      <span>{isZh ? "3 个市场" : "3 markets"}</span>
+                      <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                  </button>
+                )}
+
+                {onOpenRules && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      dialogRef.current?.close();
+                      onOpenRules();
+                    }}
+                    className="flex w-full items-center justify-between gap-2 py-3 text-left text-[13.5px] font-semibold text-white hover:text-white/90 cursor-pointer"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <ShieldCheck
+                        className="h-4 w-4 text-[#7e8690]"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {isZh ? "规则与预言机安全" : "Rules & Security"}
+                      </span>
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-[#7e8690]">
+                      <span>Atlas TWAP</span>
+                      <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                  </button>
+                )}
+
+                {onToggleLang && (
+                  <button
+                    type="button"
+                    onClick={onToggleLang}
+                    className="flex w-full items-center justify-between gap-2 py-3 text-left text-[13.5px] font-semibold text-white hover:text-white/90 cursor-pointer"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Globe
+                        className="h-4 w-4 text-[#7e8690]"
+                        aria-hidden="true"
+                      />
+                      <span>{isZh ? "切换语言" : "Language"}</span>
+                    </span>
+                    <span className="rounded-full bg-[#24282f] px-2.5 py-0.5 text-xs font-semibold text-[#b8bec6]">
+                      {isZh ? "中文 → EN" : "EN → 中文"}
+                    </span>
+                  </button>
+                )}
+
+                {/* Collapsible On-chain Address & Export Private Key */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    aria-expanded={addressExpanded}
+                    onClick={() => setAddressExpanded((v) => !v)}
+                    className="flex w-full items-center justify-between gap-2 py-2.5 text-left text-[13.5px] font-semibold text-white hover:text-white/90 cursor-pointer"
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <KeyRound
+                        className="h-4 w-4 text-[#7e8690]"
+                        aria-hidden="true"
+                      />
+                      <span>
+                        {isZh ? "链上地址与导出私钥" : "On-chain Address & Key"}
+                      </span>
+                    </span>
+                    <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-[#7e8690]">
+                      <span>{shortAddr}</span>
+                      <ChevronDown
+                        className={`h-4 w-4 transition-transform ${
+                          addressExpanded ? "rotate-180 text-white" : ""
+                        }`}
+                        aria-hidden="true"
+                      />
+                    </span>
+                  </button>
+
+                  {addressExpanded && (
+                    <div className="mt-1.5 rounded-2xl bg-[#15171b] border border-[#1d2025] p-3.5 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono text-xs text-[#b8bec6] break-all">
+                          {wallet.address}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={handleCopy}
+                          aria-label={isZh ? "复制地址" : "Copy address"}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#24282f] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#2f343d] cursor-pointer"
+                        >
+                          {copied ? (
+                            <>
+                              <Check
+                                className="h-3 w-3 text-[#2EC26B]"
+                                aria-hidden="true"
+                              />
+                              <span>{isZh ? "已复制" : "Copied"}</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" aria-hidden="true" />
+                              <span>{isZh ? "复制" : "Copy"}</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#1d2025] pt-2.5">
+                        {explorerBase ? (
+                          <a
+                            href={`${explorerBase}/address/${wallet.address}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-[#b8bec6] hover:text-white transition"
+                          >
+                            <span>{t.viewOnBscScan}</span>
+                            <ExternalLink
+                              className="h-3 w-3"
+                              aria-hidden="true"
+                            />
+                          </a>
+                        ) : (
+                          <span className="text-[11px] text-[#7e8690]">
+                            BNB Chain Testnet
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Close native top-layer <dialog> first so Privy's export modal is never occluded.
+                            dialogRef.current?.close();
+                            onExportWallet();
+                          }}
+                          className="inline-flex items-center gap-1.5 rounded-full bg-[#24282f] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#2f343d] transition cursor-pointer"
+                        >
+                          <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>{t.exportPrivateKey}</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
-              <span className="inline-flex items-center gap-1 rounded-full bg-[#e9f3f1] px-2.5 py-0.5 text-[11px] font-semibold text-[#0e7c72] shrink-0">
-                <Sparkles className="h-3 w-3" aria-hidden="true" />
-                {wallet.chainId === BSC_TESTNET.chainId
-                  ? t.gasFreeBadge
-                  : `Chain #${wallet.chainId}`}
-              </span>
-            </div>
-
-            <div className="border-t border-[#e2e5e8] pt-3 flex items-center justify-between">
-              <span className="text-xs text-[#667080]">
-                {t.availableBalance}
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-xl font-bold text-[#14202a] tabular-nums">
-                <UsdtIcon size={18} />
-                {wallet.usdtBalance.toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                })}
-                <span className="text-xs font-semibold text-[#667080]">
-                  USDT
-                </span>
-              </span>
-            </div>
-
-            {explorerBase && (
-              <div className="border-t border-[#eef0f2] pt-2.5 flex items-center justify-between gap-2">
-                <span className="text-[11px] text-[#667080]">
-                  BNB Smart Chain Testnet
-                </span>
-                <a
-                  href={`${explorerBase}/address/${wallet.address}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#3a4552] hover:text-[#14202a] underline underline-offset-2"
+            </>
+          ) : (
+            /* Disconnected Sign-In State */
+            <div className="space-y-5">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h1
+                    id={titleId}
+                    className="text-[19px] font-bold tracking-[-0.02em] text-white"
+                  >
+                    {t.connectWallet}
+                  </h1>
+                  <p className="mt-1 text-xs text-[#7e8690]">
+                    {isZh
+                      ? "邮箱一键登录，自动生成免 Gas BNB 账户并空投 1,000 tUSDT"
+                      : "Sign in with email for a gasless BNB account + 1,000 free tUSDT"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label={t.cancel}
+                  onClick={() => dialogRef.current?.close()}
+                  className="rounded-full p-1.5 text-[#7e8690] hover:bg-[#24282f] hover:text-white transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                 >
-                  {t.viewOnBscScan}
-                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                </a>
+                  <X className="h-5 w-5" aria-hidden="true" />
+                </button>
               </div>
-            )}
-          </div>
 
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                // Close native top-layer <dialog> first so Privy's export modal is never occluded.
-                dialogRef.current?.close();
-                onExportWallet();
-              }}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#e2e5e8] bg-[#f7f8f9] py-2.5 text-xs font-semibold text-[#14202a] hover:bg-[#eef0f2] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#14202a]"
-            >
-              <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-              {t.exportPrivateKey}
-            </button>
+              <div className="rounded-2xl bg-[#2EC26B]/13 p-3.5 text-xs leading-relaxed text-[#cbead7]">
+                {isZh ? (
+                  <>
+                    自动创建<strong className="text-white">免 Gas 嵌入式账户</strong>
+                    并空投 <strong className="text-white">1,000 测试 USDT</strong>
+                    。无需钱包插件，无需助记词，随时可导出私钥。
+                  </>
+                ) : (
+                  <>
+                    Creates a{" "}
+                    <strong className="text-white">gasless embedded account</strong>{" "}
+                    with <strong className="text-white">1,000 free tUSDT</strong>.
+                    No wallet extension or seed phrase needed.
+                  </>
+                )}
+              </div>
 
-            <button
-              type="button"
-              onClick={() => {
-                dialogRef.current?.close();
-                onDisconnect();
-              }}
-              className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#c8ccd1] py-2.5 text-sm font-semibold text-[#14202a] hover:bg-[#f7f8f9] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#14202a]"
-            >
-              <LogOut className="h-4 w-4" aria-hidden="true" />
-              {t.disconnectWallet}
-            </button>
-          </div>
-
-          <div className="flex items-center justify-center gap-1.5 text-[11px] text-[#667080]">
-            <ShieldCheck
-              className="h-3.5 w-3.5 text-[#0e7c72] shrink-0"
-              aria-hidden="true"
-            />
-            <span>{t.gasFreeAccountNote}</span>
-          </div>
+              <button
+                type="button"
+                autoFocus
+                onClick={() => {
+                  dialogRef.current?.close();
+                  onLogin();
+                }}
+                className="flex w-full min-h-[50px] items-center justify-center gap-2 rounded-full bg-white py-3 text-[15px] font-bold text-black hover:bg-white/90 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              >
+                <Mail className="h-4 w-4" aria-hidden="true" />
+                <span>
+                  {isZh
+                    ? "邮箱登录 · 领 1,000 tUSDT"
+                    : "Sign in with email · Get 1,000 tUSDT"}
+                </span>
+              </button>
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="space-y-4">
-          <button
-            type="button"
-            onClick={() => {
-              dialogRef.current?.close();
-              onLogin();
-            }}
-            className="flex w-full min-h-[48px] items-center justify-center gap-2 rounded-xl bg-[#14202a] py-3 text-sm font-semibold text-white hover:bg-[#000a12] transition cursor-pointer"
-          >
-            <Mail className="h-4 w-4" aria-hidden="true" />
-            <span>{t.connectWallet}</span>
-          </button>
-
-          <div className="flex items-center justify-center gap-1.5 text-[11px] text-[#667080]">
-            <ShieldCheck
-              className="h-3.5 w-3.5 text-[#0e7c72] shrink-0"
-              aria-hidden="true"
-            />
-            <span>{t.gasFreeAccountNote}</span>
-          </div>
-        </div>
-      )}
+      </div>
     </dialog>
   );
 }
