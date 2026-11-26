@@ -52,7 +52,8 @@ function getEnabledMenuItems(container: HTMLElement | null): HTMLElement[] {
   ).filter(
     (el) =>
       !(el as HTMLButtonElement).disabled &&
-      el.getAttribute("aria-disabled") !== "true"
+      el.getAttribute("aria-disabled") !== "true" &&
+      el.getClientRects().length > 0
   );
 }
 

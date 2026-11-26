@@ -53,10 +53,11 @@ export interface WalletPageProps {
   wallet: ConnectedWallet;
   health?: HealthResponse;
   positions: PositionView[];
+  transferRevision?: number;
   onLogin: () => void;
   onGoToTrade: () => void;
   onRefresh: () => void;
-  onClaimFaucet: (amountUsdt?: number) => Promise<`0x${string}` | void>;
+  onOpenMint?: () => void;
   onWithdrawUsdt: (to: `0x${string}`, amountUsdt: number) => Promise<`0x${string}`>;
   onBatchClaim?: (seriesIds: `0x${string}`[]) => Promise<void>;
   onClaimPosition?: (position: PositionView) => Promise<void>;
@@ -108,10 +109,11 @@ export function WalletPage({
   wallet,
   health,
   positions,
+  transferRevision = 0,
   onLogin,
   onGoToTrade,
   onRefresh,
-  onClaimFaucet,
+  onOpenMint,
   onWithdrawUsdt,
   onBatchClaim,
   onClaimPosition,
@@ -155,7 +157,7 @@ export function WalletPage({
 
   useEffect(() => {
     setTransfers(loadWalletTransfers(wallet.address));
-  }, [wallet.address]);
+  }, [wallet.address, transferRevision]);
 
   // Apply hidden="until-found" on inactive tab panel and sync via beforematch for Find-in-Page
   useEffect(() => {
@@ -344,18 +346,6 @@ export function WalletPage({
       return t.quoteExpiredError;
     }
     return extracted;
-  };
-
-  const handleFaucetFromModal = async (amountUsdt: number) => {
-    const hash = await onClaimFaucet(amountUsdt);
-    const next = appendWalletTransfer(wallet.address, {
-      kind: "FAUCET",
-      amountUsdt,
-      txHash: typeof hash === "string" ? hash : undefined,
-      chainId: wallet.chainId || BSC_TESTNET.chainId,
-    });
-    setTransfers(next);
-    return hash;
   };
 
   const handleWithdrawFromModal = async (
@@ -741,6 +731,17 @@ export function WalletPage({
                 <ArrowUpRight className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>{isZh ? "提币" : "Withdraw"}</span>
               </button>
+
+              {onOpenMint && (
+                <button
+                  type="button"
+                  onClick={onOpenMint}
+                  className="inline-flex sm:hidden min-h-[40px] [@media(pointer:coarse)]:min-h-[44px] items-center gap-1.5 rounded-full bg-[#15171b] border border-[#262a31] px-4 py-2 text-xs font-semibold text-[#d0d6de] hover:bg-[#24282f] hover:text-white transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                >
+                  <Droplets className="h-3.5 w-3.5 text-[#9aa2ad]" aria-hidden="true" />
+                  <span>{isZh ? "领水" : "Mint"}</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -1768,7 +1769,7 @@ export function WalletPage({
         locale={locale}
         wallet={wallet}
         onClose={() => setDepositOpen(false)}
-        onClaimFaucet={handleFaucetFromModal}
+        onOpenMint={onOpenMint}
       />
 
       <WithdrawModal

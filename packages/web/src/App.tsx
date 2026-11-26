@@ -46,6 +46,8 @@ import {
 } from "./lib/wallet";
 import { Header, type ConsumerTab } from "./components/Header";
 import { OnboardingSheet } from "./components/OnboardingSheet";
+import { MintModal } from "./components/WalletActionModals";
+import { appendWalletTransfer } from "./lib/walletActivity";
 import { TradePage } from "./pages/TradePage";
 import { WalletPage } from "./pages/WalletPage";
 import { MetricsLedgerPage } from "./pages/MetricsLedgerPage";
@@ -101,6 +103,8 @@ export function App() {
   const [health, setHealth] = useState<HealthResponse | undefined>();
 
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [mintModalOpen, setMintModalOpen] = useState(false);
+  const [transferRevision, setTransferRevision] = useState(0);
   const [rulesSheetOpen, setRulesSheetOpen] = useState(false);
   const [marketPickerOpen, setMarketPickerOpen] = useState(false);
   const [marketFocus, setMarketFocus] = useState<MarketFocusTarget | null>(
@@ -595,6 +599,13 @@ export function App() {
         usdtAddress,
         amountUsdt: clamped,
       });
+      appendWalletTransfer(wallet.address, {
+        kind: "FAUCET",
+        amountUsdt: clamped,
+        txHash: hash,
+        chainId: curHealth?.chainId ?? wallet.chainId ?? BSC_TESTNET.chainId,
+      });
+      setTransferRevision((r) => r + 1);
       await refreshWalletAndPositions(wallet.address, curHealth);
       return hash;
     },
@@ -655,6 +666,7 @@ export function App() {
   const t = getCopy(locale);
   const explorerBase = getExplorerBaseUrl(targetChainId);
   const authInitializing = authenticated && !embeddedAddress;
+  const isTestnet = targetChainId === BSC_TESTNET.chainId;
 
   return (
     <div className="min-h-screen bg-black text-white">
@@ -673,6 +685,7 @@ export function App() {
         onLogin={() => login({ loginMethods: ["email"] })}
         onExportWallet={() => void handleExportWallet()}
         onDisconnect={() => void handleLogout()}
+        onOpenMint={isTestnet ? () => setMintModalOpen(true) : undefined}
       />
 
       {/* A4 Slim Dark Welcome Airdrop Pill Banner */}
@@ -789,15 +802,26 @@ export function App() {
           wallet={wallet}
           health={health}
           positions={positions}
+          transferRevision={transferRevision}
           onLogin={() => login({ loginMethods: ["email"] })}
           onGoToTrade={() => setActiveTab("TRADE")}
           onRefresh={() => void handleRefreshPositions()}
-          onClaimFaucet={handleClaimFaucet}
+          onOpenMint={isTestnet ? () => setMintModalOpen(true) : undefined}
           onWithdrawUsdt={handleWithdrawUsdt}
           onBatchClaim={handleBatchClaim}
           onClaimPosition={handleClaimPosition}
           onManualSettle={handleManualSettle}
           onSelectPositionMarket={handleSelectPositionMarket}
+        />
+      )}
+
+      {isTestnet && (
+        <MintModal
+          open={mintModalOpen}
+          locale={locale}
+          wallet={wallet}
+          onClose={() => setMintModalOpen(false)}
+          onClaimFaucet={handleClaimFaucet}
         />
       )}
 

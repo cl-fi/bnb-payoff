@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Droplets,
   ExternalLink,
   Globe,
   KeyRound,
@@ -51,6 +52,8 @@ export interface HeaderProps {
   onExportWallet?: () => void;
   /** Sign out from avatar account menu */
   onDisconnect?: () => void;
+  /** Opens standalone Testnet Faucet / Mint modal beside balance pill */
+  onOpenMint?: () => void;
 }
 
 function formatCompactBalance(balance: number): string {
@@ -88,6 +91,7 @@ export function Header({
   onLogin,
   onExportWallet,
   onDisconnect,
+  onOpenMint,
 }: HeaderProps) {
   const isZh = locale === "zh";
   const t = getCopy(locale);
@@ -347,6 +351,25 @@ export function Header({
                 )}
               </button>
 
+              {/* Testnet Mint Pill right beside token balance (monochrome pill matching Header chrome) */}
+              {onOpenMint && (
+                <button
+                  type="button"
+                  disabled={!authReady}
+                  onClick={onOpenMint}
+                  aria-label={isZh ? "领取测试 tUSDT" : "Mint testnet tUSDT"}
+                  className="hidden sm:inline-flex h-8 w-8 md:w-auto items-center justify-center gap-1.5 rounded-full bg-[#15171b] md:px-3 text-xs font-semibold text-[#d0d6de] hover:bg-[#24282f] hover:text-white whitespace-nowrap transition cursor-pointer disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                >
+                  <Droplets
+                    className="h-3.5 w-3.5 text-[#9aa2ad] shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span className="hidden md:inline leading-none">
+                    {isZh ? "领水" : "Mint"}
+                  </span>
+                </button>
+              )}
+
               {/* Standalone Avatar Account Dropdown Trigger */}
               <button
                 id={accountMenu.triggerId}
@@ -467,6 +490,23 @@ export function Header({
                       />
                       <span>{t.navPositions}</span>
                     </button>
+
+                    {onOpenMint && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          accountMenu.hideMenu(false);
+                          onOpenMint();
+                        }}
+                        className="flex sm:hidden min-h-[36px] w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] font-medium text-[#d0d6de] hover:bg-[#1a1e24] hover:text-white transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/75"
+                      >
+                        <Droplets
+                          className="h-3.5 w-3.5 shrink-0 text-[#7e8690]"
+                          aria-hidden="true"
+                        />
+                        <span>{isZh ? "测试网领水" : "Mint tUSDT"}</span>
+                      </button>
+                    )}
 
                     {explorerBase && wallet.address && (
                       <a
