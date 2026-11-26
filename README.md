@@ -1,7 +1,7 @@
-# Payoff — Continuous-Payout Prediction Markets on BNB Chain
+# Payoff — A Prediction Market Built for Prices, Not Events
 
-**Pick Direction. Pick Multiplier. Never Get Liquidated.**  
-*Continuous-payout prediction markets for 24/7 tokenized US equities (`NVDA` RWA) and crypto (`BTC`, `ETH`) on BNB Chain—linear upside with capped downside, zero intraday liquidation, and no `0-or-1` cliff.*
+**Pick Direction. Pick Multiplier. Get Paid as Price Moves.**  
+*An event is yes or no. A price is continuous, so the payout should be too. Payoff pays by how far the price moves, with no `0-or-1` cliff. Live on BNB Chain testnet with 24/7 `NVDA` (tokenized equity), `BTC`, and `ETH`.*
 
 Built for the **HackQuest BNB Bangkok Hackathon** — targeting the **Developer Track** and the **CoinMarketCap × Atlas Challenge**.
 
@@ -29,6 +29,8 @@ Today, directional traders are stuck between two brutal extremes:
 | **Expiry Manipulation** | Severe `$1` binary cliff | Mark-price wicks | **Smooth slope + Atlas 30m TWAP** |
 
 ### Quick Example: Same `$100` Stake, `~5x` Max Upside (`BTC Spot = $60,276`)
+
+![Same $100 stake: a binary ticket pays nothing until price crosses its strike, while Payoff pays more as price moves. On a +2% move, binary pays $0 and Payoff pays about $180.](./docs/assets/payoff-vs-binary.svg)
 
 | Tomorrow's Settlement | Binary (`$61,750+`, `5.0x`) | **Payoff (`$60,000 → $64,000`, `~4.8x`)** |
 |---|---|---|

@@ -127,7 +127,7 @@ function buildConnectors(): CreateConnectorFn[] {
         metadata: {
           name: "Payoff · BNB Chain",
           description:
-            "Zero-liquidation continuous-payout prediction markets on BNB Smart Chain",
+            "A prediction market built for prices, not events · BNB Smart Chain",
           url:
             typeof window !== "undefined"
               ? window.location.origin

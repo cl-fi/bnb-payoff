@@ -1,4 +1,4 @@
-# Payoff — Continuous-Payout Crypto & RWA Prediction Markets on BNB Chain (Hackathon One-Pager)
+# Payoff — A Prediction Market Built for Prices, Not Events (Hackathon One-Pager)
 
 **Event**: HackQuest BNB Bangkok Hackathon  
 **Tracks**: **Developer Track** + **CoinMarketCap × Atlas Challenge**  
@@ -15,10 +15,14 @@ Short-term price markets are one of the highest-frequency daily categories on Po
 - **60 Fragmented Rows & Empty Orderbooks (`—`)**: Binary platforms split one expiry into dozens of narrow `or above` rows; over half sit empty (`—`) because extreme expiry pin-risk deters market makers, and bearish traders have to mentally invert `or above → Buy No`.
 - **High Churn & Expiry Manipulation Cliff**: Binary lotteries wipe out retail bankrolls ~80% of the time on high-multiplier tiers, and a tiny spot push at expiry flips `100%` of the pool.
 
-**Payoff** delivers **24/7 Continuous-Payout Prediction Markets** for **Tokenized US Equities (`NVDA` RWA default)** and **Crypto (`BTC` / `ETH`)**, settled in `tUSDT` on BNB Chain—collapsing 60 fragmented binary rows into **one smooth, zero-liquidation ticket**:
-- **Quick Fine-Step & Custom Dual-Range Controls**: Users pick **`NVDA` (RWA)**, **`BTC`**, or **`ETH`**, toggle **`Up` / `Down`**, and dial their exact payout multiplier using either a fine-step **Quick** slider (real OCC equity strikes for NVDA, `$500` for BTC, `$25` for ETH) or **Custom** dual Start/Cap sliders with instant client preview and server-enforced guardrails.
-- **Right on Direction = Paid**: On the exact same `$100` `~5x` BTC bet (`$60,000 → $64,000`, spot `$60,276`), a `+$1,224` rally to `$61,500` pays **`~$180` (`+80%` profit)** instead of **`$0` (`-100%`)**, starts profiting at `+1%`, and still recovers `~1/3` of stake if flat—roughly doubling directional win rate, lifting retail retention, and generating organic on-chain USDT protocol fees from Day 1.
-- **Web2-Grade Consumer UX (Pure-OLED Black, EN/ZH)**: Privy **1-click email login** with **gas-sponsored BSC Testnet transactions** (zero `tBNB` needed) + automatic **`1,000 tUSDT` welcome airdrop**, custom full-bleed SVG forecast chart with track-side payout scrubber, mini PnL curve, interactive 3-step Spotlight onboarding tour, arbitrary-amount USD partial/full early cashout (`25% / 50% / 75% / Max` + `1.5%` slippage protection + atomic `UP + DOWN` merge edge), and a single-column **`Portfolio`** with aggregated `batchRedeem`.
+**Payoff is a prediction market built for prices, not events.** An event is yes or no. A price is continuous, so the payout should be too. Payoff runs 24/7 continuous-payout markets for **Tokenized US Equities (`NVDA` RWA default)** and **Crypto (`BTC` / `ETH`)**, settled in `tUSDT` on BNB Chain—collapsing 60 fragmented binary rows into **one ticket that pays by how far the price moves**.
+
+![Same $100 stake: a binary ticket pays nothing until price crosses its strike, while Payoff pays more as price moves. On a +2% move, binary pays $0 and Payoff pays about $180.](./assets/payoff-vs-binary.svg)
+
+- **Right on direction means you get paid**: Take the same `$100` stake and the same `~5x` cap, with BTC at `$60,276`. If BTC rises 2% to `$61,500`, the binary ticket pays **`$0`**. Payoff pays about **`$180`**. Payoff turns a profit from about `+1%`, and still returns about a third of the stake if the price ends flat. On these numbers, a trade ends in profit roughly twice as often.
+- **Three choices, one ticket**: Pick a market (`NVDA`, `BTC`, or `ETH`), pick **Up** or **Down**, and drag one slider to set your multiplier. Before you buy, the chart shows what you would be paid at any price.
+- **Ten seconds to your first trade**: Sign in with email. There is no wallet to set up and no gas to pay, and `1,000` test USDT arrive automatically. You can sell any part of a position early, or hold it until it settles. The app is available in English and Chinese.
+- **Good for the business too**: Traders who are not wiped out on every near miss stay longer, and the protocol earns a fee on every new position from day one.
 
 ---
 
