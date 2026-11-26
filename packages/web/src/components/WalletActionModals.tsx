@@ -122,6 +122,9 @@ export interface MintModalProps {
   onClaimFaucet: (amountUsdt: number) => Promise<`0x${string}` | void>;
 }
 
+const MINT_PRESET_AMOUNTS = [1000, 5000, 10000] as const;
+const MAX_MINT_AMOUNT = 100_000;
+
 export function MintModal({
   open,
   locale,
@@ -132,48 +135,134 @@ export function MintModal({
   const isZh = locale === "zh";
   const titleId = useId();
   const faucetInputId = useId();
-  const dialogRef = useRef<HTMLDialogElement>(null);
+  const amountHintId = useId();
+  const amountErrorId = useId();
 
-  const [faucetAmount, setFaucetAmount] = useState<number>(1000);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const amountInputRef = useRef<HTMLInputElement>(null);
+  const doneBtnRef = useRef<HTMLButtonElement>(null);
+  const announceTimerRef = useRef<number | null>(null);
+
+  const [amountText, setAmountText] = useState("1000");
+  const [amountTouched, setAmountTouched] = useState(false);
+  const [submittedOnce, setSubmittedOnce] = useState(false);
   const [faucetBusy, setFaucetBusy] = useState(false);
-  const [faucetResult, setFaucetResult] = useState<{
-    kind: "ok" | "err";
-    text: string;
+  const [txError, setTxError] = useState<string | null>(null);
+  const [politeErrorAnnouncement, setPoliteErrorAnnouncement] = useState("");
+  const [confirmed, setConfirmed] = useState<{
+    amountUsdt: number;
     txHash?: string;
   } | null>(null);
 
   useDialogLightDismiss(dialogRef, open, !faucetBusy);
 
+  useEffect(() => {
+    return () => {
+      if (announceTimerRef.current !== null) {
+        window.clearTimeout(announceTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (confirmed) {
+      doneBtnRef.current?.focus();
+    }
+  }, [confirmed]);
+
+  const scheduleErrorAnnouncement = (msg: string | null) => {
+    if (announceTimerRef.current !== null) {
+      window.clearTimeout(announceTimerRef.current);
+    }
+    setPoliteErrorAnnouncement("");
+    if (!msg) return;
+    const fieldLabel = isZh ? "领取金额" : "Amount";
+    // Delay briefly so screen readers finish announcing the newly focused control first.
+    announceTimerRef.current = window.setTimeout(() => {
+      setPoliteErrorAnnouncement(`${fieldLabel}: ${msg}`);
+    }, 500);
+  };
+
+  const resetModalState = () => {
+    scheduleErrorAnnouncement(null);
+    setAmountText("1000");
+    setAmountTouched(false);
+    setSubmittedOnce(false);
+    setTxError(null);
+    setConfirmed(null);
+  };
+
   if (!open || !wallet.address) return null;
 
+  const getAmountError = (rawText: string): string | null => {
+    const trimmed = rawText.trim();
+    if (!trimmed) {
+      return isZh
+        ? "请输入 $1 至 $100,000 之间的领取金额。"
+        : "Enter an amount between $1 and $100,000.";
+    }
+    const num = Number(trimmed);
+    if (!Number.isInteger(num) || num < 1) {
+      return isZh
+        ? "领取金额须为不小于 $1 的整数。"
+        : "Amount must be a whole number of at least $1.";
+    }
+    if (num > MAX_MINT_AMOUNT) {
+      return isZh
+        ? "单次最多可领取 $100,000 tUSDT。"
+        : "Maximum single mint is $100,000 tUSDT.";
+    }
+    return null;
+  };
+
+  const trimmedAmount = amountText.trim();
+  const parsedAmount = trimmedAmount ? Number(trimmedAmount) : Number.NaN;
   const explorerBase = getExplorerBaseUrl(wallet.chainId || BSC_TESTNET.chainId);
 
-  const handleMintFaucet = async (e?: React.FormEvent) => {
-    e?.preventDefault();
+  const amountErrorText = getAmountError(amountText);
+
+  const isValidAmount = amountErrorText === null;
+  const showAmountError = Boolean(
+    amountErrorText && (amountTouched || submittedOnce)
+  );
+  const projectedBalance = isValidAmount
+    ? wallet.usdtBalance + parsedAmount
+    : wallet.usdtBalance;
+
+  const formattedCurrentBalance = wallet.usdtBalance.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  const formattedProjectedBalance = projectedBalance.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  const handleMintFaucet = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
     if (faucetBusy) return;
-    const clamped = Math.max(
-      1,
-      Math.min(100_000, Math.round(faucetAmount || 1000))
-    );
+    setSubmittedOnce(true);
+    setTxError(null);
+
+    if (amountErrorText || !isValidAmount) {
+      amountInputRef.current?.focus();
+      return;
+    }
+
     setFaucetBusy(true);
-    setFaucetResult(null);
     try {
-      const txHash = await onClaimFaucet(clamped);
-      setFaucetResult({
-        kind: "ok",
-        text: isZh
-          ? `已到账 ${clamped.toLocaleString()} tUSDT`
-          : `Minted ${clamped.toLocaleString()} tUSDT`,
+      const txHash = await onClaimFaucet(parsedAmount);
+      setConfirmed({
+        amountUsdt: parsedAmount,
         txHash: typeof txHash === "string" ? txHash : undefined,
       });
     } catch (err: unknown) {
-      setFaucetResult({
-        kind: "err",
-        text: extractWalletErrorMessage(
+      setTxError(
+        extractWalletErrorMessage(
           err,
-          isZh ? "领水失败，请重试" : "Faucet claim failed"
-        ),
-      });
+          isZh ? "领水失败，请重试" : "Faucet claim failed. Please try again."
+        )
+      );
     } finally {
       setFaucetBusy(false);
     }
@@ -189,10 +278,10 @@ export function MintModal({
       }}
       onClose={() => {
         if (dialogRef.current) dialogRef.current.returnValue = "";
-        setFaucetResult(null);
+        resetModalState();
         onClose();
       }}
-      className="payoff-sheet md:!w-[min(92vw,410px)] md:!max-w-[410px]"
+      className="payoff-sheet md:!w-[min(92vw,420px)] md:!max-w-[420px]"
     >
       <div className="flex max-h-[90dvh] flex-col md:max-h-[86dvh]">
         <div aria-hidden="true" className="payoff-sheet-handle" />
@@ -200,17 +289,12 @@ export function MintModal({
         <div className="overflow-y-auto px-5 pt-3 pb-6 sm:px-6 safe-pb space-y-4">
           {/* Header */}
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 min-w-0">
-              <h1
-                id={titleId}
-                className="text-[19px] font-bold tracking-[-0.02em] text-white"
-              >
-                {isZh ? "测试网领水" : "Testnet Faucet"}
-              </h1>
-              <span className="inline-flex shrink-0 items-center rounded-full bg-[#15171b] border border-[#262a31] px-2 py-0.5 text-[10.5px] font-semibold text-[#b8bec6]">
-                tUSDT
-              </span>
-            </div>
+            <h1
+              id={titleId}
+              className="text-[19px] font-bold tracking-[-0.02em] text-white"
+            >
+              {isZh ? "测试网领水" : "Testnet Faucet"}
+            </h1>
             <button
               type="button"
               disabled={faucetBusy}
@@ -222,144 +306,302 @@ export function MintModal({
             </button>
           </div>
 
-          <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
-            <span className="text-[#7e8690]">
-              {isZh ? "当前可用余额" : "Available balance"}
-            </span>
-            <span className="font-semibold text-white">
-              $
-              {wallet.usdtBalance.toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}{" "}
-              <span className="text-[#7e8690]">tUSDT</span>
-            </span>
-          </div>
+          {confirmed ? (
+            <div className="space-y-4 pt-1">
+              <div
+                role="status"
+                aria-live="polite"
+                className="rounded-2xl bg-[#2EC26B]/12 border border-[#2EC26B]/25 p-4 space-y-2.5"
+              >
+                <div className="flex items-center gap-2 text-sm font-bold text-[#2EC26B]">
+                  <CheckCircle2
+                    className="h-4.5 w-4.5 shrink-0"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {isZh ? "测试网 tUSDT 已到账" : "Testnet tUSDT minted"}
+                  </span>
+                </div>
 
-          <form
-            onSubmit={(e) => void handleMintFaucet(e)}
-            className="rounded-2xl bg-[#15171b] border border-[#262a31] p-4 space-y-3.5"
-          >
-            <div className="flex items-center gap-1.5">
-              {[1000, 5000, 10000].map((amt) => (
-                <button
-                  key={amt}
-                  type="button"
-                  disabled={faucetBusy}
-                  aria-pressed={faucetAmount === amt}
-                  onClick={() => setFaucetAmount(amt)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-semibold tabular-nums transition cursor-pointer disabled:opacity-50 ${
-                    faucetAmount === amt
-                      ? "bg-[#24282f] text-white border border-white/22"
-                      : "bg-[#0b0c0e] text-[#7e8690] hover:text-white border border-[#1d2025]"
-                  }`}
-                >
-                  +${amt.toLocaleString()}
-                </button>
-              ))}
-            </div>
+                <div className="text-2xl font-bold text-white tabular-nums">
+                  +${confirmed.amountUsdt.toLocaleString("en-US")}{" "}
+                  <span className="text-xs font-semibold text-[#b8bec6]">
+                    tUSDT
+                  </span>
+                </div>
 
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <label
-                  htmlFor={faucetInputId}
-                  className="payoff-visually-hidden"
-                >
-                  {isZh ? "领水数量 (tUSDT)" : "Faucet amount (tUSDT)"}
-                </label>
-                <input
-                  id={faucetInputId}
-                  type="number"
-                  min={1}
-                  max={100000}
-                  step={100}
-                  disabled={faucetBusy}
-                  value={faucetAmount}
-                  onChange={(e) =>
-                    setFaucetAmount(
-                      Math.max(
-                        1,
-                        Math.min(100_000, Number(e.target.value) || 0)
-                      )
-                    )
-                  }
-                  className="w-full rounded-full border border-[#262a31] bg-[#0b0c0e] px-3.5 py-2 pr-14 text-sm font-semibold text-white tabular-nums focus:border-white/35 focus:outline-none disabled:opacity-50"
-                />
-                <span className="pointer-events-none absolute right-3.5 top-1/2 -translate-y-1/2 text-[11px] font-semibold text-[#7e8690]">
-                  tUSDT
-                </span>
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#b8bec6] tabular-nums">
+                  <span>
+                    {isZh ? "当前可用余额" : "New balance"}{" "}
+                    <strong className="font-semibold text-white">
+                      ${formattedCurrentBalance}
+                    </strong>
+                  </span>
+                  {explorerBase && confirmed.txHash && (
+                    <a
+                      href={`${explorerBase}/tx/${confirmed.txHash}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 font-semibold text-[#2EC26B] underline underline-offset-2 hover:text-[#2EC26B]/90"
+                    >
+                      <span>
+                        {isZh ? "在 BscScan 查看" : "View on BscScan"}
+                      </span>
+                      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                    </a>
+                  )}
+                </div>
               </div>
 
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirmed(null);
+                    setTxError(null);
+                    setSubmittedOnce(false);
+                    setAmountTouched(false);
+                  }}
+                  className="flex-1 min-h-[44px] rounded-full bg-[#24282f] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#2f343d] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                >
+                  {isZh ? "继续领水" : "Mint more"}
+                </button>
+                <button
+                  ref={doneBtnRef}
+                  type="button"
+                  autoFocus
+                  onClick={() => dialogRef.current?.close()}
+                  className="flex-1 min-h-[44px] rounded-full bg-white px-4 py-2.5 text-xs font-bold text-black hover:bg-white/90 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                >
+                  {isZh ? "完成" : "Done"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <form
+              noValidate
+              aria-labelledby={titleId}
+              onSubmit={(e) => void handleMintFaucet(e)}
+              className="space-y-4"
+            >
+              {/* Recessed Amount Card (aligned with OrderTicketPanel & WithdrawModal) */}
+              <div className="space-y-1.5">
+                <div
+                  className={`rounded-2xl border bg-[#0b0c0e] px-4 py-3.5 space-y-3 transition-colors ${
+                    showAmountError
+                      ? "border-[#E85D4A]"
+                      : "border-[#262a31] focus-within:border-white/35"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <label
+                      htmlFor={faucetInputId}
+                      className="font-semibold text-[#7e8690]"
+                    >
+                      {isZh ? "领取金额" : "Amount"}
+                    </label>
+                    <span
+                      id={amountHintId}
+                      className="text-[#7e8690] tabular-nums"
+                    >
+                      {isZh ? "可用" : "Available"}{" "}
+                      <strong className="font-semibold text-[#d0d6de]">
+                        ${formattedCurrentBalance}
+                      </strong>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-1 items-baseline">
+                      <span
+                        aria-hidden="true"
+                        className="mr-1 text-xl font-bold text-[#7e8690]"
+                      >
+                        $
+                      </span>
+                      <input
+                        ref={amountInputRef}
+                        id={faucetInputId}
+                        name="faucetAmount"
+                        type="text"
+                        inputMode="numeric"
+                        enterKeyHint="done"
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="none"
+                        spellCheck={false}
+                        required
+                        pattern="^[1-9][0-9]{0,5}$"
+                        placeholder="0"
+                        disabled={faucetBusy}
+                        value={amountText}
+                        aria-invalid={showAmountError ? "true" : "false"}
+                        aria-describedby={
+                          showAmountError
+                            ? `${amountHintId} ${amountErrorId}`
+                            : amountHintId
+                        }
+                        onChange={(e) => {
+                          const next = e.target.value
+                            .replace(/[^\d]/g, "")
+                            .slice(0, 6);
+                          setAmountText(next);
+                          setTxError(null);
+                          if (!getAmountError(next)) {
+                            scheduleErrorAnnouncement(null);
+                          }
+                        }}
+                        onBlur={() => {
+                          if (amountText !== "1000") {
+                            setAmountTouched(true);
+                            scheduleErrorAnnouncement(getAmountError(amountText));
+                          }
+                        }}
+                        className="w-full min-w-[60px] bg-transparent text-[26px] leading-tight font-bold tracking-[-0.025em] text-white placeholder:text-[#3a3f47] tabular-nums outline-none disabled:opacity-50"
+                      />
+                    </div>
+                    <span className="shrink-0 rounded-full bg-[#15171b] border border-[#262a31] px-2.5 py-1 text-xs font-semibold text-[#b8bec6]">
+                      tUSDT
+                    </span>
+                  </div>
+
+                  {/* 3 Equal-Width Quick Amount Presets */}
+                  <div
+                    role="group"
+                    aria-label={isZh ? "快捷金额档位" : "Quick amount presets"}
+                    className="grid grid-cols-3 gap-1.5 border-t border-[#1d2025] pt-3"
+                  >
+                    {MINT_PRESET_AMOUNTS.map((amt) => {
+                      const active = isValidAmount && parsedAmount === amt;
+                      return (
+                        <button
+                          key={amt}
+                          type="button"
+                          disabled={faucetBusy}
+                          aria-pressed={active}
+                          onClick={() => {
+                            setAmountText(String(amt));
+                            setAmountTouched(false);
+                            setTxError(null);
+                            scheduleErrorAnnouncement(null);
+                          }}
+                          className={`min-h-[34px] [@media(pointer:coarse)]:min-h-[42px] rounded-full text-xs font-semibold tabular-nums transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/75 ${
+                            active
+                              ? "bg-[#262b33] border border-white/25 text-white font-bold"
+                              : "bg-[#15171b] border border-transparent text-[#b8bec6] hover:bg-[#1f2329] hover:text-white"
+                          }`}
+                        >
+                          ${amt.toLocaleString("en-US")}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {showAmountError && amountErrorText && (
+                  <p
+                    id={amountErrorId}
+                    className="flex items-start gap-1.5 text-xs text-[#E85D4A]"
+                  >
+                    <AlertCircle
+                      className="h-3.5 w-3.5 mt-0.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>{amountErrorText}</span>
+                  </p>
+                )}
+              </div>
+
+              {/* Balance Preview & Network Summary */}
+              <div className="rounded-xl bg-[#0b0c0e] border border-[#1d2025] px-3.5 py-2.5 space-y-1.5 text-xs">
+                <div className="flex items-center justify-between gap-2 tabular-nums">
+                  <span className="text-[#7e8690]">
+                    {isZh ? "到账后余额" : "New balance"}
+                  </span>
+                  {isValidAmount ? (
+                    <span className="font-semibold">
+                      <span className="font-normal text-[#7e8690]">
+                        ${formattedCurrentBalance} →{" "}
+                      </span>
+                      <span className="text-[#2EC26B]">
+                        ${formattedProjectedBalance}
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="font-semibold text-[#d0d6de]">
+                      ${formattedCurrentBalance}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[#7e8690]">
+                    {isZh ? "网络与费用" : "Network"}
+                  </span>
+                  <span className="font-medium text-[#d0d6de]">
+                    BSC Testnet ·{" "}
+                    <span className="font-semibold text-[#2EC26B]">
+                      {isZh ? "免 Gas" : "Gas Free"}
+                    </span>
+                  </span>
+                </div>
+              </div>
+
+              {txError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-xl bg-[#E85D4A]/13 px-3.5 py-2.5 text-xs font-medium text-[#E85D4A]"
+                >
+                  <AlertCircle
+                    className="h-4 w-4 shrink-0 mt-0.5"
+                    aria-hidden="true"
+                  />
+                  <span>{txError}</span>
+                </div>
+              )}
+
+              {/* Full-Width Primary CTA (aligned with WithdrawModal) */}
               <button
                 type="submit"
                 autoFocus
-                disabled={faucetBusy || faucetAmount <= 0}
-                className="inline-flex min-h-[40px] shrink-0 items-center justify-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-bold text-black hover:bg-white/90 disabled:opacity-50 transition cursor-pointer tabular-nums focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                disabled={faucetBusy}
+                className="flex w-full min-h-[46px] items-center justify-center gap-2 rounded-full bg-white py-2.5 text-sm font-bold text-black hover:bg-white/90 disabled:opacity-45 transition cursor-pointer tabular-nums focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
               >
                 {faucetBusy ? (
-                  <Loader2
-                    className="h-3.5 w-3.5 animate-spin"
-                    aria-hidden="true"
-                  />
+                  <>
+                    <Loader2
+                      className="h-4 w-4 animate-spin"
+                      aria-hidden="true"
+                    />
+                    <span>{isZh ? "领取中..." : "Minting..."}</span>
+                  </>
                 ) : (
-                  <Droplets className="h-3.5 w-3.5" aria-hidden="true" />
+                  <>
+                    <Droplets className="h-4 w-4" aria-hidden="true" />
+                    <span>
+                      {isValidAmount
+                        ? isZh
+                          ? `领取 $${parsedAmount.toLocaleString("en-US")} tUSDT`
+                          : `Mint $${parsedAmount.toLocaleString("en-US")} tUSDT`
+                        : isZh
+                          ? "领取测试网 tUSDT"
+                          : "Mint tUSDT"}
+                    </span>
+                  </>
                 )}
-                <span>
-                  {faucetBusy
-                    ? isZh
-                      ? "领取中..."
-                      : "Minting..."
-                    : isZh
-                      ? `领取 $${faucetAmount.toLocaleString()}`
-                      : `Mint $${faucetAmount.toLocaleString()}`}
-                </span>
               </button>
-            </div>
 
-            {faucetResult && (
-              <div
-                role={faucetResult.kind === "err" ? "alert" : "status"}
-                aria-live="polite"
-                className={`flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-medium ${
-                  faucetResult.kind === "ok"
-                    ? "bg-[#2EC26B]/13 text-[#2EC26B]"
-                    : "bg-[#E85D4A]/13 text-[#E85D4A]"
-                }`}
-              >
-                <span className="inline-flex items-center gap-1.5">
-                  {faucetResult.kind === "ok" ? (
-                    <CheckCircle2
-                      className="h-3.5 w-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <AlertCircle
-                      className="h-3.5 w-3.5 shrink-0"
-                      aria-hidden="true"
-                    />
-                  )}
-                  <span>{faucetResult.text}</span>
-                </span>
-                {explorerBase && faucetResult.txHash && (
-                  <a
-                    href={`${explorerBase}/tx/${faucetResult.txHash}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-0.5 text-[11px] font-semibold underline underline-offset-2"
-                  >
-                    BscScan
-                    <ExternalLink className="h-2.5 w-2.5" aria-hidden="true" />
-                  </a>
-                )}
+              <p className="text-center text-[11px] leading-relaxed text-[#7e8690]">
+                {isZh
+                  ? "测试网 tUSDT 仅用于 BNB Smart Chain Testnet 体验，无真实资产价值。"
+                  : "Testnet funds on BNB Smart Chain Testnet only — no real asset value."}
+              </p>
+
+              {/* Single polite live region for delayed post-blur error announcements */}
+              <div aria-live="polite" className="payoff-visually-hidden">
+                {politeErrorAnnouncement}
               </div>
-            )}
-          </form>
-
-          <p className="text-[11px] leading-relaxed text-[#7e8690]">
-            {isZh
-              ? "测试网 tUSDT 仅用于 BNB Smart Chain Testnet 体验，无真实资产价值。"
-              : "Mint instant testnet tUSDT on BNB Smart Chain Testnet for testing."}
-          </p>
+            </form>
+          )}
         </div>
       </div>
     </dialog>
