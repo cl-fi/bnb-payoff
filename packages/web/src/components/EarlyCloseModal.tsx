@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -71,7 +71,6 @@ export function EarlyCloseModal({
   const usdInputId = useId();
   const usdHintId = useId();
   const usdErrId = useId();
-  const sliderId = useId();
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   const [ratio, setRatio] = useState(1);
@@ -106,7 +105,7 @@ export function EarlyCloseModal({
   const estimatedUsdt = totalExitUsdt * submitRatio;
   const soldStakeUsdt = position.totalStakeUsdt * submitRatio;
   const soldPnlUsdt = estimatedUsdt - soldStakeUsdt;
-  const soldMaxPayoutUsdt = position.remainingBalanceUsdt * submitRatio;
+  const soldPnlPct = soldStakeUsdt > 0 ? (soldPnlUsdt / soldStakeUsdt) * 100 : 0;
   const remainingExitUsdt = Math.max(0, totalExitUsdt * (1 - submitRatio));
   const remainingMaxPayoutUsdt = Math.max(
     0,
@@ -116,10 +115,8 @@ export function EarlyCloseModal({
     position.totalStakeUsdt > 0
       ? position.initialMaxPayoutUsdt / position.totalStakeUsdt
       : 0;
-
-  const sliderPct =
-    submitRatio <= 0 ? 1 : Math.max(1, Math.min(100, Math.round(submitRatio * 100)));
-  const sliderProgressPct = ((sliderPct - 1) / 99) * 100;
+  const sellPct =
+    submitRatio <= 0 ? 0 : Math.max(1, Math.min(100, Math.round(submitRatio * 100)));
 
   const belowMinSell =
     !draftIsInvalid &&
@@ -148,7 +145,8 @@ export function EarlyCloseModal({
   })();
 
   const showValidationError = Boolean(validationError && usdTouched);
-  const canSubmit = !isBusy && !validationError && submitRatio > 0 && totalExitUsdt > 0;
+  const canSubmit =
+    !isBusy && !validationError && submitRatio > 0 && totalExitUsdt > 0;
 
   const showSlippageCard =
     Boolean(slippagePause) &&
@@ -219,18 +217,13 @@ export function EarlyCloseModal({
   };
 
   const handleUsdChange = (nextStr: string) => {
-    // Allow digits and a single decimal point while typing
     if (!/^\d*\.?\d{0,2}$/.test(nextStr.trim())) return;
     setUsdDraft(nextStr);
     onClearSlippagePause();
     const trimmed = nextStr.trim();
-    if (!trimmed) {
-      return;
-    }
+    if (!trimmed) return;
     const val = Number(trimmed);
-    if (!Number.isFinite(val) || val <= 0 || totalExitUsdt <= 0) {
-      return;
-    }
+    if (!Number.isFinite(val) || val <= 0 || totalExitUsdt <= 0) return;
     const nextRatio = Math.min(1, val / totalExitUsdt);
     setRatio(nextRatio >= FULL_EXIT_RATIO_THRESHOLD ? 1 : nextRatio);
   };
@@ -240,32 +233,13 @@ export function EarlyCloseModal({
     if (usdDraft === null) return;
     const trimmed = usdDraft.trim();
     const val = Number(trimmed);
-    if (!trimmed || !Number.isFinite(val) || val <= 0) {
-      return;
-    }
+    if (!trimmed || !Number.isFinite(val) || val <= 0) return;
     if (totalExitUsdt > 0) {
       const clampedRatio = Math.max(0.01, Math.min(1, val / totalExitUsdt));
       setRatio(clampedRatio >= FULL_EXIT_RATIO_THRESHOLD ? 1 : clampedRatio);
     }
     setUsdDraft(null);
   };
-
-  const handleSliderChange = (pct: number) => {
-    const clampedPct = Math.max(1, Math.min(100, pct));
-    setUsdDraft(null);
-    setUsdTouched(false);
-    setRatio(clampedPct >= 100 ? 1 : clampedPct / 100);
-    onClearSlippagePause();
-  };
-
-  const sliderStyle = {
-    "--slider-progress": `${sliderProgressPct}%`,
-    "--slider-fill-color": "#ffffff",
-    "--slider-track-color": "#24282f",
-    "--attr-min": "1",
-    "--attr-max": "100",
-    "--control-value": String(sliderPct),
-  } as CSSProperties;
 
   const displayedUsdValue =
     usdDraft !== null
@@ -286,13 +260,13 @@ export function EarlyCloseModal({
         if (dialogRef.current) dialogRef.current.returnValue = "";
         onCloseModal();
       }}
-      className="payoff-sheet md:!w-[min(92vw,420px)] md:!max-w-[420px]"
+      className="payoff-sheet md:!w-[min(92vw,410px)] md:!max-w-[410px]"
     >
       <div className="flex max-h-[90dvh] flex-col md:max-h-[86dvh]">
         <div aria-hidden="true" className="payoff-sheet-handle" />
 
         <div className="overflow-y-auto px-5 pt-3 pb-6 sm:px-6 safe-pb space-y-4">
-          {/* Header */}
+          {/* Header (Top-right close X replaces Keep holding) */}
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h1
@@ -317,8 +291,9 @@ export function EarlyCloseModal({
             </div>
             <button
               type="button"
+              autoFocus
               disabled={isBusy}
-              aria-label={t.cancel}
+              aria-label={isZh ? "关闭" : "Close"}
               onClick={() => dialogRef.current?.close()}
               className="rounded-full p-1.5 text-[#7e8690] hover:bg-[#24282f] hover:text-white disabled:opacity-40 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
             >
@@ -339,7 +314,7 @@ export function EarlyCloseModal({
             </div>
           )}
 
-          {/* Slippage Guard View (>1.5% adverse move) vs Option A Custom USD Sell Form */}
+          {/* Slippage Guard View (>1.5% adverse move) vs Option B Streamlined Sell Form */}
           {showSlippageCard && slippagePause ? (
             <div className="space-y-4">
               <div
@@ -381,54 +356,42 @@ export function EarlyCloseModal({
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="space-y-2">
-                {countdown === 0 && stage !== "EXECUTING" ? (
-                  <button
-                    type="button"
-                    onClick={() => onInstantSell(submitRatio)}
-                    className="flex w-full min-h-[50px] items-center justify-center gap-2 rounded-full bg-white px-5 py-3 text-[15px] font-bold text-black hover:bg-white/90 transition cursor-pointer"
-                  >
-                    <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                    <span>{t.quoteExpiredRefresh}</span>
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    disabled={stage === "EXECUTING" || countdown === 0}
-                    onClick={onConfirmSlippageClose}
-                    className="flex w-full min-h-[50px] items-center justify-center gap-2 rounded-full bg-white px-5 py-3 text-[15px] font-bold text-black hover:bg-white/90 disabled:opacity-50 transition cursor-pointer tabular-nums"
-                  >
-                    {stage === "EXECUTING" ? (
-                      <>
-                        <Loader2
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                        <span>{t.confirmingTx}</span>
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
-                        <span>
-                          {isZh
-                            ? `按新价卖出 $${slippagePause.firmUsdt.toFixed(2)} · ${countdown}s`
-                            : `Sell for $${slippagePause.firmUsdt.toFixed(2)} · ${countdown}s`}
-                        </span>
-                      </>
-                    )}
-                  </button>
-                )}
-
+              {countdown === 0 && stage !== "EXECUTING" ? (
                 <button
                   type="button"
-                  disabled={stage === "EXECUTING"}
-                  onClick={() => dialogRef.current?.close()}
-                  className="flex w-full min-h-[44px] items-center justify-center rounded-full bg-[#24282f] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#2f343d] disabled:opacity-50 transition cursor-pointer"
+                  onClick={() => onInstantSell(submitRatio)}
+                  className="flex w-full min-h-[50px] items-center justify-center gap-2 rounded-full bg-white px-5 py-3 text-[15px] font-bold text-black hover:bg-white/90 transition cursor-pointer"
                 >
-                  {t.keepHolding}
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  <span>{t.quoteExpiredRefresh}</span>
                 </button>
-              </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={stage === "EXECUTING" || countdown === 0}
+                  onClick={onConfirmSlippageClose}
+                  className="flex w-full min-h-[50px] items-center justify-center gap-2 rounded-full bg-white px-5 py-3 text-[15px] font-bold text-black hover:bg-white/90 disabled:opacity-50 transition cursor-pointer tabular-nums"
+                >
+                  {stage === "EXECUTING" ? (
+                    <>
+                      <Loader2
+                        className="h-4 w-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                      <span>{t.confirmingTx}</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                      <span>
+                        {isZh
+                          ? `按新价卖出 $${slippagePause.firmUsdt.toFixed(2)} · ${countdown}s`
+                          : `Sell for $${slippagePause.firmUsdt.toFixed(2)} · ${countdown}s`}
+                      </span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           ) : (
             <form
@@ -442,85 +405,119 @@ export function EarlyCloseModal({
               }}
               className="space-y-4"
             >
-              {/* Option A: Editable USD Cashout Input Box */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-2 text-xs tabular-nums">
-                  <label
-                    htmlFor={usdInputId}
-                    className="font-semibold text-[#b8bec6]"
-                  >
-                    {isZh ? "卖出金额" : "Sell amount"}
-                  </label>
-                  <span id={usdHintId} className="text-[#7e8690]">
-                    {isZh ? "当前可卖" : "Available"}{" "}
-                    <strong className="font-semibold text-white">
-                      ${totalExitUsdt.toFixed(2)}
-                    </strong>
-                  </span>
-                </div>
-
+              {/* Unified Amount Card (Exact match with Buy Amount Box, Zero Slider) */}
+              <div className="space-y-1.5">
                 <div
-                  className={`flex items-center justify-between gap-3 rounded-2xl border bg-[#0b0c0e] px-4 py-3 transition-colors ${
+                  className={`rounded-2xl border bg-[#131519] px-3.5 py-2.5 space-y-2 transition-colors ${
                     showValidationError
                       ? "border-[#E85D4A]"
-                      : "border-[#262a31] focus-within:border-white/40"
+                      : "border-[#262A31] focus-within:border-white/35"
                   }`}
                 >
-                  <div className="flex min-w-0 flex-1 items-baseline gap-1">
-                    <span
-                      aria-hidden="true"
-                      className="text-xl font-bold text-[#7e8690]"
+                  {/* Top Row: Amount Label | Clickable Available Exit Value */}
+                  <div className="flex items-center justify-between gap-2 text-[11.5px]">
+                    <label
+                      htmlFor={usdInputId}
+                      className="font-semibold text-[#7e8690]"
                     >
-                      $
-                    </span>
-                    <input
-                      id={usdInputId}
-                      type="text"
-                      inputMode="decimal"
-                      disabled={isBusy}
-                      value={displayedUsdValue}
-                      aria-invalid={showValidationError ? "true" : "false"}
-                      aria-describedby={
-                        showValidationError
-                          ? `${usdHintId} ${usdErrId}`
-                          : usdHintId
+                      {t.stakeInputLabel}
+                    </label>
+                    <button
+                      type="button"
+                      id={usdHintId}
+                      disabled={isBusy || totalExitUsdt <= 0}
+                      onClick={() => handleSelectPreset(1)}
+                      aria-label={
+                        isZh
+                          ? `卖出全部当前可卖金额 $${totalExitUsdt.toFixed(2)}`
+                          : `Sell full available value $${totalExitUsdt.toFixed(2)}`
                       }
-                      onFocus={() => {
-                        setUsdDraft(
-                          estimatedUsdt > 0 ? estimatedUsdt.toFixed(2) : ""
-                        );
-                      }}
-                      onChange={(e) => handleUsdChange(e.target.value)}
-                      onBlur={handleUsdBlur}
-                      className="w-full min-w-0 bg-transparent text-[28px] font-bold leading-none tracking-[-0.03em] text-white tabular-nums placeholder:text-[#555c66] focus:outline-none disabled:opacity-50"
-                      placeholder="0.00"
-                    />
+                      className="group inline-flex items-center gap-1 text-[#7e8690] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition cursor-pointer tabular-nums rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/75"
+                    >
+                      <span>{t.available}</span>
+                      <strong className="font-semibold text-[#b8bec6] group-hover:text-white underline decoration-[#3a3f47] group-hover:decoration-white underline-offset-2">
+                        ${totalExitUsdt.toFixed(2)}
+                      </strong>
+                    </button>
                   </div>
 
-                  {submitRatio > 0 && (
-                    <div className="shrink-0 text-right tabular-nums">
-                      <div
-                        className={`text-xs font-bold ${
-                          soldPnlUsdt >= 0 ? "text-[#2EC26B]" : "text-[#E85D4A]"
-                        }`}
+                  {/* Middle Row: Full-Width Editable Dollar Input + tUSDT Unit */}
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 flex-1 items-baseline">
+                      <span
+                        aria-hidden="true"
+                        className="mr-1 text-lg font-bold text-[#7e8690]"
                       >
-                        {formatSignedUsd(soldPnlUsdt)}
-                      </div>
-                      <div className="mt-0.5 text-[11px] font-semibold text-[#7e8690]">
-                        {isFullExit
-                          ? isZh
-                            ? "全部"
-                            : "100%"
-                          : `${sliderPct}%`}
-                      </div>
+                        $
+                      </span>
+                      <input
+                        id={usdInputId}
+                        name="sellUsd"
+                        type="text"
+                        inputMode="decimal"
+                        enterKeyHint="done"
+                        autoComplete="off"
+                        spellCheck={false}
+                        disabled={isBusy}
+                        value={displayedUsdValue}
+                        aria-invalid={showValidationError ? "true" : "false"}
+                        aria-describedby={
+                          showValidationError
+                            ? `${usdHintId} ${usdErrId}`
+                            : usdHintId
+                        }
+                        onFocus={() => {
+                          setUsdDraft(
+                            estimatedUsdt > 0 ? estimatedUsdt.toFixed(2) : ""
+                          );
+                        }}
+                        onChange={(e) => handleUsdChange(e.target.value)}
+                        onBlur={handleUsdBlur}
+                        className="w-full min-w-[52px] bg-transparent text-[24px] leading-tight font-bold tracking-[-0.025em] text-white tabular-nums placeholder:text-[#555c66] outline-none disabled:opacity-50"
+                        placeholder="0.00"
+                      />
                     </div>
-                  )}
+                    <span className="shrink-0 text-[11px] font-semibold text-[#7e8690]">
+                      tUSDT
+                    </span>
+                  </div>
+
+                  {/* Bottom Row: 25% / 50% / 75% / Max inside the card */}
+                  <div
+                    role="group"
+                    aria-label={isZh ? "快捷卖出比例" : "Quick sell presets"}
+                    className="grid grid-cols-4 gap-1.5 border-t border-[#1e2228] pt-2"
+                  >
+                    {QUICK_PRESET_RATIOS.map((r) => {
+                      const active =
+                        usdDraft === null &&
+                        (r === 1
+                          ? isFullExit
+                          : Math.abs(submitRatio - r) < 0.008);
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          disabled={isBusy}
+                          aria-pressed={active}
+                          onClick={() => handleSelectPreset(r)}
+                          className={`min-h-[30px] [@media(pointer:coarse)]:min-h-[36px] rounded-full text-[11.5px] font-semibold tabular-nums transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/75 ${
+                            active
+                              ? "bg-[#262b33] border border-white/24 text-white font-bold"
+                              : "bg-[#1b1f25] border border-transparent text-[#b8bec6] hover:bg-[#242932] hover:text-white"
+                          }`}
+                        >
+                          {r === 1 ? t.amountMax : `${Math.round(r * 100)}%`}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {showValidationError && validationError ? (
                   <p
                     id={usdErrId}
-                    className="flex items-center gap-1.5 text-xs text-[#E85D4A]"
+                    className="flex items-center gap-1.5 px-1 text-xs text-[#E85D4A]"
                   >
                     <AlertCircle
                       className="h-3.5 w-3.5 shrink-0"
@@ -529,7 +526,7 @@ export function EarlyCloseModal({
                     <span>{validationError}</span>
                   </p>
                 ) : exceedsMax ? (
-                  <p className="text-[11px] text-[#7e8690]">
+                  <p className="px-1 text-[11px] text-[#7e8690]">
                     {isZh
                       ? `已按全额估值 $${totalExitUsdt.toFixed(2)} 全仓计算`
                       : `Capped at full exit value ($${totalExitUsdt.toFixed(2)})`}
@@ -537,160 +534,100 @@ export function EarlyCloseModal({
                 ) : null}
               </div>
 
-              {/* Continuous Native Range Slider + 4 Quick Preset Chips */}
-              <div className="space-y-2">
-                <label htmlFor={sliderId} className="payoff-visually-hidden">
-                  {isZh ? "卖出比例" : "Sell percentage"}
-                </label>
-                <input
-                  id={sliderId}
-                  type="range"
-                  min={1}
-                  max={100}
-                  step={1}
-                  disabled={isBusy || totalExitUsdt <= 0}
-                  value={sliderPct}
-                  aria-valuetext={`${sliderPct}%, ~$${estimatedUsdt.toFixed(2)}`}
-                  style={sliderStyle}
-                  onChange={(e) => handleSliderChange(Number(e.target.value))}
-                  className="w-full"
-                />
-
-                <div
-                  className="grid grid-cols-4 gap-1.5"
-                  role="group"
-                  aria-label={isZh ? "快捷卖出比例" : "Quick sell presets"}
-                >
-                  {QUICK_PRESET_RATIOS.map((r) => {
-                    const active =
-                      usdDraft === null &&
-                      (r === 1 ? isFullExit : Math.abs(submitRatio - r) < 0.008);
-                    return (
-                      <button
-                        key={r}
-                        type="button"
-                        disabled={isBusy}
-                        aria-pressed={active}
-                        onClick={() => handleSelectPreset(r)}
-                        className={`min-h-[34px] rounded-full text-xs font-semibold tabular-nums transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
-                          active
-                            ? "bg-[#24282f] border border-white/25 text-white font-bold"
-                            : "bg-[#15171b] border border-transparent text-[#b8bec6] hover:bg-[#1e2229] hover:text-white"
-                        }`}
-                      >
-                        {r === 1 ? "Max" : `${Math.round(r * 100)}%`}
-                      </button>
-                    );
-                  })}
+              {/* Option B: Minimal 3-Row Semantic Receipt */}
+              <dl className="divide-y divide-[#1d2025] border-t border-b border-[#1d2025] text-xs tabular-nums">
+                <div className="flex items-center justify-between gap-2 py-2.5">
+                  <dt className="font-medium text-[#7e8690]">
+                    {isZh ? "预计到手" : "You receive"}
+                  </dt>
+                  <dd className="text-sm font-bold text-white">
+                    ~${estimatedUsdt.toFixed(2)}
+                  </dd>
                 </div>
-              </div>
 
-              {/* Side-by-Side Comparison: Sell Now + Remaining vs Hold to Settlement */}
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="rounded-2xl bg-[#15171b] border border-[#1d2025] p-3 space-y-1 tabular-nums">
-                  <div className="text-[11px] font-semibold text-[#7e8690]">
-                    {isZh ? "卖出后 + 剩余" : "Sell now + remaining"}
-                  </div>
-                  <div className="text-xs font-bold text-white">
-                    {isZh ? "到手" : "Cash"} ~${estimatedUsdt.toFixed(2)}
-                  </div>
-                  <div className="text-[11px] text-[#b8bec6]">
-                    {!isFullExit && submitRatio > 0
+                <div className="flex items-center justify-between gap-2 py-2.5">
+                  <dt className="font-medium text-[#7e8690]">
+                    {isZh ? "本次盈亏" : "Realized PnL"}
+                  </dt>
+                  <dd
+                    className={`font-semibold ${
+                      submitRatio <= 0
+                        ? "text-[#7e8690]"
+                        : soldPnlUsdt >= 0
+                          ? "text-[#2EC26B]"
+                          : "text-[#E85D4A]"
+                    }`}
+                  >
+                    {submitRatio <= 0
+                      ? "$0.00"
+                      : `${formatSignedUsd(soldPnlUsdt)} (${soldPnlPct >= 0 ? "+" : ""}${soldPnlPct.toFixed(1)}%)`}
+                  </dd>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 py-2.5">
+                  <dt className="font-medium text-[#7e8690]">
+                    {isZh ? "剩余持仓" : "Remaining"}
+                  </dt>
+                  <dd className="font-semibold text-[#d0d6de]">
+                    {isFullExit
                       ? isZh
-                        ? `余仓 ~$${remainingExitUsdt.toFixed(2)} · 封顶 $${remainingMaxPayoutUsdt.toFixed(2)}`
-                        : `Left ~$${remainingExitUsdt.toFixed(2)} · Max $${remainingMaxPayoutUsdt.toFixed(2)}`
+                        ? "$0 · 全部平仓"
+                        : "$0 · Full exit"
                       : isZh
-                        ? "全部平仓 · 无剩余持仓"
-                        : "Full exit · $0 remaining"}
-                  </div>
+                        ? `~$${remainingExitUsdt.toFixed(2)} · 封顶 $${remainingMaxPayoutUsdt.toFixed(2)}`
+                        : `~$${remainingExitUsdt.toFixed(2)} · Max $${remainingMaxPayoutUsdt.toFixed(2)}`}
+                  </dd>
                 </div>
+              </dl>
 
-                <div className="rounded-2xl bg-[#15171b] border border-[#1d2025] p-3 space-y-1 tabular-nums">
-                  <div className="text-[11px] font-semibold text-[#7e8690]">
-                    {isZh ? "持有到结算" : "Hold to settlement"}
-                  </div>
-                  <div className="text-xs font-bold text-[#2EC26B]">
-                    {isZh ? "最多" : "Max"} $
-                    {position.remainingBalanceUsdt.toFixed(2)}
-                  </div>
-                  <div className="text-[11px] text-[#b8bec6]">
-                    {!isFullExit && submitRatio > 0
-                      ? isZh
-                        ? `本次减封顶 $${soldMaxPayoutUsdt.toFixed(2)}`
-                        : `Selling $${soldMaxPayoutUsdt.toFixed(2)} cap`
-                      : isZh
-                        ? "最少 $0.00"
-                        : "Worst $0.00"}
-                  </div>
-                </div>
-              </div>
-
-              {/* Primary Pure-White CTA + Charcoal Keep Holding */}
-              <div className="space-y-2 pt-0.5">
-                <button
-                  type="submit"
-                  disabled={!canSubmit}
-                  className={`relative flex w-full min-h-[50px] items-center justify-center gap-2 overflow-hidden rounded-full px-5 py-3 text-[15px] font-bold tracking-[-0.01em] transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white tabular-nums ${
-                    isBusy
-                      ? "bg-[#15171b] text-white"
-                      : "bg-white text-black hover:bg-white/90 active:scale-[0.99]"
-                  }`}
-                >
-                  {isBusy && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute inset-y-0 left-0 w-2/3 bg-[#2EC26B]/22"
-                    />
+              {/* Single Pure-White Primary CTA */}
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className={`relative flex w-full min-h-[50px] items-center justify-center gap-2 overflow-hidden rounded-full px-5 py-3 text-[15px] font-bold tracking-[-0.01em] transition cursor-pointer disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white tabular-nums ${
+                  isBusy
+                    ? "bg-[#15171b] text-white"
+                    : "bg-white text-black hover:bg-white/90 active:scale-[0.99]"
+                }`}
+              >
+                {isBusy && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute inset-y-0 left-0 w-2/3 bg-[#2EC26B]/22"
+                  />
+                )}
+                <span className="relative z-10 inline-flex items-center gap-2">
+                  {stage === "QUOTING" ? (
+                    <>
+                      <Loader2
+                        className="h-4 w-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                      <span>{t.fetchingAndSelling}</span>
+                    </>
+                  ) : stage === "EXECUTING" ? (
+                    <>
+                      <Loader2
+                        className="h-4 w-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                      <span>{t.confirmingTx}</span>
+                    </>
+                  ) : isFullExit ? (
+                    <span>
+                      {isZh
+                        ? `全部卖出 · ~$${estimatedUsdt.toFixed(2)}`
+                        : `Sell All · ~$${estimatedUsdt.toFixed(2)}`}
+                    </span>
+                  ) : (
+                    <span>
+                      {isZh
+                        ? `卖出 $${estimatedUsdt.toFixed(2)} (${sellPct}%)`
+                        : `Sell $${estimatedUsdt.toFixed(2)} (${sellPct}%)`}
+                    </span>
                   )}
-                  <span className="relative z-10 inline-flex items-center gap-2">
-                    {stage === "QUOTING" ? (
-                      <>
-                        <Loader2
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                        <span>{t.fetchingAndSelling}</span>
-                      </>
-                    ) : stage === "EXECUTING" ? (
-                      <>
-                        <Loader2
-                          className="h-4 w-4 animate-spin"
-                          aria-hidden="true"
-                        />
-                        <span>{t.confirmingTx}</span>
-                      </>
-                    ) : isFullExit ? (
-                      <span>
-                        {isZh
-                          ? `全部卖出 · 到手约 $${estimatedUsdt.toFixed(2)}`
-                          : `Sell All · Get ~$${estimatedUsdt.toFixed(2)}`}
-                      </span>
-                    ) : (
-                      <span>
-                        {isZh
-                          ? `卖出 $${estimatedUsdt.toFixed(2)} (${sliderPct}%)`
-                          : `Sell $${estimatedUsdt.toFixed(2)} (${sliderPct}%)`}
-                      </span>
-                    )}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  autoFocus
-                  disabled={isBusy}
-                  onClick={() => dialogRef.current?.close()}
-                  className="flex w-full min-h-[44px] items-center justify-center rounded-full bg-[#24282f] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#2f343d] disabled:opacity-50 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                >
-                  {t.keepHolding}
-                </button>
-
-                <p className="text-center text-[11px] text-[#7e8690]">
-                  {isZh
-                    ? "一键成交 · 价格变动超 1.5% 会先停下确认"
-                    : "Instant exit · Auto-pauses if price moves > 1.5%"}
-                </p>
-              </div>
+                </span>
+              </button>
             </form>
           )}
         </div>

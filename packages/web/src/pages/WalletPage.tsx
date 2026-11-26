@@ -8,14 +8,12 @@ import {
   Award,
   CheckCircle2,
   ChevronDown,
-  Clock,
   Droplets,
   ExternalLink,
   Loader2,
   Lock,
   Mail,
   ShieldCheck,
-  TrendingUp,
 } from "lucide-react";
 import {
   ASSET_SPECS,
@@ -1067,10 +1065,7 @@ export function WalletPage({
                                   cls: "bg-[#E6BA5C]/15 text-[#E6BA5C]",
                                 }
                               : pos.status === "ACTIVE"
-                                ? {
-                                    label: t.statusActive,
-                                    cls: "bg-[#2EC26B]/13 text-[#2EC26B]",
-                                  }
+                                ? null
                                 : isPartialOutcome
                                   ? {
                                       label: t.outcomePartialBadge,
@@ -1084,70 +1079,90 @@ export function WalletPage({
                         const claimPnl = pos.claimableUsdt - pos.totalStakeUsdt;
 
                         return (
-                          <li key={key} className="py-5 space-y-3.5">
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      onSelectPositionMarket?.(
-                                        pos.underlying,
-                                        pos.expiry
-                                      )
-                                    }
-                                    className="inline-flex items-center gap-1.5 text-[15px] font-bold text-white hover:text-white/85 transition cursor-pointer tabular-nums"
-                                  >
-                                    <span
-                                      className={`h-2 w-2 rounded-full shrink-0 ${
-                                        isBull ? "bg-[#2EC26B]" : "bg-[#E85D4A]"
-                                      }`}
-                                      aria-hidden="true"
-                                    />
-                                    <span>{spec.displaySymbol}</span>
-                                    {spec.assetClass === "RWA_EQUITY" && (
-                                      <span className="rounded bg-white/12 px-1 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-[#d0d6de]">
-                                        RWA
-                                      </span>
-                                    )}
-                                    <span
-                                      className={
-                                        isBull ? "text-[#2EC26B]" : "text-[#E85D4A]"
-                                      }
-                                    >
-                                      {isBull ? t.bull : t.bear}
-                                    </span>
-                                    {mult > 0 && (
-                                      <span className="text-white">
-                                        {mult.toFixed(2)}x
-                                      </span>
-                                    )}
-                                  </button>
-
+                          <li
+                            key={key}
+                            className="flex items-center justify-between gap-3 px-2 -mx-2 py-3.5 rounded-xl hover:bg-[#101216] transition-colors duration-150"
+                          >
+                            {/* Left: Trade-style 2-line position info + icon-only BscScan link */}
+                            <div className="min-w-0 flex-1 space-y-0.5">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onSelectPositionMarket?.(
+                                      pos.underlying,
+                                      pos.expiry
+                                    )
+                                  }
+                                  className="inline-flex flex-wrap items-center gap-1.5 text-left text-[14px] font-bold text-white hover:text-white/85 transition cursor-pointer tabular-nums rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                                >
                                   <span
-                                    className={`rounded-full px-2 py-0.5 text-[10.5px] font-semibold ${statusPill.cls}`}
+                                    className={`h-2 w-2 rounded-full shrink-0 ${
+                                      isBull ? "bg-[#2EC26B]" : "bg-[#E85D4A]"
+                                    }`}
+                                    aria-hidden="true"
+                                  />
+                                  <span>{spec.displaySymbol}</span>
+                                  {spec.assetClass === "RWA_EQUITY" && (
+                                    <span className="rounded bg-white/12 px-1 py-0.5 text-[9.5px] font-bold uppercase tracking-wider text-[#d0d6de]">
+                                      RWA
+                                    </span>
+                                  )}
+                                  <span
+                                    className={
+                                      isBull ? "text-[#2EC26B]" : "text-[#E85D4A]"
+                                    }
                                   >
-                                    {statusPill.label}
+                                    {isBull ? t.bull : t.bear}
                                   </span>
-                                </div>
-
-                                <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-[#9aa2ad] tabular-nums">
-                                  <span className="font-semibold text-[#d0d6de]">
+                                  {mult > 0 && <span>{mult.toFixed(2)}x</span>}
+                                  <span className="text-xs font-medium text-[#b8bec6]">
                                     {formatStrikePrice(pos.startPrice, pos.underlying)}{" "}
                                     → {formatStrikePrice(pos.capPrice, pos.underlying)}
                                   </span>
-                                  <span className="text-[#4a5058]">·</span>
-                                  <span className="inline-flex items-center gap-1">
-                                    <Clock
-                                      className="h-3 w-3 text-[#7e8690]"
-                                      aria-hidden="true"
-                                    />
-                                    {formatExpiryDateTime(pos.expiry, locale)}
+                                </button>
+
+                                {statusPill && (
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusPill.cls}`}
+                                  >
+                                    {statusPill.label}
                                   </span>
-                                </div>
+                                )}
                               </div>
 
-                              {/* Right Value + Signed Net PnL */}
+                              <div className="flex flex-wrap items-center gap-1 text-xs text-[#7e8690] tabular-nums">
+                                <span>
+                                  {isZh ? "投入" : "Stake"} $
+                                  {pos.totalStakeUsdt.toFixed(2)} ·{" "}
+                                  {isZh ? "最高赢" : "Max"} $
+                                  {pos.remainingBalanceUsdt.toFixed(2)} ·{" "}
+                                  {formatExpiryDateTime(pos.expiry, locale)}
+                                </span>
+                                {explorerBase && pos.openTxHash && (
+                                  <a
+                                    href={`${explorerBase}/tx/${pos.openTxHash}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    aria-label={
+                                      isZh
+                                        ? "在 BscScan 查看该笔交易"
+                                        : "View transaction on BscScan"
+                                    }
+                                    title="BscScan"
+                                    className="inline-flex h-5 w-5 items-center justify-center rounded text-[#6b7280] hover:text-white transition focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
+                                  >
+                                    <ExternalLink
+                                      className="h-3 w-3"
+                                      aria-hidden="true"
+                                    />
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Right: Live Value/PnL + Same-Row Action Button (matching TradePage) */}
+                            <div className="flex shrink-0 items-center gap-3">
                               {pos.status === "ACTIVE" && pos.awaitingSettlement ? (
                                 <div className="text-right">
                                   <div className="text-xs font-semibold text-[#E6BA5C]">
@@ -1163,7 +1178,7 @@ export function WalletPage({
                                 </div>
                               ) : pos.status === "ACTIVE" ? (
                                 <div className="text-right tabular-nums">
-                                  <div className="text-xl font-bold text-white tracking-[-0.02em]">
+                                  <div className="text-[15px] font-bold text-white">
                                     ${pos.indicativeExitUsdt.toFixed(2)}
                                   </div>
                                   <div
@@ -1181,7 +1196,7 @@ export function WalletPage({
                               ) : (
                                 <div className="text-right tabular-nums">
                                   <div
-                                    className={`text-xl font-bold tracking-[-0.02em] ${
+                                    className={`text-[15px] font-bold ${
                                       isPartialOutcome
                                         ? "text-[#E6BA5C]"
                                         : "text-[#2EC26B]"
@@ -1200,143 +1215,99 @@ export function WalletPage({
                                   </div>
                                 </div>
                               )}
-                            </div>
 
-                            {/* Compact Meta & Action Row */}
-                            <div className="flex flex-wrap items-center justify-between gap-3 text-xs tabular-nums">
-                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[#7e8690]">
-                                <span>
-                                  {isZh ? "投入" : "Stake"}{" "}
-                                  <strong className="font-semibold text-[#d0d6de]">
-                                    ${pos.totalStakeUsdt.toFixed(2)}
-                                  </strong>
-                                </span>
-                                <span>
-                                  BE{" "}
-                                  <strong className="font-semibold text-[#d0d6de]">
-                                    {formatStrikePrice(
-                                      pos.breakevenPrice,
-                                      pos.underlying
-                                    )}
-                                  </strong>
-                                </span>
-                                <span>
-                                  {isZh ? "封顶" : "Max"}{" "}
-                                  <strong className="font-semibold text-[#2EC26B]">
-                                    ${pos.remainingBalanceUsdt.toFixed(2)}
-                                  </strong>
-                                </span>
-                                {explorerBase && pos.openTxHash && (
-                                  <a
-                                    href={`${explorerBase}/tx/${pos.openTxHash}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-flex items-center gap-0.5 text-[#7e8690] hover:text-white transition"
-                                  >
-                                    <span>BscScan</span>
-                                    <ExternalLink
-                                      className="h-3 w-3"
-                                      aria-hidden="true"
-                                    />
-                                  </a>
-                                )}
-                              </div>
-
-                              <div className="flex items-center gap-2">
-                                {pos.status === "ACTIVE" &&
-                                  pos.remainingBalanceUsdt > 0 &&
-                                  (pos.awaitingSettlement ? (
-                                    pos.expiryPaused ? (
-                                      <span className="inline-flex items-center gap-1 rounded-full bg-[#E85D4A]/15 px-3 py-1.5 text-[11px] font-semibold text-[#E85D4A]">
-                                        <AlertTriangle
-                                          className="h-3 w-3 shrink-0"
-                                          aria-hidden="true"
-                                        />
-                                        {t.statusDisputed}
-                                      </span>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        disabled={
-                                          !pos.canPermissionlessSettle ||
-                                          settlingKey ===
-                                            `${pos.underlying}:${pos.expiry}`
-                                        }
-                                        onClick={() =>
-                                          void handlePermissionlessSettle(pos)
-                                        }
-                                        className="inline-flex min-h-[34px] items-center gap-1.5 rounded-full bg-white px-3.5 py-1.5 text-xs font-bold text-black hover:bg-white/90 disabled:opacity-45 transition cursor-pointer"
-                                      >
-                                        {settlingKey ===
-                                        `${pos.underlying}:${pos.expiry}` ? (
-                                          <Loader2
-                                            className="h-3.5 w-3.5 animate-spin"
-                                            aria-hidden="true"
-                                          />
-                                        ) : (
-                                          <ShieldCheck
-                                            className="h-3.5 w-3.5"
-                                            aria-hidden="true"
-                                          />
-                                        )}
-                                        <span>
-                                          {pos.canPermissionlessSettle
-                                            ? t.manualSettleCta
-                                            : t.settleWaitingDelayShort}
-                                        </span>
-                                      </button>
-                                    )
-                                  ) : pos.inTwapWindow ? (
-                                    <span className="inline-flex items-center gap-1 rounded-full bg-[#E6BA5C]/15 px-3 py-1.5 text-[11px] font-semibold text-[#E6BA5C]">
-                                      <Lock className="h-3 w-3" aria-hidden="true" />
-                                      {t.statusTwapWindow}
+                              {pos.status === "ACTIVE" &&
+                                pos.remainingBalanceUsdt > 0 &&
+                                (pos.awaitingSettlement ? (
+                                  pos.expiryPaused ? (
+                                    <span className="inline-flex min-h-[34px] items-center gap-1 rounded-full bg-[#E85D4A]/15 px-3 py-1 text-[11px] font-semibold text-[#E85D4A]">
+                                      <AlertTriangle
+                                        className="h-3 w-3 shrink-0"
+                                        aria-hidden="true"
+                                      />
+                                      {t.statusDisputed}
                                     </span>
                                   ) : (
                                     <button
                                       type="button"
-                                      onClick={() => handleOpenEarlyClose(pos)}
-                                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-full bg-[#24282f] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#2f343d] transition cursor-pointer"
-                                    >
-                                      <TrendingUp
-                                        className="h-3.5 w-3.5"
-                                        aria-hidden="true"
-                                      />
-                                      <span>{t.earlyCloseCta}</span>
-                                    </button>
-                                  ))}
-
-                                {pos.status === "SETTLED_CLAIMABLE" &&
-                                  pos.claimableUsdt > 0 && (
-                                    <button
-                                      type="button"
                                       disabled={
-                                        batchClaiming ||
-                                        redeemingSeriesId ===
-                                          pos.seriesId.toLowerCase()
+                                        !pos.canPermissionlessSettle ||
+                                        settlingKey ===
+                                          `${pos.underlying}:${pos.expiry}`
                                       }
-                                      onClick={() => void handleRedeem(pos)}
-                                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-full bg-white px-3.5 py-1.5 text-xs font-bold text-black hover:bg-white/90 disabled:opacity-50 transition cursor-pointer tabular-nums"
+                                      onClick={() =>
+                                        void handlePermissionlessSettle(pos)
+                                      }
+                                      className="inline-flex min-h-[34px] [@media(pointer:coarse)]:min-h-[40px] items-center gap-1.5 rounded-full bg-white px-3.5 py-1.5 text-xs font-bold text-black hover:bg-white/90 disabled:opacity-45 transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                                     >
-                                      {redeemingSeriesId ===
-                                      pos.seriesId.toLowerCase() ? (
+                                      {settlingKey ===
+                                      `${pos.underlying}:${pos.expiry}` ? (
                                         <Loader2
                                           className="h-3.5 w-3.5 animate-spin"
                                           aria-hidden="true"
                                         />
                                       ) : (
-                                        <Award
+                                        <ShieldCheck
                                           className="h-3.5 w-3.5"
                                           aria-hidden="true"
                                         />
                                       )}
                                       <span>
-                                        {isZh
-                                          ? `领取 $${pos.claimableUsdt.toFixed(2)}`
-                                          : `Claim $${pos.claimableUsdt.toFixed(2)}`}
+                                        {pos.canPermissionlessSettle
+                                          ? t.manualSettleCta
+                                          : t.settleWaitingDelayShort}
                                       </span>
                                     </button>
-                                  )}
-                              </div>
+                                  )
+                                ) : pos.inTwapWindow ? (
+                                  <span className="inline-flex min-h-[34px] items-center gap-1 rounded-full bg-[#E6BA5C]/12 px-3 py-1 text-[11px] font-semibold text-[#E6BA5C]">
+                                    <Lock
+                                      className="h-3 w-3 shrink-0"
+                                      aria-hidden="true"
+                                    />
+                                    <span>{t.statusTwapWindow}</span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEarlyClose(pos)}
+                                    className="min-h-[34px] [@media(pointer:coarse)]:min-h-[40px] rounded-full bg-[#24282f] px-4 py-1.5 text-xs font-bold text-white hover:bg-white hover:text-black active:scale-[0.98] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                                  >
+                                    {t.actionSell}
+                                  </button>
+                                ))}
+
+                              {pos.status === "SETTLED_CLAIMABLE" &&
+                                pos.claimableUsdt > 0 && (
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      batchClaiming ||
+                                      redeemingSeriesId ===
+                                        pos.seriesId.toLowerCase()
+                                    }
+                                    onClick={() => void handleRedeem(pos)}
+                                    className="inline-flex min-h-[34px] [@media(pointer:coarse)]:min-h-[40px] items-center gap-1.5 rounded-full bg-white px-4 py-1.5 text-xs font-bold text-black hover:bg-white/90 disabled:opacity-50 transition cursor-pointer tabular-nums focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                                  >
+                                    {redeemingSeriesId ===
+                                    pos.seriesId.toLowerCase() ? (
+                                      <Loader2
+                                        className="h-3.5 w-3.5 animate-spin"
+                                        aria-hidden="true"
+                                      />
+                                    ) : (
+                                      <Award
+                                        className="h-3.5 w-3.5"
+                                        aria-hidden="true"
+                                      />
+                                    )}
+                                    <span>
+                                      {isZh
+                                        ? `领取 $${pos.claimableUsdt.toFixed(2)}`
+                                        : `Claim $${pos.claimableUsdt.toFixed(2)}`}
+                                    </span>
+                                  </button>
+                                )}
                             </div>
                           </li>
                         );

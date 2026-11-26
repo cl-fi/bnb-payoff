@@ -454,28 +454,25 @@ export function OrderTicketPanel({
       )
     : 1000;
 
-  const handleQuickAdd = (delta: number) => {
-    const base =
-      Number.isFinite(parsedStakeText) && parsedStakeText >= 0
-        ? parsedStakeText
-        : stakeUsdt;
-    const cap = walletConnected
-      ? Math.min(MAX_STAKE_USDT, Math.floor(usdtBalance * 100) / 100)
-      : MAX_STAKE_USDT;
-    const target =
-      cap >= 1
-        ? Math.min(cap, Math.max(1, Math.round((base + delta) * 100) / 100))
-        : Math.min(MAX_STAKE_USDT, Math.max(1, Math.round((base + delta) * 100) / 100));
-    setStakeTouched(false);
-    setStakeText(String(target));
-    onChangeStake(target);
-  };
+  const canUseBalancePresets = walletConnected && usdtBalance >= 1;
 
-  const handleQuickMax = () => {
-    const next = Math.max(1, Math.min(MAX_STAKE_USDT, maxAllowedStake));
+  const applyStakeValue = (nextRaw: number) => {
+    const next = Math.max(
+      1,
+      Math.min(MAX_STAKE_USDT, Math.floor(nextRaw * 100) / 100)
+    );
     setStakeTouched(false);
     setStakeText(String(next));
     onChangeStake(next);
+  };
+
+  const handleQuickMax = () => {
+    applyStakeValue(maxAllowedStake);
+  };
+
+  const handleQuickPercent = (ratio: number) => {
+    if (!canUseBalancePresets) return;
+    applyStakeValue(ratio >= 1 ? maxAllowedStake : maxAllowedStake * ratio);
   };
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
@@ -1168,26 +1165,46 @@ export function OrderTicketPanel({
         )}
       </div>
 
-      {/* 3. Option A: Single-Row Editable Amount Bar (#131519, 1px solid #262A31) */}
+      {/* 3. Option A: Standard Amount Box (Clickable Available -> Max + Full-Width Input + 25/50/75%/Max) */}
       <div
-        className={`flex items-center justify-between gap-2.5 rounded-2xl border bg-[#131519] px-3.5 py-2.5 transition-colors ${
+        className={`rounded-2xl border bg-[#131519] px-3.5 py-2.5 space-y-2 transition-colors ${
           stakeTouched && (invalidStake || insufficientBalance)
             ? "border-[#E85D4A]"
             : "border-[#262A31] focus-within:border-white/35"
         }`}
       >
-        <div className="flex min-w-0 flex-1 flex-col">
+        {/* Top Row: Amount Label | Clickable Available Balance */}
+        <div className="flex items-center justify-between gap-2 text-[11.5px]">
           <label
             htmlFor={stakeInputId}
-            id={stakeHintId}
-            className="block truncate text-[11px] font-semibold text-[#7e8690] tabular-nums"
+            className="font-semibold text-[#7e8690]"
           >
             {t.stakeInputLabel}
-            {walletConnected
-              ? ` · ${t.available} $${formatCompactBalance(usdtBalance)}`
-              : ""}
           </label>
-          <div className="mt-0.5 flex items-baseline">
+          {walletConnected && (
+            <button
+              type="button"
+              id={stakeHintId}
+              disabled={isBusy || usdtBalance < 1}
+              onClick={handleQuickMax}
+              aria-label={
+                locale === "zh"
+                  ? `使用全部可用余额 $${formatCompactBalance(usdtBalance)}`
+                  : `Use full available balance $${formatCompactBalance(usdtBalance)}`
+              }
+              className="group inline-flex items-center gap-1 text-[#7e8690] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed transition cursor-pointer tabular-nums rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/75"
+            >
+              <span>{t.available}</span>
+              <strong className="font-semibold text-[#b8bec6] group-hover:text-white underline decoration-[#3a3f47] group-hover:decoration-white underline-offset-2">
+                ${formatCompactBalance(usdtBalance)}
+              </strong>
+            </button>
+          )}
+        </div>
+
+        {/* Middle Row: Full-Width Editable Dollar Input + tUSDT Unit */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-1 items-baseline">
             <span
               aria-hidden="true"
               className="mr-1 text-lg font-bold text-[#7e8690]"
@@ -1208,7 +1225,7 @@ export function OrderTicketPanel({
               aria-invalid={
                 stakeTouched && (invalidStake || insufficientBalance)
               }
-              aria-describedby={stakeHintId}
+              aria-describedby={walletConnected ? stakeHintId : undefined}
               onChange={(e) => {
                 const raw = e.target.value
                   .replace(/[^\d.]/g, "")
@@ -1236,28 +1253,76 @@ export function OrderTicketPanel({
                   onChangeStake(clamped);
                 }
               }}
-              className="w-full min-w-[52px] bg-transparent text-[22px] leading-tight font-bold tracking-[-0.025em] text-white tabular-nums outline-none disabled:opacity-60"
+              className="w-full min-w-[52px] bg-transparent text-[24px] leading-tight font-bold tracking-[-0.025em] text-white tabular-nums outline-none disabled:opacity-60"
             />
           </div>
+          <span className="shrink-0 text-[11px] font-semibold text-[#7e8690]">
+            tUSDT
+          </span>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={() => handleQuickAdd(100)}
-            className="min-h-[32px] rounded-full bg-[#1e2228] px-2.5 py-1 text-[11.5px] font-semibold text-[#b8bec6] tabular-nums transition hover:bg-[#282d35] hover:text-white cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-white/70"
-          >
-            {t.amountQuickAdd100}
-          </button>
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={handleQuickMax}
-            className="min-h-[32px] rounded-full bg-[#1e2228] px-2.5 py-1 text-[11.5px] font-semibold text-white transition hover:bg-[#282d35] cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-white/70"
-          >
-            {t.amountMax}
-          </button>
+        {/* Bottom Row: 25% / 50% / 75% / Max (or $20 / $50 / $100 / $500 when disconnected) */}
+        <div
+          role="group"
+          aria-label={
+            canUseBalancePresets
+              ? locale === "zh"
+                ? "按余额比例填入金额"
+                : "Quick balance percentages"
+              : locale === "zh"
+                ? "快捷金额档位"
+                : "Quick amount presets"
+          }
+          className="grid grid-cols-4 gap-1.5 border-t border-[#1e2228] pt-2"
+        >
+          {canUseBalancePresets
+            ? ([0.25, 0.5, 0.75, 1] as const).map((pct) => {
+                const targetVal = Math.max(
+                  1,
+                  Math.min(
+                    MAX_STAKE_USDT,
+                    Math.floor(
+                      (pct >= 1 ? maxAllowedStake : maxAllowedStake * pct) * 100
+                    ) / 100
+                  )
+                );
+                const active = Math.abs(stakeUsdt - targetVal) < 0.02;
+                return (
+                  <button
+                    key={pct}
+                    type="button"
+                    disabled={isBusy}
+                    aria-pressed={active}
+                    onClick={() => handleQuickPercent(pct)}
+                    className={`min-h-[30px] [@media(pointer:coarse)]:min-h-[36px] rounded-full text-[11.5px] font-semibold tabular-nums transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/75 ${
+                      active
+                        ? "bg-[#262b33] border border-white/24 text-white font-bold"
+                        : "bg-[#1b1f25] border border-transparent text-[#b8bec6] hover:bg-[#242932] hover:text-white"
+                    }`}
+                  >
+                    {pct === 1 ? t.amountMax : `${Math.round(pct * 100)}%`}
+                  </button>
+                );
+              })
+            : ([20, 50, 100, 500] as const).map((preset) => {
+                const active = Math.abs(stakeUsdt - preset) < 0.02;
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    disabled={isBusy}
+                    aria-pressed={active}
+                    onClick={() => applyStakeValue(preset)}
+                    className={`min-h-[30px] [@media(pointer:coarse)]:min-h-[36px] rounded-full text-[11.5px] font-semibold tabular-nums transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white/75 ${
+                      active
+                        ? "bg-[#262b33] border border-white/24 text-white font-bold"
+                        : "bg-[#1b1f25] border border-transparent text-[#b8bec6] hover:bg-[#242932] hover:text-white"
+                    }`}
+                  >
+                    ${preset}
+                  </button>
+                );
+              })}
         </div>
       </div>
 
