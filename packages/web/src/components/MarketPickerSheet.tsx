@@ -23,7 +23,7 @@ export interface MarketPickerSheetProps {
 export interface MarketSelectorProps {
   locale: Locale;
   selectedUnderlying: UnderlyingSymbol;
-  assetSubtitle: string;
+  assetSubtitle?: string;
   liveSpots: Record<UnderlyingSymbol, { spot: number; change24hPct: number }>;
   liveRwaTelemetry?: Partial<Record<UnderlyingSymbol, RwaAssetTelemetry>>;
   positions?: PositionView[];
@@ -34,10 +34,24 @@ export interface MarketSelectorProps {
   onSelectUnderlying: (underlying: UnderlyingSymbol) => void;
 }
 
-const MARKET_PICKER_ORDER: readonly UnderlyingSymbol[] = [
-  "NVDAB",
-  "BTC",
-  "ETH",
+const MARKET_PICKER_GROUPS: readonly {
+  id: "rwa" | "crypto";
+  labelZh: string;
+  labelEn: string;
+  symbols: readonly UnderlyingSymbol[];
+}[] = [
+  {
+    id: "rwa",
+    labelZh: "美股 · RWA",
+    labelEn: "US Equities · RWA",
+    symbols: ["NVDAB"],
+  },
+  {
+    id: "crypto",
+    labelZh: "加密货币",
+    labelEn: "Crypto",
+    symbols: ["BTC", "ETH"],
+  },
 ];
 
 const ASSET_META: Record<
@@ -78,169 +92,208 @@ function MarketRowList({
 }: MarketRowListProps) {
   const isZh = locale === "zh";
   const isDropdown = mode === "dropdown";
+  const listUid = useId();
 
-  return (
-    <div
-      role={isDropdown ? "group" : undefined}
-      aria-label={isDropdown ? (isZh ? "可用市场" : "Available markets") : undefined}
-      className={isDropdown ? "flex flex-col gap-0.5" : "divide-y divide-[#1d2025]"}
-    >
-      {MARKET_PICKER_ORDER.map((u) => {
-        const spec = ASSET_SPECS[u];
-        const isSelected = selectedUnderlying === u;
-        const isRwa = spec.assetClass === "RWA_EQUITY";
-        const spotInfo = liveSpots[u];
-        const spot = spotInfo?.spot ?? spec.defaultSpot;
-        const changePct = spotInfo?.change24hPct ?? 0;
-        const isUp = changePct >= 0;
-        const activeCount = positionCounts[u] ?? 0;
-        const rwaSession = isRwa ? liveRwaTelemetry?.[u]?.session : undefined;
+  const renderRow = (u: UnderlyingSymbol) => {
+    const spec = ASSET_SPECS[u];
+    const isSelected = selectedUnderlying === u;
+    const isRwa = spec.assetClass === "RWA_EQUITY";
+    const spotInfo = liveSpots[u];
+    const spot = spotInfo?.spot ?? spec.defaultSpot;
+    const changePct = spotInfo?.change24hPct ?? 0;
+    const isUp = changePct >= 0;
+    const activeCount = positionCounts[u] ?? 0;
+    const rwaSession = isRwa ? liveRwaTelemetry?.[u]?.session : undefined;
 
-        const cadenceText = isRwa
-          ? isZh
-            ? "美股收盘 21:00 UTC"
-            : "US Close 21:00 UTC"
-          : isZh
-            ? "每日 08:00 UTC · 周五周度"
-            : "Daily 08:00 UTC · Weekly Fri";
+    const cadenceText = isRwa
+      ? isZh
+        ? "美股收盘 21:00 UTC"
+        : "US Close 21:00 UTC"
+      : isZh
+        ? "每日 08:00 UTC · 周五周度"
+        : "Daily 08:00 UTC · Weekly Fri";
 
-        const rwaSessionMeta =
-          rwaSession === "RTH"
-            ? {
-                label: isZh ? "盘中" : "US Open",
-                dotCls: "bg-[#2EC26B]",
-                textCls: "text-[#2EC26B]",
-              }
-            : rwaSession === "EXTENDED"
-              ? {
-                  label: isZh ? "盘前/盘后" : "Extended",
-                  dotCls: "bg-[#E6BA5C]",
-                  textCls: "text-[#E6BA5C]",
-                }
-              : rwaSession === "WEEKEND"
-                ? {
-                    label: isZh ? "周末 24/7" : "Weekend 24/7",
-                    dotCls: "bg-[#7e8690]",
-                    textCls: "text-[#b8bec6]",
-                  }
-                : null;
-
-        return (
-          <button
-            key={u}
-            type="button"
-            role={isDropdown ? "menuitemradio" : undefined}
-            aria-checked={isDropdown ? isSelected : undefined}
-            aria-pressed={!isDropdown ? isSelected : undefined}
-            onClick={() => onSelect(u)}
-            className={
-              isDropdown
-                ? `flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2.5 text-left transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/75 ${
-                    isSelected
-                      ? "bg-[#1a1e24]"
-                      : "hover:bg-[#1a1e24]/80 active:bg-[#1a1e24]"
-                  }`
-                : `flex w-full items-center justify-between gap-3 py-3.5 px-2 -mx-2 rounded-2xl text-left transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
-                    isSelected
-                      ? "bg-[#15171b]"
-                      : "hover:bg-[#15171b]/70 active:bg-[#15171b]"
-                  }`
+    const rwaSessionMeta =
+      rwaSession === "RTH"
+        ? {
+            label: isZh ? "盘中" : "US Open",
+            dotCls: "bg-[#2EC26B]",
+            textCls: "text-[#2EC26B]",
+          }
+        : rwaSession === "EXTENDED"
+          ? {
+              label: isZh ? "盘前/盘后" : "Extended",
+              dotCls: "bg-[#E6BA5C]",
+              textCls: "text-[#E6BA5C]",
             }
-          >
-            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-              <img
-                src={ASSET_META[u].logoSrc}
-                alt=""
-                aria-hidden="true"
-                width={isDropdown ? 36 : 40}
-                height={isDropdown ? 36 : 40}
-                decoding="async"
-                className={`shrink-0 rounded-full object-cover ${
-                  isDropdown ? "h-9 w-9" : "h-10 w-10"
-                }`}
-              />
+          : rwaSession === "WEEKEND"
+            ? {
+                label: isZh ? "周末 24/7" : "Weekend 24/7",
+                dotCls: "bg-[#7e8690]",
+                textCls: "text-[#b8bec6]",
+              }
+            : null;
 
-              <div className="min-w-0">
-                {/* Line 1: Ticker + concise asset name + RWA pill */}
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="text-[14.5px] font-bold text-white tracking-[-0.01em] shrink-0">
-                    {spec.displaySymbol}
-                  </span>
-                  <span className="text-xs text-[#7e8690] truncate">
-                    {isZh ? ASSET_META[u].zh : ASSET_META[u].en}
-                  </span>
-                  {isRwa && (
-                    <span className="shrink-0 rounded-full bg-[#24282f] px-1.5 py-0.5 text-[10px] font-bold leading-none text-[#b8bec6]">
-                      RWA
-                    </span>
-                  )}
-                </div>
+    return (
+      <button
+        key={u}
+        type="button"
+        role={isDropdown ? "menuitemradio" : undefined}
+        aria-checked={isDropdown ? isSelected : undefined}
+        aria-pressed={!isDropdown ? isSelected : undefined}
+        onClick={() => onSelect(u)}
+        className={
+          isDropdown
+            ? `flex w-full items-center justify-between gap-3 rounded-xl px-2.5 py-2.5 text-left transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/75 ${
+                isSelected
+                  ? "bg-[#1a1e24]"
+                  : "hover:bg-[#1a1e24]/80 active:bg-[#1a1e24]"
+              }`
+            : `flex w-full items-center justify-between gap-3 py-3.5 px-2 -mx-2 rounded-2xl text-left transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+                isSelected
+                  ? "bg-[#15171b]"
+                  : "hover:bg-[#15171b]/70 active:bg-[#15171b]"
+              }`
+        }
+      >
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+          <img
+            src={ASSET_META[u].logoSrc}
+            alt=""
+            aria-hidden="true"
+            width={isDropdown ? 36 : 40}
+            height={isDropdown ? 36 : 40}
+            decoding="async"
+            className={`shrink-0 rounded-full object-cover ${
+              isDropdown ? "h-9 w-9" : "h-10 w-10"
+            }`}
+          />
 
-                {/* Line 2: Uniform single-line metadata (session dot + cadence + active positions) */}
-                <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[#7e8690] truncate">
-                  {rwaSessionMeta && (
-                    <>
-                      <span
-                        className={`inline-flex shrink-0 items-center gap-1 font-semibold ${rwaSessionMeta.textCls}`}
-                      >
-                        <span
-                          aria-hidden="true"
-                          className={`h-1.5 w-1.5 rounded-full ${rwaSessionMeta.dotCls}`}
-                        />
-                        {rwaSessionMeta.label}
-                      </span>
-                      <span aria-hidden="true" className="text-[#4a5058]">
-                        ·
-                      </span>
-                    </>
-                  )}
-                  <span className="truncate">{cadenceText}</span>
-                  {activeCount > 0 && (
-                    <>
-                      <span aria-hidden="true" className="text-[#4a5058]">
-                        ·
-                      </span>
-                      <span className="inline-flex shrink-0 items-center gap-1 font-semibold text-[#2EC26B] tabular-nums">
-                        <span
-                          aria-hidden="true"
-                          className="h-1.5 w-1.5 rounded-full bg-[#2EC26B]"
-                        />
-                        {isZh ? `${activeCount} 笔` : `${activeCount} open`}
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Right: Price column aligned strictly across all rows via fixed-width check slot */}
-            <div className="flex items-center gap-2.5 shrink-0">
-              <div className="text-right tabular-nums">
-                <div className="text-[14.5px] font-bold text-white tracking-[-0.02em] leading-snug">
-                  {formatSpotPrice(spot)}
-                </div>
-                <div
-                  className={`text-[11.5px] font-semibold leading-snug ${
-                    isUp ? "text-[#2EC26B]" : "text-[#E85D4A]"
-                  }`}
-                >
-                  {isUp ? "+" : ""}
-                  {changePct.toFixed(2)}%
-                </div>
-              </div>
-
-              <span
-                aria-hidden="true"
-                className="flex h-5 w-5 shrink-0 items-center justify-center"
-              >
-                {isSelected && (
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-black">
-                    <Check className="h-3.5 w-3.5" />
-                  </span>
-                )}
+          <div className="min-w-0">
+            {/* Line 1: Ticker + concise asset name (category is signaled by group header, zero inline tag clutter) */}
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-[14.5px] font-bold text-white tracking-[-0.01em] shrink-0">
+                {spec.displaySymbol}
+              </span>
+              <span className="text-xs text-[#7e8690] truncate">
+                {isZh ? ASSET_META[u].zh : ASSET_META[u].en}
               </span>
             </div>
-          </button>
+
+            {/* Line 2: Uniform single-line metadata (session dot + cadence + active positions) */}
+            <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-[#7e8690] truncate">
+              {rwaSessionMeta && (
+                <>
+                  <span
+                    className={`inline-flex shrink-0 items-center gap-1 font-semibold ${rwaSessionMeta.textCls}`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`h-1.5 w-1.5 rounded-full ${rwaSessionMeta.dotCls}`}
+                    />
+                    {rwaSessionMeta.label}
+                  </span>
+                  <span aria-hidden="true" className="text-[#4a5058]">
+                    ·
+                  </span>
+                </>
+              )}
+              <span className="truncate">{cadenceText}</span>
+              {activeCount > 0 && (
+                <>
+                  <span aria-hidden="true" className="text-[#4a5058]">
+                    ·
+                  </span>
+                  <span className="inline-flex shrink-0 items-center gap-1 font-semibold text-[#2EC26B] tabular-nums">
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-1.5 rounded-full bg-[#2EC26B]"
+                    />
+                    {isZh ? `${activeCount} 笔` : `${activeCount} open`}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Right: Price column aligned strictly across all rows via fixed-width check slot */}
+        <div className="flex items-center gap-2.5 shrink-0">
+          <div className="text-right tabular-nums">
+            <div className="text-[14.5px] font-bold text-white tracking-[-0.02em] leading-snug">
+              {formatSpotPrice(spot)}
+            </div>
+            <div
+              className={`text-[11.5px] font-semibold leading-snug ${
+                isUp ? "text-[#2EC26B]" : "text-[#E85D4A]"
+              }`}
+            >
+              {isUp ? "+" : ""}
+              {changePct.toFixed(2)}%
+            </div>
+          </div>
+
+          <span
+            aria-hidden="true"
+            className="flex h-5 w-5 shrink-0 items-center justify-center"
+          >
+            {isSelected && (
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-black">
+                <Check className="h-3.5 w-3.5" />
+              </span>
+            )}
+          </span>
+        </div>
+      </button>
+    );
+  };
+
+  if (isDropdown) {
+    return (
+      <div className="flex flex-col">
+        {MARKET_PICKER_GROUPS.map((group, groupIdx) => {
+          const headingId = `${listUid}-${group.id}`;
+          return (
+            <div
+              key={group.id}
+              role="group"
+              aria-labelledby={headingId}
+              className={
+                groupIdx > 0
+                  ? "mt-1.5 border-t border-[#1d2025] pt-1.5 flex flex-col gap-0.5"
+                  : "flex flex-col gap-0.5"
+              }
+            >
+              <div
+                id={headingId}
+                className="px-2.5 pt-1 pb-1 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-[#7e8690]"
+              >
+                {isZh ? group.labelZh : group.labelEn}
+              </div>
+              {group.symbols.map(renderRow)}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {MARKET_PICKER_GROUPS.map((group) => {
+        const headingId = `${listUid}-${group.id}`;
+        return (
+          <section key={group.id} aria-labelledby={headingId}>
+            <h2
+              id={headingId}
+              className="mb-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-[#7e8690]"
+            >
+              {isZh ? group.labelZh : group.labelEn}
+            </h2>
+            <div className="divide-y divide-[#1d2025]">
+              {group.symbols.map(renderRow)}
+            </div>
+          </section>
         );
       })}
     </div>
@@ -360,9 +413,7 @@ export function MarketSelector({
         <span className="text-lg font-bold tracking-[-0.02em] text-white">
           {spec.displaySymbol}
         </span>
-        <span className="text-sm font-medium text-[#7e8690] group-hover:text-[#b8bec6] transition">
-          {assetSubtitle}
-        </span>
+        {assetSubtitle && <span className="sr-only">{assetSubtitle}</span>}
         {isRwaAsset && (
           <span className="rounded-full bg-[#1f2329] px-2 py-0.5 text-[10px] font-bold tracking-wide text-[#b8bec6]">
             RWA
@@ -527,9 +578,7 @@ export function MarketPickerSheet({
                 {isZh ? "选择市场" : "Select market"}
               </h1>
               <p className="mt-0.5 text-xs text-[#7e8690]">
-                {isZh
-                  ? "加密主流币 & 24/7 美股 RWA · 连续赔付"
-                  : "Crypto majors & 24/7 US Equity RWA · Linear payoff"}
+                {isZh ? "连续线性赔付市场" : "Linear payoff markets"}
               </p>
             </div>
             <button
