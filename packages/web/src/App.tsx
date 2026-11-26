@@ -27,7 +27,13 @@ import {
   type ConsensusGuardState,
   type HealthResponse,
 } from "./lib/api";
-import { getCopy, type Locale } from "./lib/i18n";
+import {
+  getCopy,
+  getLocaleOption,
+  persistLocale,
+  resolveInitialLocale,
+  type Locale,
+} from "./lib/i18n";
 import {
   createClientForRpc,
   executeBatchRedeemTx,
@@ -74,8 +80,25 @@ function parsePrivyChainId(raw?: string): number | undefined {
 
 export function App() {
   const [opsMode, setOpsMode] = useState<boolean>(isOpsRoute);
-  const [locale, setLocale] = useState<Locale>("en");
+  const [locale, setLocaleState] = useState<Locale>(resolveInitialLocale);
   const [activeTab, setActiveTab] = useState<ConsumerTab>("TRADE");
+
+  const handleSelectLocale = useCallback((next: Locale) => {
+    setLocaleState(next);
+    persistLocale(next);
+  }, []);
+
+  const handleToggleLocale = useCallback(() => {
+    setLocaleState((prev) => {
+      const next: Locale = prev === "zh" ? "en" : "zh";
+      persistLocale(next);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.lang = getLocaleOption(locale).htmlLang;
+  }, [locale]);
   const [health, setHealth] = useState<HealthResponse | undefined>();
 
   const [accountModalOpen, setAccountModalOpen] = useState(false);
@@ -626,7 +649,8 @@ export function App() {
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         locale={locale}
-        onToggleLocale={() => setLocale((l) => (l === "zh" ? "en" : "zh"))}
+        onSelectLocale={handleSelectLocale}
+        onToggleLocale={handleToggleLocale}
         wallet={wallet}
         authReady={ready}
         authInitializing={authInitializing}
@@ -780,7 +804,8 @@ export function App() {
         onOpenMarketPicker={handleOpenMarketPickerFromDrawer}
         onOpenHistory={() => setHistorySheetOpen(true)}
         onOpenRules={handleOpenRulesFromDrawer}
-        onToggleLang={() => setLocale((l) => (l === "zh" ? "en" : "zh"))}
+        onSelectLocale={handleSelectLocale}
+        onToggleLang={handleToggleLocale}
         onRefresh={() => void handleRefreshPositions()}
       />
 

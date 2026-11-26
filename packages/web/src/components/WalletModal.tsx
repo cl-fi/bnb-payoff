@@ -23,7 +23,8 @@ import {
   type UnderlyingSymbol,
 } from "@payoff/shared";
 import type { HealthResponse } from "../lib/api";
-import { getCopy, type Locale } from "../lib/i18n";
+import { formatExpiryDateTime } from "../lib/format";
+import { getCopy, SUPPORTED_LOCALES, type Locale } from "../lib/i18n";
 import {
   executeClaimTestUsdtTx,
   extractWalletErrorMessage,
@@ -53,30 +54,13 @@ export interface WalletModalProps {
   onOpenMarketPicker?: () => void;
   onOpenHistory?: () => void;
   onOpenRules?: () => void;
+  onSelectLocale?: (locale: Locale) => void;
   onToggleLang?: () => void;
   onRefresh?: () => void;
 }
 
-function formatExpiryGroupTitle(expirySec: number, isZh: boolean): string {
-  const d = new Date(expirySec * 1000);
-  if (Number.isNaN(d.getTime())) return "--";
-  const now = new Date();
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  const tomorrow = new Date(now.getTime() + 86_400_000);
-  const isTomorrow =
-    d.getFullYear() === tomorrow.getFullYear() &&
-    d.getMonth() === tomorrow.getMonth() &&
-    d.getDate() === tomorrow.getDate();
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  if (sameDay) return isZh ? `今天 ${hh}:${mm}` : `Today ${hh}:${mm}`;
-  if (isTomorrow) return isZh ? `明天 ${hh}:${mm}` : `Tomorrow ${hh}:${mm}`;
-  const mon = d.getMonth() + 1;
-  const day = d.getDate();
-  return isZh ? `${mon}/${day} ${hh}:${mm}` : `${mon}/${day} ${hh}:${mm}`;
+function formatExpiryGroupTitle(expirySec: number, locale: Locale): string {
+  return formatExpiryDateTime(expirySec, locale);
 }
 
 function formatRemainingShort(expirySec: number, isZh: boolean): string {
@@ -112,6 +96,7 @@ export function WalletModal({
   onOpenMarketPicker,
   onOpenHistory,
   onOpenRules,
+  onSelectLocale,
   onToggleLang,
   onRefresh,
 }: WalletModalProps) {
@@ -608,7 +593,7 @@ export function WalletModal({
                           : 0;
                       const expiryTitle = formatExpiryGroupTitle(
                         group.expiry,
-                        isZh
+                        locale
                       );
                       const titleText = single
                         ? `${spec.displaySymbol} ${single.isUp ? t.bull : t.bear}${singleMult > 0 ? ` ${singleMult.toFixed(2)}x` : ""}`
@@ -778,23 +763,48 @@ export function WalletModal({
                   </button>
                 )}
 
-                {onToggleLang && (
-                  <button
-                    type="button"
-                    onClick={onToggleLang}
-                    className="flex w-full items-center justify-between gap-2 py-3 text-left text-[13.5px] font-semibold text-white hover:text-white/90 cursor-pointer"
-                  >
-                    <span className="inline-flex items-center gap-2">
+                {(onSelectLocale || onToggleLang) && (
+                  <div className="flex w-full items-center justify-between gap-2 py-2.5">
+                    <span className="inline-flex items-center gap-2 text-[13.5px] font-semibold text-white">
                       <Globe
                         className="h-4 w-4 text-[#7e8690]"
                         aria-hidden="true"
                       />
-                      <span>{isZh ? "切换语言" : "Language"}</span>
+                      <span>{isZh ? "语言" : "Language"}</span>
                     </span>
-                    <span className="rounded-full bg-[#24282f] px-2.5 py-0.5 text-xs font-semibold text-[#b8bec6]">
-                      {isZh ? "中文 → EN" : "EN → 中文"}
-                    </span>
-                  </button>
+                    <div
+                      role="group"
+                      aria-label={isZh ? "选择语言" : "Select language"}
+                      className="inline-flex items-center gap-0.5 rounded-full bg-[#15171b] p-0.5"
+                    >
+                      {SUPPORTED_LOCALES.map((opt) => {
+                        const active = opt.code === locale;
+                        return (
+                          <button
+                            key={opt.code}
+                            type="button"
+                            lang={opt.htmlLang}
+                            aria-pressed={active}
+                            onClick={() => {
+                              if (active) return;
+                              if (onSelectLocale) {
+                                onSelectLocale(opt.code);
+                              } else {
+                                onToggleLang?.();
+                              }
+                            }}
+                            className={`rounded-full px-2.5 py-1 text-xs font-semibold transition cursor-pointer focus-visible:outline-2 focus-visible:outline-white/75 ${
+                              active
+                                ? "bg-[#24282f] text-white"
+                                : "text-[#7e8690] hover:text-[#b8bec6]"
+                            }`}
+                          >
+                            {opt.nativeName}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
 
                 {/* Collapsible On-chain Address & Export Private Key */}

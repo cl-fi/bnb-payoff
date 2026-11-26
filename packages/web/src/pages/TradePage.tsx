@@ -12,7 +12,6 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
-  ChevronDown,
   Clock,
   ExternalLink,
   Info,
@@ -44,7 +43,11 @@ import {
   type HealthResponse,
   type ShelfResponse,
 } from "../lib/api";
-import { formatStrikePrice, resolveRwaTelemetry } from "../lib/format";
+import {
+  formatExpiryDateTime,
+  formatStrikePrice,
+  resolveRwaTelemetry,
+} from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 import {
   createClientForRpc,
@@ -67,7 +70,7 @@ import {
   type CloseSlippagePauseState,
   type EarlyCloseStage,
 } from "../components/EarlyCloseModal";
-import { MarketPickerSheet } from "../components/MarketPickerSheet";
+import { MarketSelector } from "../components/MarketPickerSheet";
 import { RulesOracleSheet } from "../components/MarketRulesAccordion";
 import { hasSeenOnboarding } from "../components/OnboardingSheet";
 import type { MarketFocusTarget } from "../App";
@@ -148,49 +151,21 @@ function formatExpiryTabLabel(
   const isZh = locale === "zh";
   if (!expirySec) {
     if (fallbackTenor === "DAILY") {
-      return isZh ? (isRwa ? "近期收盘" : "明天 16:00") : isRwa ? "Next Close" : "24h";
+      return isZh
+        ? isRwa
+          ? "近期收盘"
+          : "日度结算"
+        : isRwa
+          ? "Next Close"
+          : "Daily";
     }
     if (fallbackTenor === "WEEKLY") {
-      return isZh ? "本周五" : "Weekly";
+      return isZh ? "周度结算" : "Weekly";
     }
     return isZh ? "前期持仓" : "Prior";
   }
 
-  const d = new Date(expirySec * 1000);
-  if (Number.isNaN(d.getTime())) return "--";
-  const now = new Date();
-
-  const sameDay =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  const tomorrow = new Date(now.getTime() + 86_400_000);
-  const isTomorrow =
-    d.getFullYear() === tomorrow.getFullYear() &&
-    d.getMonth() === tomorrow.getMonth() &&
-    d.getDate() === tomorrow.getDate();
-
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-
-  if (sameDay) return isZh ? `今天 ${hh}:${mm}` : `Today ${hh}:${mm}`;
-  if (isTomorrow) return isZh ? `明天 ${hh}:${mm}` : `Tomorrow ${hh}:${mm}`;
-
-  const daysAhead = (d.getTime() - now.getTime()) / 86_400_000;
-  if (daysAhead > 0 && daysAhead < 7) {
-    if (isZh) {
-      const wk = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][
-        d.getDay()
-      ];
-      return fallbackTenor === "WEEKLY" ? `本${wk}` : `${wk} ${hh}:${mm}`;
-    }
-    const wk = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()];
-    return `${wk} ${hh}:${mm}`;
-  }
-
-  const mon = d.getMonth() + 1;
-  const day = d.getDate();
-  return `${mon}/${day} ${hh}:${mm}`;
+  return formatExpiryDateTime(expirySec, locale);
 }
 
 function formatShortCountdown(expirySec: number, nowSec: number, isZh: boolean) {
@@ -205,26 +180,56 @@ function formatShortCountdown(expirySec: number, nowSec: number, isZh: boolean) 
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function formatExpiryCountdown(
+interface ExpiryCountdownInfo {
+  expired: boolean;
+  remainingSec: number;
+  text: string;
+}
+
+function formatExpiryCountdownInfo(
   expirySec: number | undefined,
   nowSec: number,
   isZh: boolean
-): string {
-  if (!expirySec) return "";
+): ExpiryCountdownInfo | null {
+  if (!expirySec) return null;
   const rem = Math.max(0, expirySec - nowSec);
-  if (rem === 0) return isZh ? "已到期" : "Expired";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  if (rem < 48 * 3600) {
-    const totalHours = Math.floor(rem / 3600);
-    const mins = Math.floor((rem % 3600) / 60);
-    const secs = rem % 60;
-    return `${pad(totalHours)}:${pad(mins)}:${pad(secs)}`;
+  if (rem === 0) {
+    return {
+      expired: true,
+      remainingSec: 0,
+      text: isZh ? "已到期" : "Expired",
+    };
   }
+  const pad = (n: number) => String(n).padStart(2, "0");
   const days = Math.floor(rem / 86400);
-  const hours = Math.floor((rem % 86400) / 3600);
+  const hoursInDay = Math.floor((rem % 86400) / 3600);
+  const totalHours = Math.floor(rem / 3600);
   const mins = Math.floor((rem % 3600) / 60);
   const secs = rem % 60;
-  return `${days}d ${pad(hours)}:${pad(mins)}:${pad(secs)}`;
+
+  if (rem >= 48 * 3600) {
+    return {
+      expired: false,
+      remainingSec: rem,
+      text: isZh
+        ? `${days}天 ${pad(hoursInDay)}时 ${pad(mins)}分`
+        : `${days}d ${pad(hoursInDay)}h ${pad(mins)}m`,
+    };
+  }
+  if (totalHours > 0) {
+    return {
+      expired: false,
+      remainingSec: rem,
+      text: isZh
+        ? `${pad(totalHours)}:${pad(mins)}:${pad(secs)}`
+        : `${totalHours}h ${pad(mins)}m ${pad(secs)}s`,
+    };
+  }
+  return {
+    expired: false,
+    remainingSec: rem,
+    text: isZh ? `${pad(mins)}:${pad(secs)}` : `${mins}m ${pad(secs)}s`,
+  };
 }
 
 function formatSignedUsd(v: number): string {
@@ -1316,6 +1321,18 @@ export function TradePage({
 
   const isTradeBusy =
     stage === "APPROVING" || stage === "QUOTING" || stage === "FILLING";
+  const expiryCountdown = formatExpiryCountdownInfo(currentExpiry, nowSec, isZh);
+  const isCountdownTwapUrgent = Boolean(
+    expiryCountdown &&
+      !expiryCountdown.expired &&
+      (isCurrentExpiryInTwap || expiryCountdown.remainingSec <= 30 * 60)
+  );
+  const isCountdownSoon = Boolean(
+    expiryCountdown &&
+      !expiryCountdown.expired &&
+      !isCountdownTwapUrgent &&
+      expiryCountdown.remainingSec <= 2 * 3600
+  );
 
   return (
     <main className="mx-auto max-w-[1160px] bg-black px-4 pt-1 pb-12 sm:px-6 lg:pt-2 lg:pb-16">
@@ -1362,34 +1379,24 @@ export function TradePage({
         - Desktop (>=1024px): borderless 2-column (Left: Hero+Tabs+Chart + Positions & Settlement; Right: sticky Order Column)
       */}
       <div className="grid grid-cols-1 gap-y-3.5 lg:grid-cols-12 lg:gap-x-10 lg:gap-y-6 lg:items-start">
-        {/* SECTION 1: Editorial Asset Hero + White-Underline Expiry Tabs + Full-Bleed Chart */}
+        {/* SECTION 1: Editorial Asset Hero + Expiry Scope Bar + Full-Bleed Chart */}
         <div className="space-y-2.5 lg:space-y-4 lg:col-start-1 lg:col-span-7 xl:col-span-8 lg:row-start-1">
           {/* Editorial Asset Hero */}
           <section className="space-y-1 lg:space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <button
-                type="button"
+              <MarketSelector
+                locale={locale}
+                selectedUnderlying={underlying}
+                assetSubtitle={assetSubtitle}
+                liveSpots={liveSpots}
+                liveRwaTelemetry={liveRwaTelemetry}
+                positions={positions}
                 disabled={isTradeBusy}
-                onClick={onOpenMarketPicker}
-                aria-haspopup="dialog"
-                className="group inline-flex items-center gap-1.5 rounded-full py-0.5 pr-2 text-left transition cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-              >
-                <span className="text-lg font-bold tracking-[-0.02em] text-white">
-                  {assetSpec.displaySymbol}
-                </span>
-                <span className="text-sm font-medium text-[#7e8690] group-hover:text-[#b8bec6] transition">
-                  {assetSubtitle}
-                </span>
-                {isRwaAsset && (
-                  <span className="rounded-full bg-[#15171b] px-2 py-0.5 text-[10px] font-bold tracking-wide text-[#b8bec6]">
-                    RWA
-                  </span>
-                )}
-                <ChevronDown
-                  className="h-4 w-4 text-[#7e8690] group-hover:text-white transition"
-                  aria-hidden="true"
-                />
-              </button>
+                externalOpen={marketPickerOpen}
+                onOpenExternal={onOpenMarketPicker}
+                onCloseExternal={onCloseMarketPicker}
+                onSelectUnderlying={handleSwitchUnderlying}
+              />
 
               <button
                 type="button"
@@ -1442,28 +1449,8 @@ export function TradePage({
             </div>
           </section>
 
-          {/* Full-Bleed Pure-Black Forecast Chart (Past Curve + Future Payoff Zone) */}
-          <KlineChart
-            locale={locale}
-            candles={candles}
-            ticket={isPriorExpiry ? undefined : activeTicket}
-            liveSpot={displaySpot}
-            expiry={currentExpiry}
-            expiryLabel={activeExpiryTab?.label}
-            nowSec={nowSec}
-            windowLabel={autoWindowLabel}
-            positions={currentExpiryActivePositions}
-            selectedPositionId={selectedPositionId}
-            onSelectPosition={setSelectedPositionId}
-            inTwapWindow={isCurrentExpiryInTwap}
-            twapAvgPrice={currentTwapAvgPrice}
-            scrubPrice={scrubPrice}
-            onScrubPriceChange={setScrubPrice}
-            height={isDesktop ? 284 : 228}
-          />
-
-          {/* White-Underline Expiry Tabs + Live Settlement Countdown */}
-          <div className="flex items-center justify-between gap-3 border-b border-[#1d2025]">
+          {/* Expiry Scope Bar (above chart: selects active settlement contract + live countdown) */}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-[#1d2025] pt-0.5">
             <div
               role="tablist"
               aria-label={isZh ? "到期时间" : "Settlement expiry"}
@@ -1484,7 +1471,7 @@ export function TradePage({
                     disabled={isTradeBusy}
                     onClick={() => handleSelectExpiryTab(tab)}
                     onKeyDown={(e) => handleTabKeyDown(e, idx)}
-                    className={`relative flex-none inline-flex items-center gap-1.5 pb-2 lg:pb-2.5 text-[13.5px] font-semibold tracking-[-0.01em] transition-colors cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+                    className={`relative flex-none inline-flex items-center gap-1.5 pb-2.5 text-[13.5px] font-semibold tracking-[-0.01em] transition-colors cursor-pointer disabled:opacity-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
                       selected
                         ? "text-white after:content-[''] after:absolute after:inset-x-0 after:bottom-0 after:border-b-2 after:border-white"
                         : "text-[#7e8690] hover:text-[#b8bec6]"
@@ -1492,31 +1479,102 @@ export function TradePage({
                   >
                     <span className="tabular-nums">{tab.label}</span>
                     {tab.hasPositions && (
-                      <span
-                        aria-label={isZh ? "有持仓" : "Has positions"}
-                        className={`h-1.5 w-1.5 rounded-full shrink-0 ${
-                          tab.hasTwapOrAwaiting
-                            ? "bg-[#E6BA5C]"
-                            : "bg-[#2EC26B]"
-                        }`}
-                      />
+                      <>
+                        <span
+                          aria-hidden="true"
+                          className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                            tab.hasTwapOrAwaiting
+                              ? "bg-[#E6BA5C]"
+                              : "bg-[#2EC26B]"
+                          }`}
+                        />
+                        <span className="sr-only">
+                          {isZh ? "（有持仓）" : " (has positions)"}
+                        </span>
+                      </>
                     )}
                   </button>
                 );
               })}
             </div>
 
-            {currentExpiry && (
-              <span
-                aria-label={isZh ? "距结算倒计时" : "Settlement countdown"}
-                className={`shrink-0 pb-2 lg:pb-2.5 text-xs font-medium tabular-nums tracking-[0.01em] ${
-                  isCurrentExpiryInTwap ? "text-[#E6BA5C]" : "text-[#7E8690]"
-                }`}
-              >
-                {formatExpiryCountdown(currentExpiry, nowSec, isZh)}
-              </span>
+            {expiryCountdown && currentExpiry && (
+              <div className="shrink-0 pb-2">
+                <time
+                  dateTime={new Date(currentExpiry * 1000).toISOString()}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs leading-none tabular-nums transition-colors ${
+                    isCountdownTwapUrgent
+                      ? "border-[#E6BA5C]/40 bg-[#E6BA5C]/15 text-[#E6BA5C]"
+                      : isCountdownSoon
+                        ? "border-[#E6BA5C]/30 bg-[#E6BA5C]/10 text-[#E6BA5C]"
+                        : "border-[#262a31] bg-[#15171b] text-white"
+                  }`}
+                >
+                  {isCountdownTwapUrgent ? (
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#E6BA5C] animate-pulse motion-reduce:animate-none"
+                    />
+                  ) : (
+                    <Clock
+                      className={`h-3.5 w-3.5 shrink-0 ${
+                        isCountdownSoon ? "text-[#E6BA5C]" : "text-[#9aa2ad]"
+                      }`}
+                      aria-hidden="true"
+                    />
+                  )}
+                  {!expiryCountdown.expired && (
+                    <span
+                      className={`${
+                        isCountdownTwapUrgent
+                          ? "font-semibold text-[#E6BA5C]"
+                          : isCountdownSoon
+                            ? "font-medium text-[#E6BA5C]/85"
+                            : "font-medium text-[#9aa2ad]"
+                      } ${isZh ? "" : "hidden sm:inline"}`}
+                    >
+                      {isCountdownTwapUrgent
+                        ? isZh
+                          ? "均价锁定"
+                          : "30m TWAP"
+                        : t.settlesCountdownLabel}
+                    </span>
+                  )}
+                  <span
+                    className={`font-semibold tracking-[0.01em] ${
+                      expiryCountdown.expired
+                        ? "text-[#b8bec6]"
+                        : isCountdownTwapUrgent || isCountdownSoon
+                          ? "font-bold text-[#E6BA5C]"
+                          : "text-white"
+                    }`}
+                  >
+                    {expiryCountdown.text}
+                  </span>
+                </time>
+              </div>
             )}
           </div>
+
+          {/* Full-Bleed Pure-Black Forecast Chart (Past Curve + Future Payoff Zone) */}
+          <KlineChart
+            locale={locale}
+            candles={candles}
+            ticket={isPriorExpiry ? undefined : activeTicket}
+            liveSpot={displaySpot}
+            expiry={currentExpiry}
+            expiryLabel={activeExpiryTab?.label}
+            nowSec={nowSec}
+            windowLabel={autoWindowLabel}
+            positions={currentExpiryActivePositions}
+            selectedPositionId={selectedPositionId}
+            onSelectPosition={setSelectedPositionId}
+            inTwapWindow={isCurrentExpiryInTwap}
+            twapAvgPrice={currentTwapAvgPrice}
+            scrubPrice={scrubPrice}
+            onScrubPriceChange={setScrubPrice}
+            height={isDesktop ? 284 : 228}
+          />
         </div>
 
         {/* SECTION 2: Option-A Order Column (Mobile: right under chart; Desktop: sticky right column) */}
@@ -2272,18 +2330,6 @@ export function TradePage({
           }}
         />
       )}
-
-      {/* Market Picker Sheet */}
-      <MarketPickerSheet
-        open={marketPickerOpen}
-        locale={locale}
-        selectedUnderlying={underlying}
-        liveSpots={liveSpots}
-        liveRwaTelemetry={liveRwaTelemetry}
-        positions={positions}
-        onSelectUnderlying={handleSwitchUnderlying}
-        onClose={onCloseMarketPicker}
-      />
 
       {/* Rules, Oracle & Settlement History Sheet */}
       <RulesOracleSheet

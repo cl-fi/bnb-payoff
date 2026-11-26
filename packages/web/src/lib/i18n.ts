@@ -1,5 +1,67 @@
 export type Locale = "zh" | "en";
 
+export interface LocaleOption {
+  code: Locale;
+  /** Native endonym displayed in language menus (never translated) */
+  nativeName: string;
+  /** Short badge code displayed in compact desktop header trigger */
+  shortLabel: string;
+  /** BCP-47 lang tag for <html lang> and menu items */
+  htmlLang: string;
+}
+
+export const SUPPORTED_LOCALES: readonly LocaleOption[] = [
+  { code: "en", nativeName: "English", shortLabel: "EN", htmlLang: "en" },
+  { code: "zh", nativeName: "简体中文", shortLabel: "中文", htmlLang: "zh-Hans" },
+] as const;
+
+export const LOCALE_STORAGE_KEY = "payoff.locale.v1";
+
+export function isSupportedLocale(value: unknown): value is Locale {
+  return value === "en" || value === "zh";
+}
+
+export function getLocaleOption(locale: Locale): LocaleOption {
+  return (
+    SUPPORTED_LOCALES.find((item) => item.code === locale) ??
+    SUPPORTED_LOCALES[0]
+  );
+}
+
+/**
+ * Resolves initial locale following i18n best practice:
+ * 1. Saved user preference in localStorage
+ * 2. Browser preferred language (navigator.languages / navigator.language)
+ * 3. Default to "en"
+ */
+export function resolveInitialLocale(): Locale {
+  if (typeof window === "undefined") return "en";
+  try {
+    const saved = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+    if (isSupportedLocale(saved)) return saved;
+  } catch {
+    // Ignore storage access errors in restricted environments
+  }
+  const preferred =
+    (Array.isArray(window.navigator?.languages) &&
+      window.navigator.languages[0]) ||
+    window.navigator?.language ||
+    "";
+  if (preferred.toLowerCase().startsWith("zh")) {
+    return "zh";
+  }
+  return "en";
+}
+
+export function persistLocale(locale: Locale): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+  } catch {
+    // Ignore storage access errors in private browsing
+  }
+}
+
 const fmtUsd = (v: string) => (v.startsWith("$") ? v : `$${v}`);
 const fmtSignedUsd = (v: string) =>
   v.startsWith("+") || v.startsWith("-") ? v : `+$${v.replace(/^\$/, "")}`;

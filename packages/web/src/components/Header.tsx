@@ -1,6 +1,12 @@
-import { ChevronDown, Loader2 } from "lucide-react";
+import { Check, ChevronDown, Globe, Loader2 } from "lucide-react";
 import type { ConnectedWallet } from "../lib/wallet";
-import { getCopy, type Locale } from "../lib/i18n";
+import {
+  getCopy,
+  getLocaleOption,
+  SUPPORTED_LOCALES,
+  type Locale,
+} from "../lib/i18n";
+import { useAnchoredMenu } from "../lib/useAnchoredMenu";
 import { PayoffLockup } from "./PayoffMark";
 
 export type ConsumerTab = "TRADE" | "POSITIONS";
@@ -12,7 +18,8 @@ export interface HeaderProps {
   activePage?: ConsumerTab;
   onNavigate?: (tab: ConsumerTab) => void;
   locale: Locale;
-  onToggleLocale: () => void;
+  onSelectLocale?: (locale: Locale) => void;
+  onToggleLocale?: () => void;
   wallet: ConnectedWallet;
   authReady?: boolean;
   authInitializing?: boolean;
@@ -40,6 +47,7 @@ export function Header({
   onSelectTab,
   onNavigate,
   locale,
+  onSelectLocale,
   onToggleLocale,
   wallet,
   authReady = true,
@@ -51,7 +59,10 @@ export function Header({
   onLogin,
 }: HeaderProps) {
   const t = getCopy(locale);
+  const currentLocale = getLocaleOption(locale);
   const isConnected = wallet.kind !== "NONE" && Boolean(wallet.address);
+
+  const langMenu = useAnchoredMenu({ align: "end" });
 
   const navigate = (tab: ConsumerTab) => {
     (onSelectTab ?? onNavigate)?.(tab);
@@ -63,6 +74,17 @@ export function Header({
       return;
     }
     (onOpenWalletModal ?? onOpenWallet)?.();
+  };
+
+  const handleChooseLocale = (next: Locale) => {
+    if (next !== locale) {
+      if (onSelectLocale) {
+        onSelectLocale(next);
+      } else {
+        onToggleLocale?.();
+      }
+    }
+    langMenu.hideMenu(true);
   };
 
   return (
@@ -78,17 +100,90 @@ export function Header({
           <PayoffLockup markSize={22} />
         </button>
 
-        {/* Right: Compact Language Toggle + Account Pill */}
+        {/* Right: Globe Language Dropdown + Account Pill */}
         <div className="flex items-center gap-2">
           <button
+            id={langMenu.triggerId}
+            ref={langMenu.triggerRef}
             type="button"
-            onClick={onToggleLocale}
-            className="rounded-full bg-[#15171b] px-2.5 py-1.5 text-[11px] font-semibold text-[#b8bec6] transition hover:bg-[#24282f] hover:text-white cursor-pointer"
-            title="Switch language / 切换语言"
-            aria-label={locale === "zh" ? "Switch to English" : "切换为中文"}
+            aria-haspopup="menu"
+            aria-expanded={langMenu.open}
+            onPointerDown={langMenu.onTriggerPointerDown}
+            onKeyDown={langMenu.onTriggerKeyDown}
+            {...langMenu.triggerInvokerProps}
+            className={`inline-flex h-8 min-w-8 items-center justify-center gap-1.5 rounded-full px-2 sm:px-2.5 text-xs font-semibold transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
+              langMenu.open
+                ? "bg-[#24282f] text-white"
+                : "bg-[#15171b] text-[#b8bec6] hover:bg-[#24282f] hover:text-white"
+            }`}
           >
-            {locale === "zh" ? "EN" : "中文"}
+            <Globe className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+            <span className="sr-only">
+              {locale === "zh" ? "语言 " : "Language "}
+            </span>
+            <span className="hidden sm:inline leading-none">
+              {currentLocale.shortLabel}
+            </span>
+            <ChevronDown
+              className={`hidden sm:inline h-3 w-3 shrink-0 transition-transform duration-150 ${
+                langMenu.open ? "rotate-180 text-white" : "text-[#7e8690]"
+              }`}
+              aria-hidden="true"
+            />
           </button>
+
+          {/* Anchored Language Popover Menu (immediately after trigger for implicit anchor & zero aria-details) */}
+          <div
+            id={langMenu.popoverId}
+            ref={langMenu.popoverRef}
+            {...(langMenu.supportsPopover ? { popover: "auto" } : {})}
+            onKeyDown={langMenu.onPopoverKeyDown}
+            className={`payoff-popover payoff-popover--end min-w-[164px] ${
+              !langMenu.supportsPopover && !langMenu.open ? "hidden" : ""
+            }`}
+          >
+            <div
+              ref={langMenu.menuGroupRef}
+              {...({ focusgroup: "menu nomemory" } as Record<string, unknown>)}
+              aria-labelledby={langMenu.triggerId}
+              className="p-1.5"
+            >
+              <div
+                role="group"
+                aria-label={locale === "zh" ? "选择语言" : "Select language"}
+                className="flex flex-col gap-0.5"
+              >
+                {SUPPORTED_LOCALES.map((opt) => {
+                  const isSelected = opt.code === locale;
+                  return (
+                    <button
+                      key={opt.code}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={isSelected}
+                      lang={opt.htmlLang}
+                      onClick={() => handleChooseLocale(opt.code)}
+                      className={`flex min-h-[38px] w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-[13px] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white/75 ${
+                        isSelected
+                          ? "bg-[#1a1e24] font-semibold text-white"
+                          : "font-medium text-[#b8bec6] hover:bg-[#1a1e24]/80 hover:text-white"
+                      }`}
+                    >
+                      <span>{opt.nativeName}</span>
+                      <span
+                        className="flex h-4 w-4 shrink-0 items-center justify-center"
+                        aria-hidden="true"
+                      >
+                        {isSelected && (
+                          <Check className="h-3.5 w-3.5 text-[#2EC26B]" />
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
 
           <button
             type="button"
@@ -96,7 +191,7 @@ export function Header({
             onClick={handleAccountClick}
             title={wallet.email || wallet.address || undefined}
             aria-label={isConnected ? t.drawerTitle : t.connectWallet}
-            className={`inline-flex items-center gap-1.5 rounded-full text-xs font-semibold transition cursor-pointer disabled:opacity-55 ${
+            className={`inline-flex items-center gap-1.5 rounded-full text-xs font-semibold transition cursor-pointer disabled:opacity-55 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white ${
               isConnected
                 ? "bg-[#15171b] px-3 py-1.5 text-white hover:bg-[#24282f]"
                 : authInitializing

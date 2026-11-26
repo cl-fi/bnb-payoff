@@ -1,4 +1,40 @@
 import type { RwaAssetTelemetry, UnderlyingSymbol } from "@payoff/shared";
+import type { Locale } from "./i18n";
+
+/**
+ * Formats a settlement expiry unix timestamp (seconds) into an explicit local calendar date + 24h time.
+ * Never uses relative words like "Today", "Tomorrow", or weekday-only labels.
+ * - English: `Nov 27 16:00` (or `Jan 1, 2027 16:00` if crossing year boundary)
+ * - Chinese: `11/27 16:00` (or `2027/1/1 16:00` if crossing year boundary)
+ */
+export function formatExpiryDateTime(
+  expirySec: number | undefined,
+  locale: Locale
+): string {
+  if (!expirySec || !Number.isFinite(expirySec)) return "--";
+  const d = new Date(expirySec * 1000);
+  if (Number.isNaN(d.getTime())) return "--";
+
+  const now = new Date();
+  const sameYear = d.getFullYear() === now.getFullYear();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+
+  if (locale === "zh") {
+    const mon = d.getMonth() + 1;
+    const day = d.getDate();
+    return sameYear
+      ? `${mon}/${day} ${hh}:${mm}`
+      : `${d.getFullYear()}/${mon}/${day} ${hh}:${mm}`;
+  }
+
+  const datePart = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    ...(sameYear ? {} : { year: "numeric" }),
+  }).format(d);
+  return `${datePart} ${hh}:${mm}`;
+}
 
 /**
  * Formats a strike or reference USD value without a leading `$`:

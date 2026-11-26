@@ -5,7 +5,7 @@ import {
   type CloseRfqResponse,
   type PositionView,
 } from "@payoff/shared";
-import { formatStrikePrice } from "../lib/format";
+import { formatExpiryDateTime, formatStrikePrice } from "../lib/format";
 import { getCopy, type Locale } from "../lib/i18n";
 
 export type EarlyCloseStage =
@@ -33,25 +33,10 @@ export interface EarlyCloseModalProps {
   onCloseModal: () => void;
 }
 
-function formatExpiryCompact(expirySec: number, isZh: boolean): string {
-  const d = new Date(expirySec * 1000);
-  if (Number.isNaN(d.getTime())) return "--";
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const now = new Date();
-  const isToday =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  const tomorrow = new Date(now.getTime() + 86_400_000);
-  const isTomorrow =
-    d.getFullYear() === tomorrow.getFullYear() &&
-    d.getMonth() === tomorrow.getMonth() &&
-    d.getDate() === tomorrow.getDate();
-  if (isToday) return isZh ? `今天 ${hh}:${mm} 结算` : `Today ${hh}:${mm}`;
-  if (isTomorrow)
-    return isZh ? `明天 ${hh}:${mm} 结算` : `Tomorrow ${hh}:${mm}`;
-  return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+function formatExpiryCompact(expirySec: number, locale: Locale): string {
+  const formatted = formatExpiryDateTime(expirySec, locale);
+  if (formatted === "--") return formatted;
+  return locale === "zh" ? `${formatted} 结算` : formatted;
 }
 
 export function EarlyCloseModal({
@@ -184,7 +169,7 @@ export function EarlyCloseModal({
                 {isZh ? "投入" : "Stake"} ${position.totalStakeUsdt.toFixed(2)}{" "}
                 · {isZh ? "现值" : "Now"} $
                 {position.indicativeExitUsdt.toFixed(2)} ·{" "}
-                {formatExpiryCompact(position.expiry, isZh)}
+                {formatExpiryCompact(position.expiry, locale)}
               </p>
               <p className="mt-0.5 text-[11px] text-[#7e8690] tabular-nums">
                 {formatStrikePrice(position.startPrice, position.underlying)} →{" "}

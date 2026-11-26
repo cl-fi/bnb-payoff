@@ -358,3 +358,97 @@ dialog.payoff-sheet[open]:where(:not([data-closing]))::backdrop {
     display: none;
   }
 }
+
+/* ============================================================================
+   Anchored Top-Layer Popover Menus (Language Switcher & Desktop Market Picker)
+   CSS Anchor Positioning (`position-area`) gated behind `@supports`; unsupported
+   browsers use viewport-clamped `position: fixed` script fallback.
+   ============================================================================ */
+[popover].payoff-popover {
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-lg);
+  background: var(--sheet);
+  color: var(--ink);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.85);
+  overflow: visible;
+  opacity: 0;
+  transition-property: opacity, display, overlay;
+  transition-duration: 0.14s;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  transition-behavior: allow-discrete;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [popover].payoff-popover {
+    transition-property: opacity, translate, display, overlay;
+  }
+
+  @supports selector(:popover-open) {
+    [popover].payoff-popover {
+      translate: 0 -0.25rem;
+    }
+  }
+}
+
+[popover].payoff-popover:is(:popover-open, .\:popover-open) {
+  opacity: 1;
+  transition-duration: 0.1s;
+
+  @starting-style {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    @supports selector(:popover-open) {
+      translate: 0 0;
+
+      @starting-style {
+        translate: 0 -0.25rem;
+      }
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [popover].payoff-popover {
+    transition-duration: 0.08s;
+  }
+}
+
+@supports not selector(:popover-open) {
+  [popover].payoff-popover:not(.\:popover-open) {
+    display: none;
+  }
+}
+
+@supports (position-area: block-end) {
+  [popover].payoff-popover {
+    inset: auto;
+    margin: 0;
+    margin-block-start: 0.5rem;
+    position-try-fallbacks: flip-block, flip-inline, flip-block flip-inline;
+  }
+
+  [popover].payoff-popover--start {
+    position-area: block-end span-inline-end;
+  }
+
+  [popover].payoff-popover--end {
+    position-area: block-end span-inline-start;
+  }
+}
+
+@supports not (position-area: block-end) {
+  [popover].payoff-popover[data-js-positioned] {
+    position: fixed;
+    inset: auto;
+    margin: 0;
+  }
+}
+
+@media (forced-colors: active) {
+  [popover].payoff-popover {
+    border: 1px solid CanvasText;
+  }
+}
