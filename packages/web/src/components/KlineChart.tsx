@@ -49,17 +49,6 @@ interface YDomain {
   max: number;
 }
 
-interface EditorialBlock {
-  id: "cap" | "be" | "start";
-  targetY: number;
-  halfH: number;
-  line1: string;
-  line2?: string;
-  color: string;
-  bold: boolean;
-  fontSize: number;
-}
-
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
@@ -79,62 +68,11 @@ function formatHoverTime(unixSec: number, locale: Locale): string {
   }
 }
 
-/**
- * Resolves vertical collisions among top-to-bottom sorted editorial labels
- * so Cap, Breakeven, and Start NEVER overlap or clip outside [minY, maxY].
- */
-function layoutEditorialLabels(
-  blocks: EditorialBlock[],
-  minY: number,
-  maxY: number
-): Array<EditorialBlock & { y: number }> {
-  if (blocks.length === 0) return [];
-  const gap = 4;
-  const sorted = [...blocks]
-    .sort((a, b) => a.targetY - b.targetY)
-    .map((b) => ({
-      ...b,
-      y: clamp(b.targetY, minY + b.halfH, maxY - b.halfH),
-    }));
-
-  // Forward pass: push downward if overlapping previous block
-  for (let i = 1; i < sorted.length; i++) {
-    const prev = sorted[i - 1];
-    const cur = sorted[i];
-    const minAllowed = prev.y + prev.halfH + gap + cur.halfH;
-    if (cur.y < minAllowed) {
-      cur.y = minAllowed;
-    }
-  }
-
-  // Clamp bottom and backward pass: pull upward cleanly if pushed past bottom
-  const last = sorted[sorted.length - 1];
-  if (last.y > maxY - last.halfH) {
-    last.y = maxY - last.halfH;
-    for (let i = sorted.length - 2; i >= 0; i--) {
-      const next = sorted[i + 1];
-      const cur = sorted[i];
-      const maxAllowed = next.y - next.halfH - gap - cur.halfH;
-      if (cur.y > maxAllowed) {
-        cur.y = maxAllowed;
-      }
-    }
-  }
-
-  // Final soft clamp to top
-  if (sorted[0].y < minY + sorted[0].halfH) {
-    sorted[0].y = minY + sorted[0].halfH;
-  }
-
-  return sorted;
-}
-
 export function KlineChart({
   locale,
   candles,
   ticket,
   liveSpot,
-  expiryLabel,
   windowLabel,
   positions,
   selectedPositionId = null,
@@ -295,13 +233,11 @@ export function KlineChart({
       span = rawMax - rawMin;
     }
 
-    // Keep breathing room (~14%), tightening slightly to 10% if a wide strike tier dominates
-    // so historical price movement stays clearly legible while every strike remains in-viewport.
     const candleSpan =
       Number.isFinite(candleMin) && Number.isFinite(candleMax)
         ? candleMax - candleMin
         : span;
-    const padRatio = candleSpan > 0 && candleSpan / span < 0.16 ? 0.1 : 0.14;
+    const padRatio = candleSpan > 0 && candleSpan / span < 0.16 ? 0.11 : 0.15;
     const pad = span * padRatio;
 
     return {
@@ -367,44 +303,29 @@ export function KlineChart({
     return () => cancelAnimationFrame(rafId);
   }, [targetDomain]);
 
-  // Spatial Split Geometry (exact 1:1 CSS pixels matching v7-S-final.png)
+  // Scheme A1 Full-Bleed Spatial Split Geometry (zero wasted right text gutter)
   const isNarrow = width < 440;
   const visibleBars = activePositions.slice(0, 5);
   const hasBars = visibleBars.length > 0;
   const canScrub = Boolean(ticket || activePositions.length > 0);
-  const barsBlockW = hasBars ? visibleBars.length * 7 + 10 : 0;
+  const barsBlockW = hasBars ? visibleBars.length * 7 + 8 : 0;
 
-  // Compact label text when position bars share a narrow mobile screen
-  const compactLabels = isNarrow && hasBars;
-  const labelColW = isNarrow
-    ? compactLabels
-      ? Math.max(70, Math.round(width * 0.19))
-      : Math.max(96, Math.round(width * 0.26))
-    : Math.min(138, Math.max(112, Math.round(width * 0.18)));
-
+  const rightEdgeMargin = isNarrow ? 14 : 18;
   const expiryX = Math.round(
-    clamp(
-      width - labelColW - (hasBars ? barsBlockW + (canScrub ? 6 : 0) : 0),
-      width * 0.64,
-      width - 72
-    )
+    clamp(width - rightEdgeMargin - barsBlockW, width * 0.72, width - 12)
   );
   const nowX = Math.round(
     clamp(
-      width * (isNarrow ? 0.535 : 0.6),
-      80,
-      expiryX - (isNarrow ? 54 : 76)
+      width * (isNarrow ? 0.62 : 0.68),
+      84,
+      expiryX - (isNarrow ? 64 : 92)
     )
   );
-  const futureW = Math.max(24, expiryX - nowX);
+  const futureW = Math.max(32, expiryX - nowX);
+  const barStartX = expiryX + (canScrub ? 10 : 6);
 
-  const barStartX = expiryX + (canScrub ? 14 : 8);
-  const labelX = hasBars
-    ? barStartX + visibleBars.length * 7 + 6
-    : expiryX + 10;
-
-  const padTop = 22;
-  const padBottom = 18;
+  const padTop = 24;
+  const padBottom = 22;
   const plotH = Math.max(40, height - padTop - padBottom);
   const domainSpan = Math.max(1e-6, domain.max - domain.min);
 
@@ -516,7 +437,7 @@ export function KlineChart({
     return out;
   }, [plottedPoints, activePositions, selectedPositionId, locale]);
 
-  // Active payoff zone geometry (uses selectedPosition if inspecting one, else active ticket)
+  // Active payoff zone geometry (Scheme A1: borderless editorial cap label + subtle inner guides + edge ramp bar)
   const activeZone = useMemo(() => {
     const src = selectedPosition
       ? {
@@ -553,58 +474,43 @@ export function KlineChart({
     const yStart = yOf(src.startPrice);
     const capArrow = bull ? "≥" : "≤";
 
-    const capLine1 =
+    const capPrimary =
       locale === "zh"
         ? `赢 $${src.maxPayoutUsdt.toFixed(2)}`
         : `Win $${src.maxPayoutUsdt.toFixed(2)}`;
-    const capLine2 = `${capArrow} ${formatStrikePrice(src.capPrice, src.underlying)}`;
-    const beText = compactLabels
-      ? locale === "zh"
-        ? "回本"
-        : "BE"
-      : t.mathBreakevenShort(
-          formatStrikePrice(src.breakevenPrice, src.underlying)
-        );
-    const startText = compactLabels
-      ? "$0"
-      : `$0 · ${formatStrikePrice(src.startPrice, src.underlying)}`;
+    const capPriceStr = `${capArrow} ${formatStrikePrice(src.capPrice, src.underlying)}`;
 
-    const blocks: EditorialBlock[] = [
-      {
-        id: "cap",
-        targetY: yCap,
-        halfH: 13,
-        line1: capLine1,
-        line2: capLine2,
-        color: col,
-        bold: true,
-        fontSize: compactLabels ? 10 : 11,
-      },
-      {
-        id: "be",
-        targetY: yBe,
-        halfH: 7.5,
-        line1: beText,
-        color: MID_TEXT,
-        bold: false,
-        fontSize: compactLabels ? 9.5 : 10.5,
-      },
-      {
-        id: "start",
-        targetY: yStart,
-        halfH: 7.5,
-        line1: startText,
-        color: SUB_TEXT,
-        bold: false,
-        fontSize: compactLabels ? 9.5 : 10,
-      },
-    ];
+    // Position Cap editorial typography cleanly above cap (Bull) or below cap (Bear) without clipping
+    const capTextY = bull
+      ? Math.max(13, yCap - 7)
+      : yCap + 14 <= height - 6
+        ? yCap + 14
+        : Math.max(13, yCap - 7);
 
-    const placedLabels = layoutEditorialLabels(
-      blocks,
-      padTop,
-      height - padBottom
-    );
+    // Subtle inner micro-captions (only shown when vertical spacing & future width prevent overlap)
+    const showBeLabel =
+      futureW >= 78 &&
+      Math.abs(yBe - yCap) >= 15 &&
+      Math.abs(yStart - yBe) >= 13;
+    const beLabelText =
+      futureW >= 106
+        ? locale === "zh"
+          ? `回本 ${formatStrikePrice(src.breakevenPrice, src.underlying)}`
+          : `BE ${formatStrikePrice(src.breakevenPrice, src.underlying)}`
+        : locale === "zh"
+          ? "回本"
+          : "BE";
+    const beLabelY = bull ? yBe - 4 : yBe + 11;
+
+    const showStartLabel =
+      futureW >= 78 && Math.abs(yStart - yCap) >= 24;
+    const startLabelText =
+      futureW >= 106
+        ? `$0 · ${formatStrikePrice(src.startPrice, src.underlying)}`
+        : "$0";
+    const startLabelY = bull
+      ? Math.min(height - 6, yStart + 11)
+      : Math.max(13, yStart - 5);
 
     return {
       bull,
@@ -612,13 +518,21 @@ export function KlineChart({
       yHigh,
       yLow,
       washTop: Math.min(yHigh, yLow),
-      washHeight: Math.max(1, Math.abs(yLow - yHigh)),
+      washHeight: Math.max(2, Math.abs(yLow - yHigh)),
       yCap,
       yBe,
       yStart,
-      placedLabels,
+      capPrimary,
+      capPriceStr,
+      capTextY,
+      showBeLabel,
+      beLabelText,
+      beLabelY,
+      showStartLabel,
+      startLabelText,
+      startLabelY,
     };
-  }, [selectedPosition, ticket, yOf, locale, compactLabels, t, height]);
+  }, [selectedPosition, ticket, yOf, locale, height, futureW]);
 
   // Warm-gold 30m TWAP observation window geometry
   const twapGeom = useMemo(() => {
@@ -820,26 +734,14 @@ export function KlineChart({
         ? GOLD
         : SUB_TEXT;
 
+  const scrubTagY = clamp(knobY, 18, height - padBottom - 16);
+  const scrubTagRight = Math.max(16, width - expiryX + 14);
+
   const areaGradId = `payoff-area-${uid}`;
   const bullWashId = `payoff-bull-wash-${uid}`;
   const bearWashId = `payoff-bear-wash-${uid}`;
-
-  const scrubPillText =
-    activeScrubPrice !== null
-      ? locale === "zh"
-        ? `结算在 ${formatStrikePrice(activeScrubPrice, underlying)}`
-        : `Settle ${formatStrikePrice(activeScrubPrice, underlying)}`
-      : "";
-  const scrubPillW = Math.max(
-    84,
-    scrubPillText.length * (locale === "zh" ? 8.5 : 6.8) + 18
-  );
-  const scrubPillX = clamp(
-    nowX - scrubPillW - 10,
-    8,
-    Math.max(8, expiryX - scrubPillW - 16)
-  );
-  const scrubPillY = clamp(knobY - 25, 4, height - padBottom - 22);
+  const bullBarGradId = `payoff-bull-bar-${uid}`;
+  const bearBarGradId = `payoff-bear-bar-${uid}`;
 
   return (
     <div className="relative w-full bg-black">
@@ -849,55 +751,51 @@ export function KlineChart({
         className="relative w-full overflow-hidden bg-black select-none"
         style={{ height: `${height}px` }}
       >
-        {/* Floating dark #121417 scrub readout pill (zero layout shift during drag) */}
+        {/* Scheme A1 Track-Side Floating Scrub Readout (tracks handle smoothly, zero top-left capsule) */}
         {scrubSummary && (
           <div
             role="status"
             aria-live="polite"
-            className="absolute top-1.5 left-2 z-20 flex max-w-[calc(100%-16px)] items-center gap-2 rounded-full border border-[#24282f] bg-[#121417]/95 px-3 py-1.5 text-[11.5px] tabular-nums shadow-[0_6px_20px_rgba(0,0,0,0.75)] backdrop-blur-xs"
+            style={{
+              right: `${scrubTagRight}px`,
+              top: `${scrubTagY}px`,
+            }}
+            className="absolute z-20 flex max-w-[calc(100%-36px)] -translate-y-1/2 items-center gap-1.5 rounded-lg border border-white/12 bg-[#121417]/95 px-2.5 py-1 text-[11px] leading-none tabular-nums shadow-[0_6px_24px_rgba(0,0,0,0.85)] backdrop-blur-sm"
           >
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[#b8bec6]">
-              <span>
-                {locale === "zh" ? "结算在" : "Settles"}{" "}
-                <strong className="font-bold text-white">
-                  {formatStrikePrice(scrubSummary.price, underlying)}
-                </strong>
+            <strong className="font-semibold text-white whitespace-nowrap">
+              {formatStrikePrice(scrubSummary.price, underlying)}
+            </strong>
+            <span className="text-[#525862]" aria-hidden="true">
+              →
+            </span>
+            {scrubSummary.isCombined && (
+              <span className="text-[#8d96a0] whitespace-nowrap">
+                {locale === "zh" ? "合计" : "Total"}
               </span>
-              <span className="text-[#7e8690]" aria-hidden="true">
-                →
-              </span>
-              <span>
-                {scrubSummary.isCombined
-                  ? locale === "zh"
-                    ? "合计拿回"
-                    : "Total"
-                  : locale === "zh"
-                    ? "拿回"
-                    : "Payout"}{" "}
-                <strong
-                  className="text-xs font-bold"
-                  style={{ color: payoutColor }}
-                >
-                  ${scrubSummary.payoutUsdt.toFixed(2)}
-                </strong>
-              </span>
-              {scrubSummary.payoutUsdt > 0 &&
-                scrubSummary.payoutUsdt < scrubSummary.stakeUsdt && (
-                  <span className="rounded-full bg-[#E6BA5C]/15 px-1.5 py-0.5 text-[9.5px] font-semibold text-[#E6BA5C]">
-                    {t.outcomePartialBadge}
-                  </span>
-                )}
-            </div>
+            )}
+            <strong
+              className="font-bold whitespace-nowrap"
+              style={{ color: payoutColor }}
+            >
+              ${scrubSummary.payoutUsdt.toFixed(2)}
+            </strong>
+            {scrubSummary.payoutUsdt > 0 &&
+              scrubSummary.payoutUsdt < scrubSummary.stakeUsdt && (
+                <span className="hidden sm:inline text-[10px] font-semibold text-[#E6BA5C] whitespace-nowrap">
+                  · {t.outcomePartialBadge}
+                </span>
+              )}
             <button
               type="button"
               onClick={() => setScrubPrice(null)}
               aria-label={locale === "zh" ? "清除试算" : "Clear simulation"}
-              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#24282f] text-[#b8bec6] hover:text-white cursor-pointer"
+              className="ml-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[#7e8690] hover:bg-white/10 hover:text-white transition cursor-pointer focus-visible:outline-2 focus-visible:outline-white/70"
             >
               <X className="h-3 w-3" aria-hidden="true" />
             </button>
           </div>
         )}
+
         <svg
           role="img"
           aria-label={
@@ -922,16 +820,28 @@ export function KlineChart({
         >
           <defs>
             <linearGradient id={areaGradId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={lineColor} stopOpacity="0.14" />
+              <stop offset="0%" stopColor={lineColor} stopOpacity="0.16" />
               <stop offset="100%" stopColor={lineColor} stopOpacity="0" />
             </linearGradient>
             <linearGradient id={bullWashId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={UP_GREEN} stopOpacity="0.20" />
+              <stop offset="0%" stopColor={UP_GREEN} stopOpacity="0.21" />
+              <stop offset="65%" stopColor={UP_GREEN} stopOpacity="0.05" />
               <stop offset="100%" stopColor={UP_GREEN} stopOpacity="0" />
             </linearGradient>
             <linearGradient id={bearWashId} x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" stopColor={DOWN_CORAL} stopOpacity="0" />
-              <stop offset="100%" stopColor={DOWN_CORAL} stopOpacity="0.20" />
+              <stop offset="35%" stopColor={DOWN_CORAL} stopOpacity="0.05" />
+              <stop offset="100%" stopColor={DOWN_CORAL} stopOpacity="0.21" />
+            </linearGradient>
+            <linearGradient id={bullBarGradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={UP_GREEN} stopOpacity="1" />
+              <stop offset="55%" stopColor={GOLD} stopOpacity="0.7" />
+              <stop offset="100%" stopColor="#474e57" stopOpacity="0.38" />
+            </linearGradient>
+            <linearGradient id={bearBarGradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#474e57" stopOpacity="0.38" />
+              <stop offset="45%" stopColor={GOLD} stopOpacity="0.7" />
+              <stop offset="100%" stopColor={DOWN_CORAL} stopOpacity="1" />
             </linearGradient>
           </defs>
 
@@ -942,11 +852,22 @@ export function KlineChart({
               y1={refPriceY}
               x2={expiryX}
               y2={refPriceY}
-              stroke="#1d2025"
+              stroke="#1a1d22"
               strokeWidth={1}
               strokeDasharray="2 5"
             />
           )}
+
+          {/* Subtle Dashed Vertical Expiry Settlement Line */}
+          <line
+            x1={expiryX}
+            y1={padTop - 4}
+            x2={expiryX}
+            y2={height - padBottom}
+            stroke="rgba(255,255,255,0.12)"
+            strokeWidth={1}
+            strokeDasharray="3 4"
+          />
 
           {/* Warm-gold 30m TWAP Lock Window Band */}
           {twapGeom && (
@@ -971,7 +892,7 @@ export function KlineChart({
               />
               <text
                 x={twapGeom.x0 + twapGeom.bandW / 2}
-                y={height - 4}
+                y={height - 5}
                 textAnchor="middle"
                 fontSize={9.5}
                 fontWeight={700}
@@ -982,7 +903,7 @@ export function KlineChart({
             </g>
           )}
 
-          {/* RIGHT FUTURE PAYOFF ZONE [nowX -> expiryX] */}
+          {/* RIGHT FUTURE PAYOFF ZONE [nowX -> expiryX] (Scheme A1: full-bleed + borderless editorial label + luminous ramp bar) */}
           {activeZone && (
             <g>
               <rect
@@ -999,30 +920,87 @@ export function KlineChart({
                 x2={expiryX}
                 y2={activeZone.yCap}
                 stroke={activeZone.col}
+                strokeOpacity={0.9}
                 strokeWidth={1.5}
               />
-              {/* Dashed Breakeven line */}
+              {/* Subtle Breakeven guide */}
               <line
                 x1={nowX}
                 y1={activeZone.yBe}
                 x2={expiryX}
                 y2={activeZone.yBe}
-                stroke={SUB_TEXT}
-                strokeOpacity={0.55}
+                stroke="rgba(255,255,255,0.20)"
                 strokeWidth={1}
                 strokeDasharray="2 4"
               />
-              {/* Dashed Start / Floor line */}
+              {/* Subtle Start / Floor guide */}
               <line
                 x1={nowX}
                 y1={activeZone.yStart}
                 x2={expiryX}
                 y2={activeZone.yStart}
-                stroke={SUB_TEXT}
-                strokeOpacity={0.35}
+                stroke="rgba(255,255,255,0.11)"
                 strokeWidth={1}
                 strokeDasharray="2 4"
               />
+
+              {/* Quiet micro inner labels (never clip, auto-hide when tight) */}
+              {activeZone.showBeLabel && (
+                <text
+                  x={nowX + 8}
+                  y={activeZone.beLabelY}
+                  fontSize={9.5}
+                  fontWeight={500}
+                  fill="#6f7782"
+                  pointerEvents="none"
+                  style={{ fontVariantNumeric: "tabular-nums" }}
+                >
+                  {activeZone.beLabelText}
+                </text>
+              )}
+              {activeZone.showStartLabel && (
+                <text
+                  x={nowX + 8}
+                  y={activeZone.startLabelY}
+                  fontSize={9.5}
+                  fontWeight={500}
+                  fill="#525963"
+                  pointerEvents="none"
+                  style={{ fontVariantNumeric: "tabular-nums" }}
+                >
+                  {activeZone.startLabelText}
+                </text>
+              )}
+
+              {/* Borderless Editorial Cap Typography (right-aligned inside canvas, zero pill chrome) */}
+              <text
+                x={expiryX - 8}
+                y={activeZone.capTextY}
+                textAnchor="end"
+                fontSize={isNarrow ? 10.5 : 11}
+                pointerEvents="none"
+                style={{ fontVariantNumeric: "tabular-nums" }}
+              >
+                <tspan fontWeight={700} fill={activeZone.col}>
+                  {activeZone.capPrimary}
+                </tspan>
+                <tspan fill="#525862"> · </tspan>
+                <tspan fontWeight={500} fill="#8d96a0">
+                  {activeZone.capPriceStr}
+                </tspan>
+              </text>
+
+              {/* Right-Edge Luminous Payoff Ramp Bar (visualizes smooth linear payout gradient at expiry) */}
+              <rect
+                x={expiryX - 2}
+                y={activeZone.washTop}
+                width={4}
+                height={activeZone.washHeight}
+                rx={2}
+                fill={`url(#${activeZone.bull ? bullBarGradId : bearBarGradId})`}
+              />
+              <circle cx={expiryX} cy={activeZone.yCap} r={2.8} fill={activeZone.col} />
+              <circle cx={expiryX} cy={activeZone.yStart} r={2} fill="#474e57" />
             </g>
           )}
 
@@ -1039,7 +1017,7 @@ export function KlineChart({
             />
           )}
 
-          {/* Warm-gold TWAP running average line & pill */}
+          {/* Warm-gold TWAP running average line & tag */}
           {twapGeom && twapGeom.avgY !== null && (
             <g>
               <line
@@ -1062,7 +1040,7 @@ export function KlineChart({
                         y={py}
                         width={pw}
                         height={20}
-                        rx={10}
+                        rx={8}
                         fill="#1e190e"
                         stroke={GOLD}
                         strokeOpacity={0.3}
@@ -1116,7 +1094,7 @@ export function KlineChart({
                       y={pillY}
                       width={pillW}
                       height={16}
-                      rx={8}
+                      rx={6}
                       fill="#181c20"
                     />
                     <text
@@ -1186,31 +1164,7 @@ export function KlineChart({
             </g>
           )}
 
-          {/* Subtle Dashed Vertical Expiry Settlement Line & Top Expiry Label */}
-          <line
-            x1={expiryX}
-            y1={padTop}
-            x2={expiryX}
-            y2={height - padBottom}
-            stroke="rgba(255,255,255,0.16)"
-            strokeWidth={1}
-            strokeDasharray="3 4"
-          />
-          {expiryLabel && (
-            <text
-              x={clamp(expiryX, 44, width - 48)}
-              y={12}
-              textAnchor="middle"
-              fontSize={10}
-              fontWeight={600}
-              fill="#68707a"
-              style={{ fontVariantNumeric: "tabular-nums" }}
-            >
-              {expiryLabel}
-            </text>
-          )}
-
-          {/* Multi-Position Vertical Profit-Zone Bars beside expiryX */}
+          {/* Multi-Position Compact Vertical Profit-Zone Bars beside expiryX */}
           {visibleBars.map((p, idx) => {
             const posId = p.tokenId || p.seriesId;
             const yHi = yOf(p.upperStrike);
@@ -1247,7 +1201,6 @@ export function KlineChart({
                 }}
                 className={onSelectPosition ? "cursor-pointer" : undefined}
               >
-                {/* Invisible wider click target */}
                 <rect
                   x={bx - 3}
                   y={top - 4}
@@ -1270,96 +1223,25 @@ export function KlineChart({
             );
           })}
 
-          {/* RIGHT EDITORIAL LABEL COLUMN (No right axis ticks, anti-collision placed) */}
-          {activeZone &&
-            activeZone.placedLabels.map((lbl) => (
-              <g key={lbl.id} pointerEvents="none">
-                {lbl.line2 ? (
-                  <>
-                    <text
-                      x={labelX}
-                      y={lbl.y - 2}
-                      fontSize={lbl.fontSize}
-                      fontWeight={lbl.bold ? 700 : 600}
-                      fill={lbl.color}
-                      style={{ fontVariantNumeric: "tabular-nums" }}
-                    >
-                      {lbl.line1}
-                    </text>
-                    <text
-                      x={labelX}
-                      y={lbl.y + 10}
-                      fontSize={9.5}
-                      fontWeight={500}
-                      fill={SUB_TEXT}
-                      style={{ fontVariantNumeric: "tabular-nums" }}
-                    >
-                      {lbl.line2}
-                    </text>
-                  </>
-                ) : (
-                  <text
-                    x={labelX}
-                    y={lbl.y + 3.5}
-                    fontSize={lbl.fontSize}
-                    fontWeight={lbl.bold ? 700 : 600}
-                    fill={lbl.color}
-                    style={{ fontVariantNumeric: "tabular-nums" }}
-                  >
-                    {lbl.line1}
-                  </text>
-                )}
-              </g>
-            ))}
-
-          {/* Active Scrub Horizontal Line + White Price Pill */}
+          {/* Active Scrub Horizontal Guide Line (readout floats cleanly beside handle) */}
           {activeScrubPrice !== null && (
-            <g pointerEvents="none">
-              <line
-                x1={0}
-                y1={knobY}
-                x2={nowX}
-                y2={knobY}
-                stroke="rgba(255,255,255,0.16)"
-                strokeWidth={1}
-                strokeDasharray="2 4"
-              />
-              <line
-                x1={nowX}
-                y1={knobY}
-                x2={expiryX}
-                y2={knobY}
-                stroke="rgba(255,255,255,0.52)"
-                strokeWidth={1.2}
-                strokeDasharray="2 3"
-              />
-              <rect
-                x={scrubPillX}
-                y={scrubPillY}
-                width={scrubPillW}
-                height={20}
-                rx={10}
-                fill="#FFFFFF"
-              />
-              <text
-                x={scrubPillX + scrubPillW / 2}
-                y={scrubPillY + 13.5}
-                textAnchor="middle"
-                fontSize={10.5}
-                fontWeight={700}
-                fill="#000000"
-                style={{ fontVariantNumeric: "tabular-nums" }}
-              >
-                {scrubPillText}
-              </text>
-            </g>
+            <line
+              x1={0}
+              y1={knobY}
+              x2={expiryX}
+              y2={knobY}
+              stroke="rgba(255,255,255,0.34)"
+              strokeWidth={1}
+              strokeDasharray="2 3"
+              pointerEvents="none"
+            />
           )}
 
           {/* Subtle Bottom-Left History Window Tag (e.g. 24H / 7D) */}
           {windowLabel && (
             <text
               x={8}
-              y={height - 4}
+              y={height - 5}
               fontSize={10}
               fontWeight={500}
               fill="#525862"
@@ -1370,7 +1252,7 @@ export function KlineChart({
           )}
         </svg>
 
-        {/* Interactive Expiry-Line Scrubber Rail & White Circular ↕ Knob */}
+        {/* Interactive Expiry-Line Scrubber Rail & Sleek Vertical Pill Handle */}
         {canScrub && (
           <div
             role="slider"
@@ -1400,28 +1282,15 @@ export function KlineChart({
               className="pointer-events-none absolute left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center"
             >
               <span
-                className={`flex h-6 w-6 items-center justify-center rounded-full transition-transform ${
+                className={`flex h-6 w-3.5 items-center justify-center rounded-full bg-white shadow-[0_2px_10px_rgba(0,0,0,0.85)] transition-transform ${
                   activeScrubPrice !== null || isDraggingScrub
-                    ? "scale-110 bg-white/18"
-                    : "bg-white/10"
+                    ? "scale-105 ring-4 ring-white/25"
+                    : "ring-4 ring-white/14"
                 }`}
               >
-                <span className="flex h-[15px] w-[15px] items-center justify-center rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.75)]">
-                  <svg
-                    width="7"
-                    height="9"
-                    viewBox="0 0 8 10"
-                    fill="none"
-                    className="block"
-                  >
-                    <path
-                      d="M1.5 3.6L4 1.2L6.5 3.6M1.5 6.4L4 8.8L6.5 6.4"
-                      stroke="#000000"
-                      strokeWidth="1.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                <span className="flex flex-col gap-[2px]">
+                  <span className="block h-[1.2px] w-1.5 rounded-full bg-black/70" />
+                  <span className="block h-[1.2px] w-1.5 rounded-full bg-black/70" />
                 </span>
               </span>
             </div>
