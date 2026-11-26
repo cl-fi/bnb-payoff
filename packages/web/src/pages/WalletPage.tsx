@@ -1,4 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -158,7 +165,9 @@ export function WalletPage({
   }, [wallet.address, transferRevision]);
 
   // Apply hidden="until-found" on inactive tab panel and sync via beforematch for Find-in-Page
-  useEffect(() => {
+  const hasConnectedWallet = wallet.kind !== "NONE" && Boolean(wallet.address);
+
+  useLayoutEffect(() => {
     const activePanel = activePanelRef.current;
     const historyPanel = historyPanelRef.current;
     if (activePanel) {
@@ -175,7 +184,7 @@ export function WalletPage({
         historyPanel.setAttribute("hidden", "until-found");
       }
     }
-  }, [selectedTab]);
+  }, [selectedTab, hasConnectedWallet]);
 
   useEffect(() => {
     const activePanel = activePanelRef.current;
@@ -188,7 +197,7 @@ export function WalletPage({
       activePanel?.removeEventListener("beforematch", onMatchActive);
       historyPanel?.removeEventListener("beforematch", onMatchHistory);
     };
-  }, [wallet.kind]);
+  }, [hasConnectedWallet]);
 
   const explorerBase = getExplorerBaseUrl(
     health?.chainId ?? wallet.chainId ?? BSC_TESTNET.chainId
@@ -932,14 +941,13 @@ export function WalletPage({
               </button>
             </div>
 
-            {/* Single-cell grid so hidden="until-found" panels never leave empty layout gaps */}
-            <div className="grid">
+            {/* Sequential block flow: hidden="until-found" collapses to 0px height and never overlays sibling panels */}
+            <div>
               {/* TAB PANEL 1: Active & Claimable Positions */}
               <div
                 ref={activePanelRef}
                 role="tabpanel"
                 aria-labelledby={activeTabId}
-                className="col-start-1 row-start-1"
               >
                 <div className="pt-5 space-y-5">
                   {/* Batch Claim Banner */}
@@ -1322,8 +1330,6 @@ export function WalletPage({
                 ref={historyPanelRef}
                 role="tabpanel"
                 aria-labelledby={historyTabId}
-                hidden
-                className="col-start-1 row-start-1"
               >
                 <div className="pt-5 space-y-5">
                   {/* 3-Column Stats Strip */}

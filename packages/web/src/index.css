@@ -488,6 +488,11 @@ dialog.payoff-sheet[open]:where(:not([data-closing]))::backdrop {
   border-color: var(--down);
 }
 
+/* Ensure hidden="until-found" panels (content-visibility: hidden) never intercept pointer events */
+[hidden="until-found"] {
+  pointer-events: none;
+}
+
 .payoff-visually-hidden:where(:not(:focus-within, :active)) {
   position: absolute !important;
   clip-path: inset(50%) !important;
