@@ -403,7 +403,7 @@ export function WalletPage({
 
     const estimatedUsdt = pos.indicativeExitUsdt * ratio;
     const closeAmountUsdt =
-      ratio >= 1 ? undefined : pos.remainingBalanceUsdt * ratio;
+      ratio >= 0.995 ? undefined : pos.remainingBalanceUsdt * ratio;
 
     try {
       const rfq = await api.requestCloseRfq({

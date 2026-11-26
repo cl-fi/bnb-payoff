@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -12,7 +11,6 @@ import {
   ArrowRight,
   Check,
   CheckCircle2,
-  ChevronDown,
   Clock,
   ExternalLink,
   Info,
@@ -66,7 +64,6 @@ import { KlineChart } from "../components/KlineChart";
 import {
   OrderTicketPanel,
   type InstantBuyStage,
-  type MergePreviewInfo,
   type RangeMode,
   type SlippagePauseState,
 } from "../components/OrderTicketPanel";
@@ -311,13 +308,6 @@ export function TradePage({
   const [shelfReloadTick, setShelfReloadTick] = useState(0);
   const customReqSeqRef = useRef(0);
   const lastDriftReloadMsRef = useRef(0);
-  const addMoreTargetPosRef = useRef<{
-    direction: Direction;
-    lowerStrike: number;
-    upperStrike: number;
-    startPrice: number;
-    capPrice: number;
-  } | null>(null);
 
   const [stage, setStage] = useState<InstantBuyStage>("IDLE");
   const [slippagePause, setSlippagePause] = useState<
@@ -335,11 +325,6 @@ export function TradePage({
     null
   );
   const [scrubPrice, setScrubPrice] = useState<number | null>(null);
-
-  // B3 Add-More Sheet state
-  const [addMoreOpen, setAddMoreOpen] = useState(false);
-  const addMoreDialogRef = useRef<HTMLDialogElement>(null);
-  const addMoreTitleId = useId();
 
   // B4 Early Close Modal state
   const [closingPos, setClosingPos] = useState<PositionView | null>(null);
@@ -431,7 +416,6 @@ export function TradePage({
     });
     setCustomServerEntry(null);
     setCustomSyncing(false);
-    addMoreTargetPosRef.current = null;
     setSelectedPositionId(null);
     setScrubPrice(null);
     pendingFocusExpiryRef.current = marketFocus.expiry;
@@ -530,51 +514,6 @@ export function TradePage({
       clearInterval(timer);
     };
   }, [underlying, direction, tenor, stakeUsdt, shelfReloadTick]);
-
-  // B3 Add-More native <dialog> showModal/close + Safari closedby="any" fallback
-  useEffect(() => {
-    const dialog = addMoreDialogRef.current;
-    if (!dialog) return;
-    if (addMoreOpen && !dialog.open) {
-      dialog.showModal();
-    } else if (!addMoreOpen && dialog.open) {
-      dialog.close();
-    }
-  }, [addMoreOpen]);
-
-  useEffect(() => {
-    const dialog = addMoreDialogRef.current;
-    if (!addMoreOpen || !dialog) return;
-    if ("closedBy" in HTMLDialogElement.prototype) return;
-
-    const isOutside = (e: PointerEvent) => {
-      const r = dialog.getBoundingClientRect();
-      return (
-        e.clientX < r.left ||
-        e.clientX > r.right ||
-        e.clientY < r.top ||
-        e.clientY > r.bottom
-      );
-    };
-
-    let pressedOutside = false;
-    const onPointerDown = (e: PointerEvent) => {
-      pressedOutside = isOutside(e);
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      if (pressedOutside && isOutside(e)) {
-        dialog.close();
-      }
-      pressedOutside = false;
-    };
-
-    dialog.addEventListener("pointerdown", onPointerDown);
-    dialog.addEventListener("pointerup", onPointerUp);
-    return () => {
-      dialog.removeEventListener("pointerdown", onPointerDown);
-      dialog.removeEventListener("pointerup", onPointerUp);
-    };
-  }, [addMoreOpen]);
 
   const assetSpec = ASSET_SPECS[underlying];
   const isRwaAsset = assetSpec.assetClass === "RWA_EQUITY";
@@ -878,41 +817,6 @@ export function TradePage({
     stakeUsdt,
   ]);
 
-  // B3 Add-More reconciliation: if a Quick position's strike pair is absent from the synced shelf's
-  // `quickTiers` (e.g. opposite-direction shelf loaded or 25s poll moved spot past its cap), route
-  // seamlessly to Custom mode preserving the exact position strike pair instead of falling back to defaultQuickIdx.
-  useEffect(() => {
-    const target = addMoreTargetPosRef.current;
-    if (!addMoreOpen || !target || !isShelfContextSynced) return;
-    if (target.direction !== direction || rangeMode !== "QUICK") return;
-    const targetKey = `${target.lowerStrike}-${target.upperStrike}`;
-    const stillInQuick = quickTiers.some(
-      (item) => getTargetKey(item) === targetKey
-    );
-    if (stillInQuick) return;
-    if (shelf?.customConfig && shelf.customConfig.validStarts.length > 0) {
-      setRangeMode("CUSTOM");
-      setCustomRange({
-        startPrice: target.startPrice,
-        capPrice: target.capPrice,
-      });
-      setCustomClampState({
-        reason: "NONE",
-        startClamped: false,
-        capClamped: false,
-      });
-      setCustomServerEntry(null);
-    }
-    addMoreTargetPosRef.current = null;
-  }, [
-    addMoreOpen,
-    rangeMode,
-    isShelfContextSynced,
-    direction,
-    quickTiers,
-    shelf?.customConfig,
-  ]);
-
   // Debounced server-side Custom preview reconciliation (preserves exact live Atlas spot, ThetaData IV skew & book mids)
   useEffect(() => {
     if (
@@ -1016,33 +920,6 @@ export function TradePage({
       : customClampState;
   const effectiveTargetKey = quickTicket ? getTargetKey(quickTicket) : "";
 
-  // B3 explicit mergePreview: checks if selected direction + strike range matches an existing active position in this expiry
-  const addMoreMergePreview = useMemo<MergePreviewInfo | null>(() => {
-    if (!addMoreOpen || !activeTicket) return null;
-    const isBullDir = direction === "BULL";
-    const match = currentExpiryActivePositions.find(
-      (p) =>
-        p.isUp === isBullDir &&
-        Math.abs(p.lowerStrike - activeTicket.lowerStrike) < 1e-6 &&
-        Math.abs(p.upperStrike - activeTicket.upperStrike) < 1e-6
-    );
-    if (match) {
-      return {
-        existingStakeUsdt: match.totalStakeUsdt,
-        combinedStakeUsdt: match.totalStakeUsdt + stakeUsdt,
-        combinedMaxPayoutUsdt:
-          match.remainingBalanceUsdt + activeTicket.maxPayoutUsdt,
-        isMerge: true,
-      };
-    }
-    return {
-      existingStakeUsdt: 0,
-      combinedStakeUsdt: stakeUsdt,
-      combinedMaxPayoutUsdt: activeTicket.maxPayoutUsdt,
-      isMerge: false,
-    };
-  }, [addMoreOpen, activeTicket, direction, currentExpiryActivePositions, stakeUsdt]);
-
   const resetFlowState = useCallback(() => {
     setSlippagePause(undefined);
     setStage("IDLE");
@@ -1059,7 +936,6 @@ export function TradePage({
     });
     setCustomServerEntry(null);
     setCustomSyncing(false);
-    addMoreTargetPosRef.current = null;
   }, []);
 
   const handleSwitchUnderlying = (u: UnderlyingSymbol) => {
@@ -1129,7 +1005,6 @@ export function TradePage({
   };
 
   const handleSelectTarget = (item: TicketSummary) => {
-    addMoreTargetPosRef.current = null;
     setSelectedTargetKey(getTargetKey(item));
     setSelectedPositionId(null);
     setScrubPrice(null);
@@ -1138,7 +1013,6 @@ export function TradePage({
 
   const handleChangeRangeMode = (nextMode: RangeMode) => {
     if (nextMode === rangeMode) return;
-    addMoreTargetPosRef.current = null;
     setSelectedPositionId(null);
     setScrubPrice(null);
     if (nextMode === "CUSTOM") {
@@ -1190,7 +1064,6 @@ export function TradePage({
 
   const handleChangeCustomStart = (nextStart: number) => {
     if (!shelf?.customConfig || !isShelfContextSynced) return;
-    addMoreTargetPosRef.current = null;
     const currentCap =
       resolvedCustomSelection?.capPrice ??
       customRange?.capPrice ??
@@ -1218,7 +1091,6 @@ export function TradePage({
 
   const handleChangeCustomCap = (nextCap: number) => {
     if (!shelf?.customConfig || !isShelfContextSynced) return;
-    addMoreTargetPosRef.current = null;
     const currentStart =
       resolvedCustomSelection?.startPrice ??
       customRange?.startPrice ??
@@ -1285,12 +1157,7 @@ export function TradePage({
     await api.ingestTx(hash).catch(() => api.syncChain());
     await onRefreshPositions();
 
-    // Stay on TradePage — close B3 sheet if open, show dark confirmation toast, keep form ready
-    if (addMoreOpen) {
-      addMoreTargetPosRef.current = null;
-      addMoreDialogRef.current?.close();
-      setAddMoreOpen(false);
-    }
+    // Stay on TradePage — show dark confirmation toast, keep form ready
     setStage("IDLE");
     setToast({
       kind: "ok",
@@ -1385,58 +1252,6 @@ export function TradePage({
     }
   };
 
-  // B3 Add-More trigger from a position row (preserves both Quick and Custom strike ranges)
-  const handleOpenAddMore = (pos: PositionView) => {
-    const posKey = `${pos.lowerStrike}-${pos.upperStrike}`;
-    const matchesCurrentQuick =
-      pos.direction === direction &&
-      quickTiers.some((item) => getTargetKey(item) === posKey);
-    const expectedAnchor =
-      pos.direction === "BULL" ? shelf?.grid?.gridLow : shelf?.grid?.gridHigh;
-    const matchesOppositeGridAnchor =
-      pos.direction !== direction &&
-      pos.tierKind !== "CUSTOM" &&
-      expectedAnchor !== undefined &&
-      Math.abs(pos.startPrice - expectedAnchor) < 1e-6;
-    const shouldUseCustom =
-      pos.tierKind === "CUSTOM" ||
-      (!matchesCurrentQuick && !matchesOppositeGridAnchor);
-    setDirection(pos.direction);
-    setSelectedTargetKey(posKey);
-    if (shouldUseCustom) {
-      addMoreTargetPosRef.current = null;
-      setRangeMode("CUSTOM");
-      setCustomRange({
-        startPrice: pos.startPrice,
-        capPrice: pos.capPrice,
-      });
-      setCustomClampState({
-        reason: "NONE",
-        startClamped: false,
-        capClamped: false,
-      });
-      setCustomServerEntry(null);
-    } else {
-      addMoreTargetPosRef.current = {
-        direction: pos.direction,
-        lowerStrike: pos.lowerStrike,
-        upperStrike: pos.upperStrike,
-        startPrice: pos.startPrice,
-        capPrice: pos.capPrice,
-      };
-      setRangeMode("QUICK");
-      setCustomRange(null);
-      setCustomClampState({
-        reason: "NONE",
-        startClamped: false,
-        capClamped: false,
-      });
-      setCustomServerEntry(null);
-    }
-    resetFlowState();
-    setAddMoreOpen(true);
-  };
-
   // B4 Early Close handlers
   const activeClosingPos = closingPos
     ? positions.find(
@@ -1486,7 +1301,7 @@ export function TradePage({
 
     const estimatedUsdt = pos.indicativeExitUsdt * ratio;
     const closeAmountUsdt =
-      ratio >= 1 ? undefined : pos.remainingBalanceUsdt * ratio;
+      ratio >= 0.995 ? undefined : pos.remainingBalanceUsdt * ratio;
 
     try {
       const rfq = await api.requestCloseRfq({
@@ -2490,13 +2305,6 @@ export function TradePage({
                     ) : (
                       <span className="inline-flex flex-wrap items-baseline justify-end gap-x-1 text-[#7e8690]">
                         <span>
-                          {t.positionsTotalStake}{" "}
-                          <strong className="font-semibold text-[#b8bec6]">
-                            ${positionTotals.totalStake.toFixed(2)}
-                          </strong>
-                        </span>
-                        <span aria-hidden="true">·</span>
-                        <span>
                           {t.positionsTotalValue}{" "}
                           <strong className="font-semibold text-white">
                             ${positionTotals.totalValue.toFixed(2)}
@@ -2555,8 +2363,8 @@ export function TradePage({
                     return (
                       <li
                         key={posId}
-                        className={`relative transition-colors duration-150 ${
-                          isSelected ? "bg-[#121417]" : ""
+                        className={`relative flex items-center justify-between gap-3 px-2.5 py-3 transition-colors duration-150 ${
+                          isSelected ? "bg-[#121417]" : "hover:bg-[#101216]"
                         }`}
                       >
                         {isSelected && (
@@ -2567,168 +2375,153 @@ export function TradePage({
                             }`}
                           />
                         )}
-                        <button
-                          type="button"
-                          aria-expanded={isSelected}
-                          onClick={() =>
-                            setSelectedPositionId(isSelected ? null : posId)
-                          }
-                          className={`group flex w-full items-center justify-between gap-3 px-2.5 py-3 text-left transition-colors duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-white ${
-                            isSelected
-                              ? ""
-                              : "hover:bg-[#14171c] active:bg-[#1a1e25]"
-                          }`}
-                        >
-                          <div className="min-w-0 space-y-0.5">
-                            <div className="flex flex-wrap items-center gap-1.5 text-[14px] font-bold text-white tabular-nums">
-                              <span
-                                aria-hidden="true"
-                                className={`h-2 w-2 rounded-full shrink-0 ${
-                                  pos.isUp ? "bg-[#2EC26B]" : "bg-[#E85D4A]"
-                                }`}
-                              />
-                              <span
-                                className={
-                                  pos.isUp ? "text-[#2EC26B]" : "text-[#E85D4A]"
-                                }
-                              >
-                                {pos.isUp ? t.bull : t.bear}
-                              </span>
-                              {mult > 0 && <span>{mult.toFixed(2)}x</span>}
-                              <span className="text-xs font-medium text-[#b8bec6]">
-                                {formatStrikePrice(pos.startPrice, underlying)}{" "}
-                                → {formatStrikePrice(pos.capPrice, underlying)}
-                              </span>
-                            </div>
 
-                            <div className="text-xs text-[#7e8690] tabular-nums">
+                        {/* Left: Position summary (click highlights chart range) + quiet sibling BscScan icon */}
+                        <div className="min-w-0 flex-1 space-y-0.5">
+                          <button
+                            type="button"
+                            aria-pressed={isSelected}
+                            onClick={() =>
+                              setSelectedPositionId(isSelected ? null : posId)
+                            }
+                            className="flex w-full flex-wrap items-center gap-1.5 text-left text-[14px] font-bold text-white tabular-nums cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                          >
+                            <span
+                              aria-hidden="true"
+                              className={`h-2 w-2 rounded-full shrink-0 ${
+                                pos.isUp ? "bg-[#2EC26B]" : "bg-[#E85D4A]"
+                              }`}
+                            />
+                            <span
+                              className={
+                                pos.isUp ? "text-[#2EC26B]" : "text-[#E85D4A]"
+                              }
+                            >
+                              {pos.isUp ? t.bull : t.bear}
+                            </span>
+                            {mult > 0 && <span>{mult.toFixed(2)}x</span>}
+                            <span className="text-xs font-medium text-[#b8bec6]">
+                              {formatStrikePrice(pos.startPrice, underlying)}{" "}
+                              → {formatStrikePrice(pos.capPrice, underlying)}
+                            </span>
+                          </button>
+
+                          <div className="flex flex-wrap items-center gap-1 text-xs text-[#7e8690] tabular-nums">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedPositionId(isSelected ? null : posId)
+                              }
+                              className="text-left hover:text-[#b8bec6] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white rounded"
+                            >
                               {isZh ? "投入" : "Stake"} $
                               {pos.totalStakeUsdt.toFixed(2)} ·{" "}
                               {isZh ? "最高赢" : "Max"} $
                               {pos.remainingBalanceUsdt.toFixed(2)}
-                            </div>
-                          </div>
-
-                          <div className="flex shrink-0 items-center gap-2.5">
-                            <div className="text-right tabular-nums">
-                              {simulatedPayout !== null && simDelta !== null ? (
-                                <>
-                                  <div className="flex items-center justify-end gap-1.5">
-                                    {simIsPartial && (
-                                      <span className="rounded-full bg-[#E6BA5C]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
-                                        {t.outcomePartialBadge}
-                                      </span>
-                                    )}
-                                    <span
-                                      className="text-[15px] font-bold"
-                                      style={{
-                                        color:
-                                          simulatedPayout >= pos.totalStakeUsdt
-                                            ? "#2EC26B"
-                                            : simulatedPayout > 0
-                                              ? "#E6BA5C"
-                                              : "#7e8690",
-                                      }}
-                                    >
-                                      ${simulatedPayout.toFixed(2)}
-                                    </span>
-                                  </div>
-                                  <div
-                                    className={`text-xs font-semibold ${
-                                      simDelta >= 0
-                                        ? "text-[#2EC26B]"
-                                        : simIsPartial
-                                          ? "text-[#E6BA5C]"
-                                          : "text-[#7e8690]"
-                                    }`}
-                                  >
-                                    {formatSignedUsd(simDelta)}
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div className="text-[15px] font-bold text-white">
-                                    ${pos.indicativeExitUsdt.toFixed(2)}
-                                  </div>
-                                  <div
-                                    className={`text-xs font-semibold ${
-                                      pos.unrealizedPnlUsdt >= 0
-                                        ? "text-[#2EC26B]"
-                                        : "text-[#E85D4A]"
-                                    }`}
-                                  >
-                                    {formatSignedUsd(pos.unrealizedPnlUsdt)} (
-                                    {pos.unrealizedPnlPct >= 0 ? "+" : ""}
-                                    {pos.unrealizedPnlPct.toFixed(1)}%)
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                            <ChevronDown
-                              aria-hidden="true"
-                              className={`h-4 w-4 shrink-0 transition-transform duration-200 motion-reduce:transition-none ${
-                                isSelected
-                                  ? "rotate-180 text-white"
-                                  : "text-[#525862] group-hover:text-[#b8bec6]"
-                              }`}
-                            />
-                          </div>
-                        </button>
-
-                        {/* Inline Actions revealed on row select */}
-                        {isSelected && (
-                          <div className="pb-3 pt-0.5 flex flex-wrap items-center justify-between gap-2 px-2.5 pl-6">
-                            {pos.awaitingSettlement ? (
-                              <span className="text-xs font-medium text-[#E6BA5C]">
-                                {pos.expiryPaused
-                                  ? t.statusDisputed
-                                  : t.awaitingTwapShortLabel}
-                              </span>
-                            ) : pos.inTwapWindow ? (
-                              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#E6BA5C]">
-                                <Lock
-                                  className="h-3.5 w-3.5 shrink-0"
-                                  aria-hidden="true"
-                                />
-                                {t.twapWindowCloseLocked}
-                              </span>
-                            ) : (
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenEarlyClose(pos)}
-                                  className="min-h-[36px] rounded-full bg-white px-4 py-1.5 text-xs font-bold text-black hover:bg-white/90 active:scale-[0.98] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                                >
-                                  {t.actionSell}
-                                </button>
-                                {!isPriorExpiry && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenAddMore(pos)}
-                                    className="min-h-[36px] rounded-full bg-[#24282f] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#2f343d] active:scale-[0.98] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-                                  >
-                                    {t.actionAddMore}
-                                  </button>
-                                )}
-                              </div>
-                            )}
-
+                            </button>
                             {explorerBase && pos.openTxHash && (
                               <a
                                 href={`${explorerBase}/tx/${pos.openTxHash}`}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-[11px] font-medium text-[#7e8690] hover:text-white underline underline-offset-2"
+                                aria-label={
+                                  isZh
+                                    ? "在 BscScan 查看该笔交易"
+                                    : "View transaction on BscScan"
+                                }
+                                title="BscScan"
+                                className="inline-flex h-5 w-5 items-center justify-center rounded text-[#6b7280] hover:text-white transition focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
                               >
-                                BscScan
                                 <ExternalLink
-                                  className="h-2.5 w-2.5"
+                                  className="h-3 w-3"
                                   aria-hidden="true"
                                 />
                               </a>
                             )}
                           </div>
-                        )}
+                        </div>
+
+                        {/* Right: Live Value/PnL + One-Click Sell Action (Option 1) */}
+                        <div className="flex shrink-0 items-center gap-3">
+                          <div className="text-right tabular-nums">
+                            {simulatedPayout !== null && simDelta !== null ? (
+                              <>
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {simIsPartial && (
+                                    <span className="rounded-full bg-[#E6BA5C]/15 px-1.5 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
+                                      {t.outcomePartialBadge}
+                                    </span>
+                                  )}
+                                  <span
+                                    className="text-[15px] font-bold"
+                                    style={{
+                                      color:
+                                        simulatedPayout >= pos.totalStakeUsdt
+                                          ? "#2EC26B"
+                                          : simulatedPayout > 0
+                                            ? "#E6BA5C"
+                                            : "#7e8690",
+                                    }}
+                                  >
+                                    ${simulatedPayout.toFixed(2)}
+                                  </span>
+                                </div>
+                                <div
+                                  className={`text-xs font-semibold ${
+                                    simDelta >= 0
+                                      ? "text-[#2EC26B]"
+                                      : simIsPartial
+                                        ? "text-[#E6BA5C]"
+                                        : "text-[#7e8690]"
+                                  }`}
+                                >
+                                  {formatSignedUsd(simDelta)}
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div className="text-[15px] font-bold text-white">
+                                  ${pos.indicativeExitUsdt.toFixed(2)}
+                                </div>
+                                <div
+                                  className={`text-xs font-semibold ${
+                                    pos.unrealizedPnlUsdt >= 0
+                                      ? "text-[#2EC26B]"
+                                      : "text-[#E85D4A]"
+                                  }`}
+                                >
+                                  {formatSignedUsd(pos.unrealizedPnlUsdt)} (
+                                  {pos.unrealizedPnlPct >= 0 ? "+" : ""}
+                                  {pos.unrealizedPnlPct.toFixed(1)}%)
+                                </div>
+                              </>
+                            )}
+                          </div>
+
+                          {pos.awaitingSettlement ? (
+                            <span className="inline-flex min-h-[34px] items-center rounded-full bg-[#E6BA5C]/12 px-3 py-1 text-[11px] font-semibold text-[#E6BA5C]">
+                              {pos.expiryPaused
+                                ? t.statusDisputed
+                                : t.awaitingTwapShortLabel}
+                            </span>
+                          ) : pos.inTwapWindow ? (
+                            <span className="inline-flex min-h-[34px] items-center gap-1 rounded-full bg-[#E6BA5C]/12 px-3 py-1 text-[11px] font-semibold text-[#E6BA5C]">
+                              <Lock
+                                className="h-3 w-3 shrink-0"
+                                aria-hidden="true"
+                              />
+                              <span>{t.statusTwapWindow}</span>
+                            </span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEarlyClose(pos)}
+                              className="min-h-[34px] [@media(pointer:coarse)]:min-h-[40px] rounded-full bg-[#24282f] px-4 py-1.5 text-xs font-bold text-white hover:bg-white hover:text-black active:scale-[0.98] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+                            >
+                              {t.actionSell}
+                            </button>
+                          )}
+                        </div>
                       </li>
                     );
                   })}
@@ -2738,96 +2531,6 @@ export function TradePage({
           </div>
         )}
       </div>
-
-      {/* B3 Add-More Bottom Sheet (<dialog> reusing OrderTicketPanel in sheetMode with mergePreview) */}
-      <dialog
-        ref={addMoreDialogRef}
-        aria-labelledby={addMoreTitleId}
-        {...({ closedby: "any" } as Record<string, unknown>)}
-        onClose={() => {
-          if (addMoreDialogRef.current) {
-            addMoreDialogRef.current.returnValue = "";
-          }
-          addMoreTargetPosRef.current = null;
-          setAddMoreOpen(false);
-        }}
-        className="payoff-sheet"
-      >
-        {addMoreOpen && activeTicket && shelf && (
-          <div className="flex max-h-[90dvh] flex-col md:max-h-[86dvh]">
-            <div aria-hidden="true" className="payoff-sheet-handle" />
-            <div className="overflow-y-auto px-5 pt-3 pb-6 sm:px-6 safe-pb space-y-4">
-              <div className="flex items-center justify-between gap-2">
-                <h1
-                  id={addMoreTitleId}
-                  className="text-[17px] font-bold tracking-[-0.02em] text-white"
-                >
-                  {t.addMoreSheetTitle} · {assetSpec.displaySymbol}
-                </h1>
-                <button
-                  type="button"
-                  aria-label={t.cancel}
-                  onClick={() => addMoreDialogRef.current?.close()}
-                  className="rounded-full p-1.5 text-[#7e8690] hover:bg-[#24282f] hover:text-white transition cursor-pointer"
-                >
-                  <X className="h-4.5 w-4.5" aria-hidden="true" />
-                </button>
-              </div>
-
-              <OrderTicketPanel
-                locale={locale}
-                direction={direction}
-                onChangeDirection={handleSwitchDirection}
-                tiers={shelf.tiers}
-                quickTiers={quickTiers}
-                selectedTargetKey={effectiveTargetKey}
-                onSelectTarget={handleSelectTarget}
-                rangeMode={rangeMode}
-                onChangeRangeMode={handleChangeRangeMode}
-                customConfig={shelf.customConfig}
-                customStartPrice={resolvedCustomSelection?.startPrice}
-                customCapPrice={resolvedCustomSelection?.capPrice}
-                customClampReason={effectiveCustomClamp.reason}
-                customStartClamped={effectiveCustomClamp.startClamped}
-                customCapClamped={effectiveCustomClamp.capClamped}
-                customSyncing={customSyncing}
-                onChangeCustomStart={handleChangeCustomStart}
-                onChangeCustomCap={handleChangeCustomCap}
-                ticket={activeTicket}
-                spot={displaySpot}
-                grid={shelf.grid}
-                stakeUsdt={stakeUsdt}
-                onChangeStake={(val) => {
-                  setStakeUsdt(val);
-                  if (stage === "SLIPPAGE_CONFIRM" || stage === "SUCCESS") {
-                    resetFlowState();
-                  }
-                }}
-                walletConnected={wallet.kind !== "NONE"}
-                usdtBalance={wallet.usdtBalance}
-                isShelfSynced={isActiveTicketReady}
-                quotingPaused={quotingPaused}
-                rwaPaused={rwaCircuitBreakerActive}
-                rwaPauseReason={rwaPauseReason}
-                stage={stage}
-                slippagePause={slippagePause}
-                txHash={txHash}
-                errorMsg={errorMsg}
-                onOpenWallet={() => {
-                  addMoreDialogRef.current?.close();
-                  onOpenWallet();
-                }}
-                onInstantBuy={() => void handleInstantBuy()}
-                onConfirmSlippageQuote={() => void handleConfirmSlippageQuote()}
-                onRefreshSlippageQuote={() => void handleInstantBuy()}
-                onCancelFlow={resetFlowState}
-                sheetMode
-                mergePreview={addMoreMergePreview}
-              />
-            </div>
-          </div>
-        )}
-      </dialog>
 
       {/* B4 Early Close Dark Sell Sheet */}
       {activeClosingPos && (
