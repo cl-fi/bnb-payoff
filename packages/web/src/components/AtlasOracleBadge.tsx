@@ -17,6 +17,7 @@ import {
 } from "@payoff/shared";
 import type { ConsensusGuardState } from "../lib/api";
 import { getCopy, type Locale } from "../lib/i18n";
+import { AtlasLogoMark } from "./AtlasBrand";
 
 export interface AtlasOracleBadgeProps {
   locale: Locale;
@@ -222,21 +223,23 @@ export function AtlasOracleBadge({
   );
 
   if (variant === "expanded") {
+    const isZh = locale === "zh";
     return (
       <div className="rounded-2xl border border-[#1d2025] bg-[#15171b] p-3.5 space-y-2.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tabular-nums ${styles.pill}`}
-            >
-              <StatusIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-              <span>
-                Atlas Oracle · {status}
-                {scorePctText !== "--" ? ` · ${scorePctText}` : ""}
-              </span>
-            </span>
+            <AtlasLogoMark size={16} className="shrink-0" />
             <span className="text-xs font-semibold text-white">
               {t.atlasBadgeTitle}
+            </span>
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-semibold tabular-nums ${styles.pill}`}
+            >
+              <StatusIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span>
+                {status}
+                {scorePctText !== "--" ? ` · ${scorePctText}` : ""}
+              </span>
             </span>
           </div>
 
@@ -254,6 +257,26 @@ export function AtlasOracleBadge({
         </div>
 
         {detailContent}
+
+        <div className="flex items-center justify-between gap-2 border-t border-[#1d2025] pt-2.5 text-[11px]">
+          <span className="text-[#7e8690]">
+            {isZh
+              ? "由 Atlas 第一方预言机实时提供价格数据"
+              : "First-party real-time price feed by Atlas"}
+          </span>
+          <a
+            href="https://atlasoracle.io/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex min-h-6 shrink-0 items-center gap-1 font-semibold text-[#d4d8df] transition-colors hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+          >
+            <span>atlasoracle.io</span>
+            <ExternalLink
+              className="h-3 w-3 shrink-0 text-[#7e8690]"
+              aria-hidden="true"
+            />
+          </a>
+        </div>
       </div>
     );
   }

@@ -75,6 +75,7 @@ import {
 import { MarketSelector } from "../components/MarketPickerSheet";
 import { RulesOracleSheet } from "../components/MarketRulesAccordion";
 import { hasSeenOnboarding } from "../components/OnboardingSheet";
+import { AtlasLogoMark, AtlasWordmark } from "../components/AtlasBrand";
 import type { MarketFocusTarget } from "../App";
 
 interface Props {
@@ -1661,13 +1662,34 @@ export function TradePage({
               </button>
             </div>
 
-            {/* 36px Tabular Live Spot Price */}
-            <div className="text-[36px] font-bold leading-[1.04] tracking-[-0.03em] text-white tabular-nums">
-              $
-              {displaySpot.toLocaleString("en-US", {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 2,
-              })}
+            {/* 36px Tabular Live Spot Price + Official Atlas Oracle Attribution Pill */}
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1.5">
+              <div className="text-[36px] font-bold leading-[1.04] tracking-[-0.03em] text-white tabular-nums">
+                $
+                {displaySpot.toLocaleString("en-US", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={onOpenRules}
+                aria-label={
+                  isZh
+                    ? "Powered by Atlas — 查看 Atlas 实时预言机数据与链上验签"
+                    : "Powered by Atlas — View live Atlas Oracle feed and verification"
+                }
+                className="group inline-flex min-h-[26px] items-center gap-1.5 self-center rounded-full border border-[#22262e] bg-[#101216] px-2.5 py-1 text-[11px] leading-none transition-colors hover:border-[#383e4a] hover:bg-[#161920] cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+              >
+                <span className="font-medium text-[#7e8690] transition-colors group-hover:text-[#9aa2ad]">
+                  Powered by
+                </span>
+                <AtlasLogoMark size={14} className="shrink-0" />
+                <span className="inline-flex items-center text-[#e6eaf0] transition-colors group-hover:text-white">
+                  <AtlasWordmark height={10} />
+                </span>
+              </button>
             </div>
 
             {/* Single-line 24h Delta + Subtle NVDA-Only RWA Session Pill */}
