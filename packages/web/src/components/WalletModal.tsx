@@ -19,6 +19,7 @@ import {
 import {
   ASSET_SPECS,
   BSC_TESTNET,
+  computeRealizedHistoryEntry,
   computeRemainingStakeUsdt,
   type PositionView,
   type UnderlyingSymbol,
@@ -237,19 +238,13 @@ export function WalletModal({
         0
       );
 
-    const finished = positions.filter(
-      (p) =>
-        p.status === "CLOSED_EARLY" ||
-        p.status === "SETTLED_CLAIMED" ||
-        p.status === "SETTLED_CLAIMABLE"
+    const realizedEntries = positions
+      .map((p) => computeRealizedHistoryEntry(p))
+      .filter((e): e is NonNullable<typeof e> => e !== null);
+    const histPnl = realizedEntries.reduce(
+      (sum, e) => sum + e.netPnlUsdt,
+      0
     );
-    const histPnl = finished.reduce((sum, p) => {
-      const payout =
-        p.earlyCloseProceedsUsdt +
-        p.redeemedUsdt +
-        (p.status === "SETTLED_CLAIMABLE" ? p.claimableUsdt : 0);
-      return sum + (payout - p.totalStakeUsdt);
-    }, 0);
 
     return {
       claimablePositions: claimable,
@@ -258,7 +253,7 @@ export function WalletModal({
       activeGroups: groups,
       activePortfolioValue: portfolioVal,
       activeUnrealizedPnl: portfolioPnl,
-      historyCount: finished.length,
+      historyCount: realizedEntries.length,
       historyNetPnl: histPnl,
     };
   }, [positions]);

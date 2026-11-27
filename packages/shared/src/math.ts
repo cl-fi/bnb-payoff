@@ -148,6 +148,130 @@ export function computeRemainingStakeUsdt(pos: {
   return totalStake * remainingRatio;
 }
 
+export interface RealizedHistoryMetrics {
+  /** True when the position is still ACTIVE but has realized proceeds from an earlier partial close. */
+  isPartialActiveClose: boolean;
+  /** True for both fully closed-early tickets and partially closed active slices. */
+  isClosedEarly: boolean;
+  /** Cost basis (USDT) of the realized portion (full `totalStakeUsdt` once settled/closed, prorated sold stake while partially active). */
+  realizedStakeUsdt: number;
+  /** Cash proceeds / claimable payout (USDT) for the realized portion. */
+  totalPayoutUsdt: number;
+  /** Realized net PnL (USDT) = totalPayoutUsdt - realizedStakeUsdt. */
+  netPnlUsdt: number;
+  /** Initial max payout capacity (USDT). */
+  maxPossibleUsdt: number;
+  /** Initial max multiplier = maxPossibleUsdt / totalStakeUsdt. */
+  mult: number;
+  /** Percentage of the original position that was sold (1-99 for partial active close, 100 once closed/settled). */
+  soldSharePct: number;
+  isDirectionRight: boolean;
+  isPartialRefund: boolean;
+  isBufferNotZero: boolean;
+}
+
+/**
+ * Extracts realized history metrics for History & Stats views.
+ * - Includes finalized tickets (`CLOSED_EARLY`, `SETTLED_CLAIMED`, `SETTLED_CLAIMABLE`) using full lifetime stake & payout.
+ * - Also includes the already-sold slice of `ACTIVE` positions that have been partially closed (`earlyCloseProceedsUsdt > 0.005`),
+ *   so realized profit/loss from partial exits is reflected in Cumulative PnL without double-counting the remaining open slice.
+ * - Returns `null` for `ACTIVE` positions with no realized partial close.
+ */
+export function computeRealizedHistoryEntry(pos: {
+  status: "ACTIVE" | "CLOSED_EARLY" | "SETTLED_CLAIMABLE" | "SETTLED_CLAIMED";
+  totalStakeUsdt: number;
+  initialMaxPayoutUsdt: number;
+  remainingBalanceUsdt: number;
+  closedBalanceUsdt: number;
+  remainingStakeUsdt?: number;
+  earlyCloseProceedsUsdt: number;
+  redeemedUsdt: number;
+  claimableUsdt: number;
+}): RealizedHistoryMetrics | null {
+  const isFinalized =
+    pos.status === "CLOSED_EARLY" ||
+    pos.status === "SETTLED_CLAIMED" ||
+    pos.status === "SETTLED_CLAIMABLE";
+  const hasPartialRealized =
+    pos.status === "ACTIVE" &&
+    (pos.earlyCloseProceedsUsdt > 0.005 || pos.closedBalanceUsdt > 0.005);
+
+  if (!isFinalized && !hasPartialRealized) {
+    return null;
+  }
+
+  const maxPossibleUsdt = Math.max(
+    pos.initialMaxPayoutUsdt,
+    pos.remainingBalanceUsdt + pos.closedBalanceUsdt
+  );
+  const mult =
+    pos.totalStakeUsdt > 0 && maxPossibleUsdt > 0
+      ? maxPossibleUsdt / pos.totalStakeUsdt
+      : 0;
+
+  if (hasPartialRealized) {
+    const remainingStake = computeRemainingStakeUsdt(pos);
+    const realizedStakeUsdt = Math.max(0, pos.totalStakeUsdt - remainingStake);
+    const totalPayoutUsdt = Math.max(0, pos.earlyCloseProceedsUsdt);
+    const netPnlUsdt = totalPayoutUsdt - realizedStakeUsdt;
+    const rawPct =
+      maxPossibleUsdt > 0
+        ? (pos.closedBalanceUsdt / maxPossibleUsdt) * 100
+        : pos.totalStakeUsdt > 0
+          ? (realizedStakeUsdt / pos.totalStakeUsdt) * 100
+          : 0;
+    const soldSharePct = Math.max(1, Math.min(99, Math.round(rawPct)));
+
+    return {
+      isPartialActiveClose: true,
+      isClosedEarly: true,
+      realizedStakeUsdt,
+      totalPayoutUsdt,
+      netPnlUsdt,
+      maxPossibleUsdt,
+      mult,
+      soldSharePct,
+      isDirectionRight: netPnlUsdt > 0,
+      isPartialRefund: false,
+      isBufferNotZero: false,
+    };
+  }
+
+  const totalPayoutUsdt =
+    pos.earlyCloseProceedsUsdt +
+    pos.redeemedUsdt +
+    (pos.status === "SETTLED_CLAIMABLE" ? pos.claimableUsdt : 0);
+  const realizedStakeUsdt = pos.totalStakeUsdt;
+  const netPnlUsdt = totalPayoutUsdt - realizedStakeUsdt;
+  const isClosedEarly = pos.status === "CLOSED_EARLY";
+  const isDirectionRight = isClosedEarly
+    ? netPnlUsdt > 0
+    : totalPayoutUsdt > 0.005;
+  const isPartialRefund =
+    !isClosedEarly &&
+    totalPayoutUsdt > 0.005 &&
+    maxPossibleUsdt > 0 &&
+    totalPayoutUsdt < maxPossibleUsdt * 0.995;
+  const isBufferNotZero =
+    !isClosedEarly &&
+    totalPayoutUsdt > 0.005 &&
+    totalPayoutUsdt < realizedStakeUsdt;
+
+  return {
+    isPartialActiveClose: false,
+    isClosedEarly,
+    realizedStakeUsdt,
+    totalPayoutUsdt,
+    netPnlUsdt,
+    maxPossibleUsdt,
+    mult,
+    soldSharePct: 100,
+    isDirectionRight,
+    isPartialRefund,
+    isBufferNotZero,
+  };
+}
+
 /**
  * Reference combo hedge fee with single-leg waiver:
  * - Only charges fee on the more expensive leg (cheaper leg is waived in a vertical spread combo).

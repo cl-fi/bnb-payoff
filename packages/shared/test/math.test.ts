@@ -18,6 +18,7 @@ import {
   computeDownTokenId,
   computeExpiryPayoffUsdt,
   computeProtocolFee,
+  computeRealizedHistoryEntry,
   computeRemainingStakeUsdt,
   computeSeriesId,
   computeSettlementKey,
@@ -293,5 +294,64 @@ describe("@payoff/shared BSC Testnet, Atlas & math", () => {
         closedBalanceUsdt: 0,
       })
     ).toBeCloseTo(200, 6);
+  });
+
+  it("extracts realized History & Stats entries for partial active closes and finalized tickets without double counting", () => {
+    // 1. Untouched active position -> excluded from realized history
+    expect(
+      computeRealizedHistoryEntry({
+        status: "ACTIVE",
+        totalStakeUsdt: 200,
+        initialMaxPayoutUsdt: 592.94,
+        remainingBalanceUsdt: 592.94,
+        closedBalanceUsdt: 0,
+        remainingStakeUsdt: 200,
+        earlyCloseProceedsUsdt: 0,
+        redeemedUsdt: 0,
+        claimableUsdt: 0,
+      })
+    ).toBeNull();
+
+    // 2. Active position with 75% previously sold ($172.08 proceeds vs $150 sold cost = +$22.08 realized PnL)
+    const partial = computeRealizedHistoryEntry({
+      status: "ACTIVE",
+      totalStakeUsdt: 200,
+      initialMaxPayoutUsdt: 707.66,
+      remainingBalanceUsdt: 176.91,
+      closedBalanceUsdt: 530.75,
+      remainingStakeUsdt: 50,
+      earlyCloseProceedsUsdt: 172.08,
+      redeemedUsdt: 0,
+      claimableUsdt: 0,
+    });
+    expect(partial).not.toBeNull();
+    expect(partial!.isPartialActiveClose).toBe(true);
+    expect(partial!.isClosedEarly).toBe(true);
+    expect(partial!.realizedStakeUsdt).toBeCloseTo(150, 2);
+    expect(partial!.totalPayoutUsdt).toBeCloseTo(172.08, 2);
+    expect(partial!.netPnlUsdt).toBeCloseTo(22.08, 2);
+    expect(partial!.soldSharePct).toBe(75);
+    expect(partial!.isDirectionRight).toBe(true);
+
+    // 3. Fully closed-early ticket ($49.25 proceeds vs $50 cost = -$0.75)
+    const closed = computeRealizedHistoryEntry({
+      status: "CLOSED_EARLY",
+      totalStakeUsdt: 50,
+      initialMaxPayoutUsdt: 103.94,
+      remainingBalanceUsdt: 0,
+      closedBalanceUsdt: 103.94,
+      remainingStakeUsdt: 0,
+      earlyCloseProceedsUsdt: 49.25,
+      redeemedUsdt: 0,
+      claimableUsdt: 0,
+    });
+    expect(closed).not.toBeNull();
+    expect(closed!.isPartialActiveClose).toBe(false);
+    expect(closed!.realizedStakeUsdt).toBe(50);
+    expect(closed!.netPnlUsdt).toBeCloseTo(-0.75, 2);
+    expect(closed!.isDirectionRight).toBe(false);
+
+    // Combined cumulative realized PnL = -$0.75 + $22.08 = +$21.33
+    expect(partial!.netPnlUsdt + closed!.netPnlUsdt).toBeCloseTo(21.33, 2);
   });
 });

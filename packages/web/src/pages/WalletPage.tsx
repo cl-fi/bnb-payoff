@@ -25,6 +25,7 @@ import {
 import {
   ASSET_SPECS,
   BSC_TESTNET,
+  computeRealizedHistoryEntry,
   computeRemainingStakeUsdt,
   type CloseRfqResponse,
   type PositionView,
@@ -254,51 +255,26 @@ export function WalletPage({
       );
 
     const finished = positions
-      .filter(
-        (p) =>
-          p.status === "CLOSED_EARLY" ||
-          p.status === "SETTLED_CLAIMED" ||
-          p.status === "SETTLED_CLAIMABLE"
-      )
-      .map((p) => {
+      .flatMap((p) => {
+        const metrics = computeRealizedHistoryEntry(p);
+        if (!metrics) return [];
         const posExt = p as PositionWithOptionalTx;
-        const totalPayout =
-          p.earlyCloseProceedsUsdt +
-          p.redeemedUsdt +
-          (p.status === "SETTLED_CLAIMABLE" ? p.claimableUsdt : 0);
-        const netPnl = totalPayout - p.totalStakeUsdt;
-        const maxPossible =
-          p.initialMaxPayoutUsdt > 0
-            ? p.initialMaxPayoutUsdt
-            : p.remainingBalanceUsdt + p.closedBalanceUsdt;
-        const isClosedEarly = p.status === "CLOSED_EARLY";
-        const isDirectionRight = isClosedEarly
-          ? netPnl > 0
-          : totalPayout > 0.005;
-        const isPartialRefund =
-          !isClosedEarly &&
-          totalPayout > 0.005 &&
-          maxPossible > 0 &&
-          totalPayout < maxPossible * 0.995;
-        const isBufferNotZero =
-          !isClosedEarly &&
-          totalPayout > 0.005 &&
-          totalPayout < p.totalStakeUsdt;
-        const mult =
-          p.totalStakeUsdt > 0 && maxPossible > 0
-            ? maxPossible / p.totalStakeUsdt
-            : 0;
-        return {
-          pos: posExt,
-          timestampSec: p.expiry || p.createdAt,
-          totalPayout,
-          netPnl,
-          mult,
-          isClosedEarly,
-          isDirectionRight,
-          isPartialRefund,
-          isBufferNotZero,
-        };
+        return [
+          {
+            pos: posExt,
+            timestampSec: p.expiry || p.createdAt,
+            realizedStakeUsdt: metrics.realizedStakeUsdt,
+            totalPayout: metrics.totalPayoutUsdt,
+            netPnl: metrics.netPnlUsdt,
+            mult: metrics.mult,
+            soldSharePct: metrics.soldSharePct,
+            isPartialActiveClose: metrics.isPartialActiveClose,
+            isClosedEarly: metrics.isClosedEarly,
+            isDirectionRight: metrics.isDirectionRight,
+            isPartialRefund: metrics.isPartialRefund,
+            isBufferNotZero: metrics.isBufferNotZero,
+          },
+        ];
       })
       .sort((a, b) => b.timestampSec - a.timestampSec);
 
@@ -1570,9 +1546,12 @@ export function WalletPage({
                         const entry = item.trade;
                         const {
                           pos,
+                          realizedStakeUsdt,
                           totalPayout,
                           netPnl,
                           mult,
+                          soldSharePct,
+                          isPartialActiveClose,
                           isClosedEarly,
                           isBufferNotZero,
                         } = entry;
@@ -1581,21 +1560,25 @@ export function WalletPage({
                         const spec = ASSET_SPECS[pos.underlying];
                         const dirText = pos.isUp ? t.bull : t.bear;
 
-                        const statusLabel = isClosedEarly
+                        const statusLabel = isPartialActiveClose
                           ? isZh
-                            ? "提前卖出"
-                            : "Sold early"
-                          : pos.status === "SETTLED_CLAIMABLE"
+                            ? `部分卖出 ${soldSharePct}%`
+                            : `Sold ${soldSharePct}% early`
+                          : isClosedEarly
                             ? isZh
-                              ? "待领取"
-                              : "Claimable"
-                            : totalPayout <= 0.005
+                              ? "提前卖出"
+                              : "Sold early"
+                            : pos.status === "SETTLED_CLAIMABLE"
                               ? isZh
-                                ? "没中"
-                                : "Missed"
-                              : isZh
-                                ? "已领取"
-                                : "Claimed";
+                                ? "待领取"
+                                : "Claimable"
+                              : totalPayout <= 0.005
+                                ? isZh
+                                  ? "没中"
+                                  : "Missed"
+                                : isZh
+                                  ? "已领取"
+                                  : "Claimed";
 
                         const metaParts = [formatShortDate(pos.expiry || pos.createdAt)];
                         if (!isClosedEarly && pos.settlementPrice !== undefined) {
@@ -1649,6 +1632,11 @@ export function WalletPage({
                                     {spec.displaySymbol} {dirText}
                                     {mult > 0 ? ` ${mult.toFixed(2)}x` : ""}
                                   </span>
+                                  {isPartialActiveClose && (
+                                    <span className="rounded-full bg-[#24282f] px-2 py-0.5 text-[10px] font-bold text-[#b8bec6]">
+                                      {isZh ? "部分平仓" : "Partial exit"}
+                                    </span>
+                                  )}
                                   {isBufferNotZero && (
                                     <span className="rounded-full bg-[#E6BA5C]/12 px-2 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
                                       {isZh ? "没有归零" : "Partial"}
@@ -1712,10 +1700,16 @@ export function WalletPage({
                                   </div>
                                   <div className="text-right">
                                     <span className="text-[#7e8690]">
-                                      {isZh ? "投入本金" : "Stake"}
+                                      {isPartialActiveClose
+                                        ? isZh
+                                          ? "平仓成本"
+                                          : "Sold stake"
+                                        : isZh
+                                          ? "投入本金"
+                                          : "Stake"}
                                     </span>
                                     <div className="mt-0.5 font-semibold text-white">
-                                      ${pos.totalStakeUsdt.toFixed(2)}
+                                      ${realizedStakeUsdt.toFixed(2)}
                                     </div>
                                   </div>
                                 </div>
