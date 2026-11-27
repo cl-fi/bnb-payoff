@@ -251,8 +251,12 @@ export class PositionsService {
       awaitingSettlement,
       expiryPaused,
       canPermissionlessSettle,
+      spotPrice: Number(snap.spot.toFixed(2)),
       openTxHash: dbRow?.openTxHash ?? "",
+      closeTxHash: dbRow?.closeTxHash || undefined,
+      redeemTxHash: dbRow?.redeemTxHash || undefined,
       createdAt: dbRow?.createdAt ?? effNow,
+      updatedAt: dbRow?.updatedAt ?? dbRow?.createdAt ?? effNow,
     };
   }
 
@@ -394,8 +398,12 @@ export class PositionsService {
       awaitingSettlement,
       expiryPaused,
       canPermissionlessSettle,
+      spotPrice: Number(snap.spot.toFixed(2)),
       openTxHash: t.openTxHash,
+      closeTxHash: t.closeTxHash || undefined,
+      redeemTxHash: t.redeemTxHash || undefined,
       createdAt: t.createdAt,
+      updatedAt: t.updatedAt || t.createdAt,
     };
   }
 }

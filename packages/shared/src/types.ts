@@ -436,8 +436,12 @@ export interface PositionView {
   awaitingSettlement?: boolean;
   expiryPaused?: boolean;
   canPermissionlessSettle?: boolean;
+  spotPrice?: number;
   openTxHash: string;
+  closeTxHash?: string;
+  redeemTxHash?: string;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface HedgeLedgerEntry {

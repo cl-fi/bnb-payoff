@@ -2784,6 +2784,7 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       taker: partialBuyer,
       closedAmount: 530.73,
       buybackNetUsdt: 172.08,
+      txHash: "0xpartialclose75",
       timestamp: nowSec + 10,
     });
 
@@ -2801,6 +2802,9 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
     expect(activePos.remainingBalanceUsdt).toBeCloseTo(176.91, 2);
     expect(activePos.earlyCloseProceedsUsdt).toBeCloseTo(172.08, 2);
     expect(activePos.remainingStakeUsdt).toBeCloseTo(50, 2);
+    expect(activePos.spotPrice).toBeGreaterThan(0);
+    expect(activePos.closeTxHash).toBe("0xpartialclose75");
+    expect(activePos.updatedAt).toBe(nowSec + 10);
 
     // Unrealized PnL must measure the remaining 25% slice against its $50 remaining cost basis
     // so list PnL and EarlyCloseModal 100%-sell PnL always match in sign and value.

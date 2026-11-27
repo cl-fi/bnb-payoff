@@ -1175,6 +1175,7 @@ export class ChainService {
         taker: args.taker,
         closedAmount,
         buybackNetUsdt: buybackNet,
+        txHash: txHash ?? undefined,
         timestamp: ts,
       });
 
@@ -1282,6 +1283,7 @@ export class ChainService {
         seriesId: args.seriesId,
         account: args.account,
         mergedAmount: unitsToUsdt(args.amount),
+        txHash: txHash ?? undefined,
         timestamp: ts,
       });
     } else if (log.eventName === "ProtocolFeesUpdated") {
@@ -1317,6 +1319,7 @@ export class ChainService {
           account: args.account,
           burnedAmount: unitsToUsdt(args.upBurned),
           payoutUsdt: unitsToUsdt(args.upPayoutUsdt),
+          txHash: txHash ?? undefined,
           timestamp: ts,
         });
       }
@@ -1327,6 +1330,7 @@ export class ChainService {
           account: args.account,
           burnedAmount: unitsToUsdt(args.downBurned),
           payoutUsdt: unitsToUsdt(args.downPayoutUsdt),
+          txHash: txHash ?? undefined,
           timestamp: ts,
         });
       }

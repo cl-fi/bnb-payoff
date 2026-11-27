@@ -9,6 +9,7 @@ import {
 import { formatStrikePrice } from "../lib/format";
 import type { Locale } from "../lib/i18n";
 import { getExplorerBaseUrl } from "../lib/wallet";
+import { PayoffRangeRuler } from "./PayoffRangeRuler";
 
 export interface HistoryStatsSheetProps {
   open: boolean;
@@ -33,7 +34,9 @@ function formatShortDate(unixSec: number): string {
   if (Number.isNaN(d.getTime())) return "--";
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
-  return `${mm}/${dd}`;
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mi = String(d.getMinutes()).padStart(2, "0");
+  return `${mm}/${dd} ${hh}:${mi}`;
 }
 
 function formatSignedUsd(value: number): string {
@@ -98,47 +101,57 @@ export function HistoryStatsSheet({
     };
   }, [open]);
 
-  const { items, cumulativeNetPnl, totalTrades, directionRightCount, partialRefundCount } =
-    useMemo(() => {
-      const finished = positions
-        .flatMap((p) => {
-          const metrics = computeRealizedHistoryEntry(p);
-          if (!metrics) return [];
-          const posExt = p as PositionWithOptionalTx;
-          return [
-            {
-              pos: posExt,
-              realizedStakeUsdt: metrics.realizedStakeUsdt,
-              totalPayout: metrics.totalPayoutUsdt,
-              netPnl: metrics.netPnlUsdt,
-              maxPossible: metrics.maxPossibleUsdt,
-              mult: metrics.mult,
-              soldSharePct: metrics.soldSharePct,
-              isPartialActiveClose: metrics.isPartialActiveClose,
-              isClosedEarly: metrics.isClosedEarly,
-              isDirectionRight: metrics.isDirectionRight,
-              isPartialRefund: metrics.isPartialRefund,
-              isBufferNotZero: metrics.isBufferNotZero,
-            },
-          ];
-        })
-        .sort(
-          (a, b) =>
-            b.pos.expiry - a.pos.expiry || b.pos.createdAt - a.pos.createdAt
-        );
+  const {
+    items,
+    cumulativeNetPnl,
+    cumulativeRoiPct,
+    totalTrades,
+    directionRightCount,
+    partialRefundCount,
+  } = useMemo(() => {
+    const finished = positions
+      .flatMap((p) => {
+        const metrics = computeRealizedHistoryEntry(p);
+        if (!metrics) return [];
+        const posExt = p as PositionWithOptionalTx;
+        const timestampSec = metrics.isClosedEarly
+          ? p.updatedAt || p.createdAt
+          : p.expiry || p.updatedAt || p.createdAt;
+        return [
+          {
+            pos: posExt,
+            timestampSec,
+            realizedStakeUsdt: metrics.realizedStakeUsdt,
+            totalPayout: metrics.totalPayoutUsdt,
+            netPnl: metrics.netPnlUsdt,
+            maxPossible: metrics.maxPossibleUsdt,
+            mult: metrics.mult,
+            soldSharePct: metrics.soldSharePct,
+            isPartialActiveClose: metrics.isPartialActiveClose,
+            isClosedEarly: metrics.isClosedEarly,
+            isDirectionRight: metrics.isDirectionRight,
+            isPartialRefund: metrics.isPartialRefund,
+            isBufferNotZero: metrics.isBufferNotZero,
+          },
+        ];
+      })
+      .sort((a, b) => b.timestampSec - a.timestampSec);
 
-      const cumPnl = finished.reduce((sum, x) => sum + x.netPnl, 0);
-      const rightCount = finished.filter((x) => x.isDirectionRight).length;
-      const partialCount = finished.filter((x) => x.isPartialRefund).length;
+    const cumPnl = finished.reduce((sum, x) => sum + x.netPnl, 0);
+    const cumCost = finished.reduce((sum, x) => sum + x.realizedStakeUsdt, 0);
+    const cumRoi = cumCost > 0 ? (cumPnl / cumCost) * 100 : 0;
+    const rightCount = finished.filter((x) => x.isDirectionRight).length;
+    const partialCount = finished.filter((x) => x.isPartialRefund).length;
 
-      return {
-        items: finished,
-        cumulativeNetPnl: cumPnl,
-        totalTrades: finished.length,
-        directionRightCount: rightCount,
-        partialRefundCount: partialCount,
-      };
-    }, [positions]);
+    return {
+      items: finished,
+      cumulativeNetPnl: cumPnl,
+      cumulativeRoiPct: cumRoi,
+      totalTrades: finished.length,
+      directionRightCount: rightCount,
+      partialRefundCount: partialCount,
+    };
+  }, [positions]);
 
   if (!open) return null;
 
@@ -179,14 +192,14 @@ export function HistoryStatsSheet({
             </button>
           </div>
 
-          {/* 3-Column Stats Cards */}
-          <div className="grid grid-cols-[1.35fr_1fr_1fr] gap-2">
-            <div className="rounded-2xl bg-black border border-[#1d2025] p-3">
-              <div className="text-[11px] font-semibold text-[#7e8690]">
-                {isZh ? "累计盈亏" : "Net PnL"}
-              </div>
-              <div
-                className={`mt-1 text-xl font-bold tracking-[-0.025em] tabular-nums ${
+          {/* Minimal Hairline Stats Strip */}
+          <div className="flex flex-wrap items-baseline justify-between gap-2 border-t border-b border-[#1d2025] py-3 tabular-nums">
+            <div className="flex items-baseline gap-2">
+              <span className="text-xs font-medium text-[#7e8690]">
+                {isZh ? "已实现" : "Realized"}
+              </span>
+              <span
+                className={`text-lg font-bold tracking-[-0.025em] ${
                   totalTrades === 0
                     ? "text-white"
                     : cumulativeNetPnl >= 0
@@ -195,26 +208,27 @@ export function HistoryStatsSheet({
                 }`}
               >
                 {totalTrades === 0 ? "$0.00" : formatSignedUsd(cumulativeNetPnl)}
-              </div>
+              </span>
+              {totalTrades > 0 && (
+                <span
+                  className={`text-xs font-semibold ${
+                    cumulativeNetPnl >= 0 ? "text-[#2EC26B]" : "text-[#E85D4A]"
+                  }`}
+                >
+                  ({cumulativeRoiPct >= 0 ? "+" : ""}
+                  {cumulativeRoiPct.toFixed(1)}%)
+                </span>
+              )}
             </div>
-
-            <div className="rounded-2xl bg-black border border-[#1d2025] p-3">
-              <div className="text-[11px] font-semibold text-[#7e8690]">
-                {isZh ? "总笔数" : "Total"}
-              </div>
-              <div className="mt-1 text-xl font-bold tracking-[-0.025em] text-white tabular-nums">
-                {isZh ? `${totalTrades} 笔` : totalTrades}
-              </div>
-            </div>
-
-            <div className="rounded-2xl bg-black border border-[#1d2025] p-3">
-              <div className="text-[11px] font-semibold text-[#7e8690]">
-                {isZh ? "方向猜对" : "Right calls"}
-              </div>
-              <div className="mt-1 text-xl font-bold tracking-[-0.025em] text-white tabular-nums">
-                {isZh ? `${directionRightCount} 笔` : directionRightCount}
-              </div>
-            </div>
+            <span className="text-xs text-[#7e8690]">
+              {totalTrades === 0
+                ? isZh
+                  ? "0 笔"
+                  : "0 trades"
+                : isZh
+                  ? `${totalTrades} 笔 · 胜率 ${Math.round((directionRightCount / totalTrades) * 100)}%`
+                  : `${totalTrades} ${totalTrades === 1 ? "trade" : "trades"} · ${Math.round((directionRightCount / totalTrades) * 100)}% win`}
+            </span>
           </div>
 
           {/* Partial Refund Callout */}
@@ -240,10 +254,6 @@ export function HistoryStatsSheet({
 
           {/* Records Section */}
           <div>
-            <div className="mb-1 text-[11.5px] font-bold tracking-[0.02em] text-[#7e8690]">
-              {isZh ? "历史记录" : "Records"}
-            </div>
-
             {items.length === 0 ? (
               <div className="rounded-2xl bg-[#15171b] border border-[#1d2025] px-4 py-8 text-center space-y-1.5">
                 <div className="text-sm font-semibold text-white">
@@ -260,14 +270,13 @@ export function HistoryStatsSheet({
                 {items.map((entry) => {
                   const {
                     pos,
+                    timestampSec,
                     realizedStakeUsdt,
                     totalPayout,
                     netPnl,
-                    mult,
                     soldSharePct,
                     isPartialActiveClose,
                     isClosedEarly,
-                    isBufferNotZero,
                   } = entry;
                   const rowKey = positionKey(pos);
                   const isExpanded = expandedKey === rowKey;
@@ -279,14 +288,16 @@ export function HistoryStatsSheet({
                     : isZh
                       ? "看跌"
                       : "Down";
-                  const dateText = formatShortDate(
-                    pos.expiry || pos.createdAt
-                  );
+                  const dateText = formatShortDate(timestampSec);
+                  const roiPct =
+                    realizedStakeUsdt > 0
+                      ? (netPnl / realizedStakeUsdt) * 100
+                      : 0;
 
                   const statusLabel = isPartialActiveClose
                     ? isZh
                       ? `部分卖出 ${soldSharePct}%`
-                      : `Sold ${soldSharePct}% early`
+                      : `Sold ${soldSharePct}%`
                     : isClosedEarly
                       ? isZh
                         ? "提前卖出"
@@ -297,38 +308,39 @@ export function HistoryStatsSheet({
                           : "Claimable"
                         : totalPayout <= 0.005
                           ? isZh
-                            ? "没中"
-                            : "Missed"
+                            ? "未入区"
+                            : "Expired $0"
                           : isZh
                             ? "已领取"
                             : "Claimed";
 
-                  const metaParts = [dateText];
-                  if (!isClosedEarly && pos.settlementPrice !== undefined) {
-                    metaParts.push(
-                      isZh
-                        ? `结算价 ${formatStrikePrice(pos.settlementPrice, pos.underlying)}`
-                        : `Settled ${formatStrikePrice(pos.settlementPrice, pos.underlying)}`
-                    );
-                  }
-                  metaParts.push(statusLabel);
+                  const metaParts = [statusLabel, dateText];
+                  const openPct = Math.max(1, 100 - soldSharePct);
+                  const combinedPnl =
+                    pos.earlyCloseProceedsUsdt +
+                    pos.indicativeExitUsdt -
+                    pos.totalStakeUsdt;
+                  const combinedPct =
+                    pos.totalStakeUsdt > 0
+                      ? (combinedPnl / pos.totalStakeUsdt) * 100
+                      : 0;
 
                   const txLinks: Array<{ label: string; hash: string }> = [];
                   if (pos.openTxHash) {
                     txLinks.push({
-                      label: isZh ? "买入交易" : "Open tx",
+                      label: isZh ? "开仓 tx" : "Open tx",
                       hash: pos.openTxHash,
                     });
                   }
                   if (pos.closeTxHash) {
                     txLinks.push({
-                      label: isZh ? "卖出交易" : "Close tx",
+                      label: isZh ? "平仓 tx" : "Close tx",
                       hash: pos.closeTxHash,
                     });
                   }
                   if (pos.redeemTxHash) {
                     txLinks.push({
-                      label: isZh ? "领取交易" : "Redeem tx",
+                      label: isZh ? "领取 tx" : "Claim tx",
                       hash: pos.redeemTxHash,
                     });
                   }
@@ -341,29 +353,23 @@ export function HistoryStatsSheet({
                         onClick={() =>
                           setExpandedKey(isExpanded ? null : rowKey)
                         }
-                        className="flex w-full items-center justify-between gap-3 text-left cursor-pointer group focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white rounded-lg"
+                        className="flex w-full items-center justify-between gap-3 px-2 py-1 -mx-2 rounded-xl hover:bg-[#14171c] text-left cursor-pointer transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
                       >
                         <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[14.5px] font-bold text-white tracking-[-0.01em] tabular-nums">
+                          <div className="flex flex-wrap items-center gap-1.5 tabular-nums">
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full shrink-0 ${
+                                pos.isUp ? "bg-[#2EC26B]" : "bg-[#E85D4A]"
+                              }`}
+                              aria-hidden="true"
+                            />
+                            <span className="text-[14px] font-bold text-white tracking-[-0.01em]">
                               {spec.displaySymbol} {dirText}
-                              {mult > 0 ? ` ${mult.toFixed(2)}x` : ""}
                             </span>
-                            {isPartialActiveClose && (
-                              <span className="rounded-full bg-[#24282f] px-2 py-0.5 text-[10px] font-bold text-[#b8bec6]">
-                                {isZh ? "部分平仓" : "Partial exit"}
-                              </span>
-                            )}
-                            {isBufferNotZero && (
-                              <span className="rounded-full bg-[#E6BA5C]/12 px-2 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
-                                {isZh ? "没有归零" : "Partial"}
-                              </span>
-                            )}
-                            {pos.status === "SETTLED_CLAIMABLE" && (
-                              <span className="rounded-full bg-[#E6BA5C]/12 px-2 py-0.5 text-[10px] font-bold text-[#E6BA5C]">
-                                {isZh ? "待领取" : "Claimable"}
-                              </span>
-                            )}
+                            <span className="text-xs font-medium text-[#b8bec6]">
+                              {formatStrikePrice(pos.startPrice, pos.underlying)}{" "}
+                              → {formatStrikePrice(pos.capPrice, pos.underlying)}
+                            </span>
                           </div>
                           <div className="mt-0.5 text-xs text-[#7e8690] tabular-nums">
                             {metaParts.join(" · ")}
@@ -372,7 +378,7 @@ export function HistoryStatsSheet({
 
                         <div className="flex items-center gap-2 shrink-0">
                           <div className="text-right tabular-nums">
-                            <div className="text-[15px] font-bold text-white tracking-[-0.02em]">
+                            <div className="text-[14.5px] font-bold text-white tracking-[-0.02em]">
                               ${totalPayout.toFixed(2)}
                             </div>
                             <div
@@ -384,62 +390,137 @@ export function HistoryStatsSheet({
                                     : "text-[#7e8690]"
                               }`}
                             >
-                              {formatSignedUsd(netPnl)}
+                              {formatSignedUsd(netPnl)} ({roiPct >= 0 ? "+" : ""}
+                              {roiPct.toFixed(1)}%)
                             </div>
                           </div>
                           <ChevronDown
                             aria-hidden="true"
-                            className={`h-4 w-4 text-[#7e8690] transition-transform ${
-                              isExpanded ? "rotate-180 text-white" : ""
+                            className={`h-4 w-4 text-[#5a616c] transition-transform ${
+                              isExpanded ? "rotate-180 text-[#b8bec6]" : ""
                             }`}
                           />
                         </div>
                       </button>
 
                       {isExpanded && (
-                        <div className="mt-2.5 rounded-xl bg-[#15171b] border border-[#1d2025] p-3 space-y-2 text-xs">
-                          <div className="grid grid-cols-2 gap-2 tabular-nums">
+                        <div className="mt-2.5 rounded-xl bg-[#15171b] border border-[#1d2025] p-3.5 space-y-2.5 text-xs">
+                          {!isClosedEarly &&
+                            pos.settlementPrice !== undefined && (
+                              <PayoffRangeRuler pos={pos} locale={locale} />
+                            )}
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 tabular-nums">
                             <div>
-                              <span className="text-[#7e8690]">
-                                {isZh ? "区间" : "Range"}
-                              </span>
-                              <div className="font-semibold text-white">
-                                {formatStrikePrice(
-                                  pos.startPrice,
-                                  pos.underlying
-                                )}{" "}
-                                →{" "}
-                                {formatStrikePrice(
-                                  pos.capPrice,
-                                  pos.underlying
-                                )}
-                              </div>
-                            </div>
-                            <div className="text-right">
                               <span className="text-[#7e8690]">
                                 {isPartialActiveClose
                                   ? isZh
                                     ? "平仓成本"
-                                    : "Sold stake"
+                                    : "Sold cost"
                                   : isZh
-                                    ? "投入本金"
-                                    : "Stake"}
+                                    ? "成本"
+                                    : "Cost"}
                               </span>
-                              <div className="font-semibold text-white">
+                              <div className="mt-0.5 font-semibold text-white">
                                 ${realizedStakeUsdt.toFixed(2)}
                               </div>
                             </div>
+
+                            <div>
+                              <span className="text-[#7e8690]">
+                                {isClosedEarly
+                                  ? isZh
+                                    ? "卖出收回"
+                                    : "Proceeds"
+                                  : isZh
+                                    ? "到期赔付"
+                                    : "Payout"}
+                              </span>
+                              <div className="mt-0.5 font-semibold text-white">
+                                ${totalPayout.toFixed(2)}
+                              </div>
+                            </div>
+
+                            {isPartialActiveClose ? (
+                              <>
+                                <div>
+                                  <span className="text-[#7e8690]">
+                                    {isZh
+                                      ? `剩余 (${openPct}%)`
+                                      : `Open (${openPct}%)`}
+                                  </span>
+                                  <div
+                                    className={`mt-0.5 font-semibold ${
+                                      pos.unrealizedPnlUsdt >= 0
+                                        ? "text-[#2EC26B]"
+                                        : "text-[#E85D4A]"
+                                    }`}
+                                  >
+                                    ${pos.indicativeExitUsdt.toFixed(2)} (
+                                    {formatSignedUsd(pos.unrealizedPnlUsdt)})
+                                  </div>
+                                </div>
+                                <div>
+                                  <span className="text-[#7e8690]">
+                                    {isZh ? "整笔盈亏" : "Total PnL"}
+                                  </span>
+                                  <div
+                                    className={`mt-0.5 font-semibold ${
+                                      combinedPnl >= 0
+                                        ? "text-[#2EC26B]"
+                                        : "text-[#E85D4A]"
+                                    }`}
+                                  >
+                                    {formatSignedUsd(combinedPnl)} (
+                                    {combinedPct >= 0 ? "+" : ""}
+                                    {combinedPct.toFixed(0)}%)
+                                  </div>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                <div>
+                                  <span className="text-[#7e8690]">
+                                    {isZh ? "协议费" : "Fee"}
+                                  </span>
+                                  <div className="mt-0.5 font-semibold text-white">
+                                    ${pos.protocolFeeUsdt.toFixed(2)}
+                                  </div>
+                                </div>
+                                <div>
+                                  <span className="text-[#7e8690]">
+                                    {isClosedEarly
+                                      ? isZh
+                                        ? "平仓时间"
+                                        : "Closed"
+                                      : isZh
+                                        ? "结算价"
+                                        : "Settled"}
+                                  </span>
+                                  <div className="mt-0.5 font-semibold text-white">
+                                    {isClosedEarly
+                                      ? dateText
+                                      : pos.settlementPrice !== undefined
+                                        ? formatStrikePrice(
+                                            pos.settlementPrice,
+                                            pos.underlying
+                                          )
+                                        : "--"}
+                                  </div>
+                                </div>
+                              </>
+                            )}
                           </div>
 
                           {explorerBase && txLinks.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-2 border-t border-[#1d2025] pt-2">
+                            <div className="flex flex-wrap items-center gap-3 border-t border-[#1d2025] pt-2 text-[#7e8690]">
                               {txLinks.map((lnk) => (
                                 <a
                                   key={`${lnk.label}-${lnk.hash}`}
                                   href={`${explorerBase}/tx/${lnk.hash}`}
                                   target="_blank"
                                   rel="noreferrer"
-                                  className="inline-flex items-center gap-1 rounded-full bg-[#24282f] px-2.5 py-1 text-[11px] font-semibold text-[#b8bec6] hover:text-white transition"
+                                  className="inline-flex items-center gap-1 hover:text-white transition"
                                 >
                                   <span>{lnk.label}</span>
                                   <ExternalLink

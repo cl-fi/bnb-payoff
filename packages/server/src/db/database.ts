@@ -83,6 +83,8 @@ export interface StoredTicket {
   redeemedUsdt: number;
   status: "ACTIVE" | "CLOSED_EARLY" | "SETTLED_CLAIMABLE" | "SETTLED_CLAIMED";
   openTxHash: string;
+  closeTxHash?: string;
+  redeemTxHash?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -111,6 +113,7 @@ export interface UpdateTicketCloseInput {
   taker: string;
   closedAmount: number;
   buybackNetUsdt: number;
+  txHash?: string;
   timestamp: number;
 }
 
@@ -136,6 +139,7 @@ export interface UpdateTicketRedeemInput {
   account: string;
   burnedAmount: number;
   payoutUsdt: number;
+  txHash?: string;
   timestamp: number;
 }
 
@@ -143,6 +147,7 @@ export interface UpdateTicketMergeInput {
   seriesId: string;
   account: string;
   mergedAmount: number;
+  txHash?: string;
   timestamp: number;
 }
 
@@ -373,6 +378,8 @@ export class PostgresDatabase implements PayoffDatabase {
       ALTER TABLE settlements ADD COLUMN IF NOT EXISTS sample_count INTEGER;
       ALTER TABLE settlements ADD COLUMN IF NOT EXISTS is_manual_override INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE settlements ADD COLUMN IF NOT EXISTS override_reason TEXT;
+      ALTER TABLE tickets ADD COLUMN IF NOT EXISTS close_tx_hash TEXT;
+      ALTER TABLE tickets ADD COLUMN IF NOT EXISTS redeem_tx_hash TEXT;
 
       CREATE TABLE IF NOT EXISTS twap_health_samples (
         underlying TEXT NOT NULL,
@@ -464,6 +471,8 @@ export class PostgresDatabase implements PayoffDatabase {
       redeemedUsdt: Number(r.redeemed_usdt),
       status: r.status,
       openTxHash: r.open_tx_hash,
+      closeTxHash: r.close_tx_hash || undefined,
+      redeemTxHash: r.redeem_tx_hash || undefined,
       createdAt: Number(r.created_at),
       updatedAt: Number(r.updated_at),
     };
@@ -659,13 +668,15 @@ export class PostgresDatabase implements PayoffDatabase {
         closed_balance = closed_balance + $2,
         early_close_proceeds_usdt = early_close_proceeds_usdt + $3,
         status = $4,
-        updated_at = $5
-      WHERE series_id = $6 AND is_up = $7 AND taker = $8`,
+        close_tx_hash = COALESCE(NULLIF($5, ''), close_tx_hash),
+        updated_at = $6
+      WHERE series_id = $7 AND is_up = $8 AND taker = $9`,
       [
         newRemaining,
         input.closedAmount,
         input.buybackNetUsdt,
         newStatus,
+        input.txHash ?? "",
         input.timestamp,
         sid,
         isUp,
@@ -708,13 +719,15 @@ export class PostgresDatabase implements PayoffDatabase {
           closed_balance = closed_balance + $2,
           early_close_proceeds_usdt = early_close_proceeds_usdt + $3,
           status = $4,
-          updated_at = $5
-        WHERE series_id = $6 AND is_up = $7 AND taker = $8`,
+          close_tx_hash = COALESCE(NULLIF($5, ''), close_tx_hash),
+          updated_at = $6
+        WHERE series_id = $7 AND is_up = $8 AND taker = $9`,
         [
           newRemaining,
           input.mergedAmount,
           proceeds,
           newStatus,
+          input.txHash ?? "",
           input.timestamp,
           sid,
           row.isUp ? 1 : 0,
@@ -806,10 +819,12 @@ export class PostgresDatabase implements PayoffDatabase {
         remaining_balance = 0,
         redeemed_usdt = redeemed_usdt + $1,
         status = 'SETTLED_CLAIMED',
-        updated_at = $2
-      WHERE series_id = $3 AND is_up = $4 AND taker = $5`,
+        redeem_tx_hash = COALESCE(NULLIF($2, ''), redeem_tx_hash),
+        updated_at = $3
+      WHERE series_id = $4 AND is_up = $5 AND taker = $6`,
       [
         input.payoutUsdt,
+        input.txHash ?? "",
         input.timestamp,
         input.seriesId.toLowerCase(),
         input.isUp ? 1 : 0,
@@ -1267,6 +1282,8 @@ export class SqliteDatabase implements PayoffDatabase {
       `ALTER TABLE settlements ADD COLUMN sampleCount INTEGER`,
       `ALTER TABLE settlements ADD COLUMN isManualOverride INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE settlements ADD COLUMN overrideReason TEXT`,
+      `ALTER TABLE tickets ADD COLUMN closeTxHash TEXT`,
+      `ALTER TABLE tickets ADD COLUMN redeemTxHash TEXT`,
     ]) {
       try {
         this.db.exec(stmt);
@@ -1439,6 +1456,7 @@ export class SqliteDatabase implements PayoffDatabase {
           closedBalance = closedBalance + ?,
           earlyCloseProceedsUsdt = earlyCloseProceedsUsdt + ?,
           status = ?,
+          closeTxHash = COALESCE(NULLIF(?, ''), closeTxHash),
           updatedAt = ?
         WHERE seriesId = ? AND isUp = ? AND taker = ?`
       )
@@ -1447,6 +1465,7 @@ export class SqliteDatabase implements PayoffDatabase {
         input.closedAmount,
         input.buybackNetUsdt,
         newStatus,
+        input.txHash ?? "",
         input.timestamp,
         sid,
         isUp,
@@ -1477,6 +1496,7 @@ export class SqliteDatabase implements PayoffDatabase {
         closedBalance = closedBalance + ?,
         earlyCloseProceedsUsdt = earlyCloseProceedsUsdt + ?,
         status = ?,
+        closeTxHash = COALESCE(NULLIF(?, ''), closeTxHash),
         updatedAt = ?
       WHERE seriesId = ? AND isUp = ? AND taker = ?`
     );
@@ -1496,6 +1516,7 @@ export class SqliteDatabase implements PayoffDatabase {
         input.mergedAmount,
         proceeds,
         newStatus,
+        input.txHash ?? "",
         input.timestamp,
         sid,
         row.isUp ? 1 : 0,
@@ -1580,10 +1601,18 @@ export class SqliteDatabase implements PayoffDatabase {
           remainingBalance = 0,
           redeemedUsdt = redeemedUsdt + ?,
           status = 'SETTLED_CLAIMED',
+          redeemTxHash = COALESCE(NULLIF(?, ''), redeemTxHash),
           updatedAt = ?
         WHERE seriesId = ? AND isUp = ? AND taker = ?`
       )
-      .run(input.payoutUsdt, input.timestamp, sid, isUp, taker);
+      .run(
+        input.payoutUsdt,
+        input.txHash ?? "",
+        input.timestamp,
+        sid,
+        isUp,
+        taker
+      );
   }
 
   async insertHedgeLedger(entry: Omit<HedgeLedgerEntry, "id">): Promise<void> {
