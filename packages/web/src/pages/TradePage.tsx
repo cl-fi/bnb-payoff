@@ -24,6 +24,7 @@ import {
   ASSET_SPECS,
   BSC_TESTNET,
   computeExpiryPayoffUsdt,
+  computeRemainingStakeUsdt,
   estimateCustomTicketPreview,
   resolveClampedCustomRange,
   type AtlasFeedTelemetry,
@@ -1501,7 +1502,7 @@ export function TradePage({
     let totalUnrealizedPnl = 0;
     let totalSimulated = 0;
     for (const p of currentExpiryActivePositions) {
-      totalStake += p.totalStakeUsdt;
+      totalStake += computeRemainingStakeUsdt(p);
       totalValue += p.indicativeExitUsdt;
       totalUnrealizedPnl += p.unrealizedPnlUsdt;
       if (scrubPrice !== null) {
@@ -1529,7 +1530,7 @@ export function TradePage({
     if (currentExpiryClaimablePositions.length === 0) return null;
     const groupKey = `${underlying}:${currentExpiry}`;
     const totalStake = currentExpiryClaimablePositions.reduce(
-      (s, p) => s + p.totalStakeUsdt,
+      (s, p) => s + computeRemainingStakeUsdt(p),
       0
     );
     const totalClaimable = currentExpiryClaimablePositions.reduce(
@@ -2165,12 +2166,11 @@ export function TradePage({
                 {/* Breakdown Hairline Rows */}
                 <div className="divide-y divide-[#1d2025] border-t border-b border-[#1d2025]">
                   {outcomeGroup.items.map((item) => {
+                    const itemStake = computeRemainingStakeUsdt(item);
                     const rowPartial =
-                      item.claimableUsdt > 0 &&
-                      item.claimableUsdt < item.totalStakeUsdt;
+                      item.claimableUsdt > 0 && item.claimableUsdt < itemStake;
                     const rowWin =
-                      item.claimableUsdt >= item.totalStakeUsdt &&
-                      item.claimableUsdt > 0;
+                      item.claimableUsdt >= itemStake && item.claimableUsdt > 0;
                     return (
                       <div
                         key={getPosId(item)}
@@ -2196,8 +2196,7 @@ export function TradePage({
                             )}
                           </div>
                           <div className="mt-0.5 text-[11px] text-[#7e8690]">
-                            {isZh ? "投入" : "Stake"} $
-                            {item.totalStakeUsdt.toFixed(2)}
+                            {isZh ? "投入" : "Stake"} ${itemStake.toFixed(2)}
                           </div>
                         </div>
 
@@ -2363,6 +2362,7 @@ export function TradePage({
                   {currentExpiryActivePositions.map((pos) => {
                     const posId = getPosId(pos);
                     const isSelected = selectedPositionId === posId;
+                    const remainingStake = computeRemainingStakeUsdt(pos);
                     const mult =
                       pos.totalStakeUsdt > 0
                         ? pos.initialMaxPayoutUsdt / pos.totalStakeUsdt
@@ -2379,12 +2379,12 @@ export function TradePage({
                         : null;
                     const simDelta =
                       simulatedPayout !== null
-                        ? simulatedPayout - pos.totalStakeUsdt
+                        ? simulatedPayout - remainingStake
                         : null;
                     const simIsPartial =
                       simulatedPayout !== null &&
                       simulatedPayout > 0 &&
-                      simulatedPayout < pos.totalStakeUsdt;
+                      simulatedPayout < remainingStake;
 
                     return (
                       <li
@@ -2441,9 +2441,12 @@ export function TradePage({
                               className="text-left hover:text-[#b8bec6] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white rounded"
                             >
                               {isZh ? "投入" : "Stake"} $
-                              {pos.totalStakeUsdt.toFixed(2)} ·{" "}
+                              {remainingStake.toFixed(2)} ·{" "}
                               {isZh ? "最高赢" : "Max"} $
                               {pos.remainingBalanceUsdt.toFixed(2)}
+                              {pos.earlyCloseProceedsUsdt > 0.005
+                                ? ` · ${isZh ? "已落袋" : "Sold"} $${pos.earlyCloseProceedsUsdt.toFixed(2)}`
+                                : ""}
                             </button>
                             {explorerBase && pos.openTxHash && (
                               <a
@@ -2482,7 +2485,7 @@ export function TradePage({
                                     className="text-[15px] font-bold"
                                     style={{
                                       color:
-                                        simulatedPayout >= pos.totalStakeUsdt
+                                        simulatedPayout >= remainingStake
                                           ? "#2EC26B"
                                           : simulatedPayout > 0
                                             ? "#E6BA5C"

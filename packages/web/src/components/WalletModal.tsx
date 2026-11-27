@@ -19,6 +19,7 @@ import {
 import {
   ASSET_SPECS,
   BSC_TESTNET,
+  computeRemainingStakeUsdt,
   type PositionView,
   type UnderlyingSymbol,
 } from "@payoff/shared";
@@ -199,10 +200,11 @@ export function WalletModal({
 
     for (const p of active) {
       const key = `${p.underlying}:${p.expiry}`;
+      const remainingStake = computeRemainingStakeUsdt(p);
       const existing = groupMap.get(key);
       if (existing) {
         existing.items.push(p);
-        existing.totalStake += p.totalStakeUsdt;
+        existing.totalStake += remainingStake;
         existing.totalValue += p.indicativeExitUsdt;
         existing.totalPnl += p.unrealizedPnlUsdt;
         if (p.isUp) existing.bullCount += 1;
@@ -213,7 +215,7 @@ export function WalletModal({
           underlying: p.underlying,
           expiry: p.expiry,
           items: [p],
-          totalStake: p.totalStakeUsdt,
+          totalStake: remainingStake,
           totalValue: p.indicativeExitUsdt,
           totalPnl: p.unrealizedPnlUsdt,
           bullCount: p.isUp ? 1 : 0,
@@ -230,7 +232,10 @@ export function WalletModal({
       active.reduce((s, p) => s + p.indicativeExitUsdt, 0) + claimableSum;
     const portfolioPnl =
       active.reduce((s, p) => s + p.unrealizedPnlUsdt, 0) +
-      claimable.reduce((s, p) => s + (p.claimableUsdt - p.totalStakeUsdt), 0);
+      claimable.reduce(
+        (s, p) => s + (p.claimableUsdt - computeRemainingStakeUsdt(p)),
+        0
+      );
 
     const finished = positions.filter(
       (p) =>
@@ -546,8 +551,8 @@ export function WalletModal({
                             </div>
                             <div className="mt-0.5 text-xs text-[#7e8690] tabular-nums">
                               {isZh
-                                ? `投入 $${pos.totalStakeUsdt.toFixed(2)} · 拿回 $${pos.claimableUsdt.toFixed(2)}`
-                                : `Stake $${pos.totalStakeUsdt.toFixed(2)} · Payout $${pos.claimableUsdt.toFixed(2)}`}
+                                ? `投入 $${computeRemainingStakeUsdt(pos).toFixed(2)} · 拿回 $${pos.claimableUsdt.toFixed(2)}`
+                                : `Stake $${computeRemainingStakeUsdt(pos).toFixed(2)} · Payout $${pos.claimableUsdt.toFixed(2)}`}
                             </div>
                           </div>
 

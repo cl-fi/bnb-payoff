@@ -119,6 +119,36 @@ export function computeExpiryPayoffUsdt(
 }
 
 /**
+ * Computes the proportional cost basis (in USDT) for the remaining open share of a position.
+ * Uses the server-provided `remainingStakeUsdt` when present, otherwise prorates `totalStakeUsdt`
+ * by `remainingBalanceUsdt / max(initialMaxPayoutUsdt, remainingBalanceUsdt + closedBalanceUsdt)`.
+ */
+export function computeRemainingStakeUsdt(pos: {
+  totalStakeUsdt: number;
+  initialMaxPayoutUsdt: number;
+  remainingBalanceUsdt: number;
+  closedBalanceUsdt?: number;
+  remainingStakeUsdt?: number;
+}): number {
+  if (
+    typeof pos.remainingStakeUsdt === "number" &&
+    Number.isFinite(pos.remainingStakeUsdt)
+  ) {
+    return Math.max(0, pos.remainingStakeUsdt);
+  }
+  const totalStake = Math.max(0, pos.totalStakeUsdt);
+  const remaining = Math.max(0, pos.remainingBalanceUsdt);
+  if (totalStake <= 0 || remaining <= 0) return 0;
+
+  const closed = Math.max(0, pos.closedBalanceUsdt ?? 0);
+  const denom = Math.max(pos.initialMaxPayoutUsdt, remaining + closed);
+  if (denom <= 0) return totalStake;
+
+  const remainingRatio = Math.max(0, Math.min(1, remaining / denom));
+  return totalStake * remainingRatio;
+}
+
+/**
  * Reference combo hedge fee with single-leg waiver:
  * - Only charges fee on the more expensive leg (cheaper leg is waived in a vertical spread combo).
  * - Model: min(0.03% * spot, 7% * expensiveLegPremium) * notionalUnderlying

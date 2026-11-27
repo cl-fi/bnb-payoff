@@ -2741,4 +2741,93 @@ describe("@payoff/server — Atlas Oracle, ConsensusScore & BNB API integration"
       stateSpy.mockRestore();
     }
   });
+
+  it("computes remainingStakeUsdt and remaining-slice unrealizedPnlUsdt consistently after partial early close", async () => {
+    const partialBuyer = "0x000000000000000000000000000000000000b00b";
+    const snap = services.marketData.getSnapshot("BTC");
+    const book = snap.daily!;
+    const midIdx = Math.floor(book.availableStrikes.length / 2);
+    const lowerStrike = book.availableStrikes[midIdx]!;
+    const upperStrike =
+      book.availableStrikes[Math.min(book.availableStrikes.length - 1, midIdx + 2)]!;
+    const seriesId = computeSeriesId(
+      ASSET_BTC_ID,
+      BigInt(Math.round(lowerStrike * 1e8)),
+      BigInt(Math.round(upperStrike * 1e8)),
+      book.expiry
+    );
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    // 1. Open $200 stake for $707.64 max payout (~3.54x)
+    await services.db.upsertTicketOnOpen({
+      seriesId,
+      isUp: true,
+      taker: partialBuyer,
+      maker: "0x000000000000000000000000000000000000c001",
+      tierKind: "STANDARD",
+      underlying: "BTC",
+      direction: "BULL",
+      lowerStrike,
+      upperStrike,
+      expiry: book.expiry,
+      maxPayout: 707.64,
+      stakeUsdt: 200,
+      protocolFeeUsdt: 0,
+      openTxHash: "0xpartialopen",
+      timestamp: nowSec,
+    });
+
+    // 2. Partially sell 75% (530.73 balance) for $172.08 proceeds, leaving 25% (176.91 balance, $50 cost)
+    await services.db.updateTicketOnClose({
+      seriesId,
+      isUp: true,
+      taker: partialBuyer,
+      closedAmount: 530.73,
+      buybackNetUsdt: 172.08,
+      timestamp: nowSec + 10,
+    });
+
+    const resActive = await app.inject({
+      method: "GET",
+      url: `/api/positions/${partialBuyer}`,
+    });
+    expect(resActive.statusCode).toBe(200);
+    const activePos = resActive
+      .json()
+      .positions.find((p: any) => p.seriesId.toLowerCase() === seriesId.toLowerCase());
+    expect(activePos).toBeDefined();
+    expect(activePos.status).toBe("ACTIVE");
+    expect(activePos.totalStakeUsdt).toBe(200);
+    expect(activePos.remainingBalanceUsdt).toBeCloseTo(176.91, 2);
+    expect(activePos.earlyCloseProceedsUsdt).toBeCloseTo(172.08, 2);
+    expect(activePos.remainingStakeUsdt).toBeCloseTo(50, 2);
+
+    // Unrealized PnL must measure the remaining 25% slice against its $50 remaining cost basis
+    // so list PnL and EarlyCloseModal 100%-sell PnL always match in sign and value.
+    const expectedPnl = Number((activePos.indicativeExitUsdt - 50).toFixed(2));
+    const expectedPct = Number((((activePos.indicativeExitUsdt - 50) / 50) * 100).toFixed(1));
+    expect(activePos.unrealizedPnlUsdt).toBeCloseTo(expectedPnl, 1);
+    expect(activePos.unrealizedPnlPct).toBeCloseTo(expectedPct, 0);
+
+    // 3. Close the remaining 25% -> CLOSED_EARLY resets remaining stake & unrealized PnL to 0
+    await services.db.updateTicketOnClose({
+      seriesId,
+      isUp: true,
+      taker: partialBuyer,
+      closedAmount: 176.91,
+      buybackNetUsdt: 81.41,
+      timestamp: nowSec + 20,
+    });
+    const resClosed = await app.inject({
+      method: "GET",
+      url: `/api/positions/${partialBuyer}`,
+    });
+    const closedPos = resClosed
+      .json()
+      .positions.find((p: any) => p.seriesId.toLowerCase() === seriesId.toLowerCase());
+    expect(closedPos.status).toBe("CLOSED_EARLY");
+    expect(closedPos.remainingStakeUsdt).toBe(0);
+    expect(closedPos.unrealizedPnlUsdt).toBe(0);
+    expect(closedPos.earlyCloseProceedsUsdt).toBeCloseTo(253.49, 2);
+  });
 });

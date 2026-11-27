@@ -18,6 +18,7 @@ import {
   computeDownTokenId,
   computeExpiryPayoffUsdt,
   computeProtocolFee,
+  computeRemainingStakeUsdt,
   computeSeriesId,
   computeSettlementKey,
   computeTicketNumbers,
@@ -240,5 +241,57 @@ describe("@payoff/shared BSC Testnet, Atlas & math", () => {
     expect(computeSettlementKey(ASSET_BTC_ID, 1795507200)).toMatch(
       /^0x[0-9a-f]{64}$/
     );
+  });
+
+  it("prorates remaining stake accurately across full, partially closed, and fully closed positions", () => {
+    // Full open position
+    expect(
+      computeRemainingStakeUsdt({
+        totalStakeUsdt: 200,
+        initialMaxPayoutUsdt: 592.94,
+        remainingBalanceUsdt: 592.94,
+        closedBalanceUsdt: 0,
+      })
+    ).toBeCloseTo(200, 6);
+
+    // 75% previously sold (remaining 25%: 176.91 / 707.64)
+    expect(
+      computeRemainingStakeUsdt({
+        totalStakeUsdt: 200,
+        initialMaxPayoutUsdt: 707.64,
+        remainingBalanceUsdt: 176.91,
+        closedBalanceUsdt: 530.73,
+      })
+    ).toBeCloseTo(50, 6);
+
+    // Server-provided remainingStakeUsdt takes precedence
+    expect(
+      computeRemainingStakeUsdt({
+        totalStakeUsdt: 200,
+        initialMaxPayoutUsdt: 707.64,
+        remainingBalanceUsdt: 176.91,
+        remainingStakeUsdt: 49.98,
+      })
+    ).toBeCloseTo(49.98, 6);
+
+    // Fully closed position has zero remaining stake
+    expect(
+      computeRemainingStakeUsdt({
+        totalStakeUsdt: 200,
+        initialMaxPayoutUsdt: 707.64,
+        remainingBalanceUsdt: 0,
+        closedBalanceUsdt: 707.64,
+      })
+    ).toBe(0);
+
+    // Clamps cleanly when rounding makes remaining slightly exceed initialMaxPayout
+    expect(
+      computeRemainingStakeUsdt({
+        totalStakeUsdt: 200,
+        initialMaxPayoutUsdt: 592.94,
+        remainingBalanceUsdt: 592.95,
+        closedBalanceUsdt: 0,
+      })
+    ).toBeCloseTo(200, 6);
   });
 });

@@ -3,6 +3,7 @@ import {
   MIN_CLOSE_LEAD_TIME_SEC,
   SETTLEMENT_DELAY_SEC,
   computeExpiryPayoffUsdt,
+  computeRemainingStakeUsdt,
   computeTokenId,
   symbolToAssetId,
   type PositionView,
@@ -136,10 +137,12 @@ export class PositionsService {
       dbRow?.initialMaxPayout ?? oc.balanceUsdt
     );
     const totalStakeUsdt = dbRow?.totalStakeUsdt ?? 0;
-    const remainingCost =
-      initialMaxPayout > 0 && totalStakeUsdt > 0
-        ? totalStakeUsdt * Math.min(1, oc.balanceUsdt / initialMaxPayout)
-        : 0;
+    const remainingCost = computeRemainingStakeUsdt({
+      totalStakeUsdt,
+      initialMaxPayoutUsdt: initialMaxPayout,
+      remainingBalanceUsdt: oc.balanceUsdt,
+      closedBalanceUsdt: closedBalance,
+    });
     const earlyCloseProceedsUsdt = dbRow?.earlyCloseProceedsUsdt ?? 0;
     const redeemedUsdt = dbRow?.redeemedUsdt ?? 0;
     const protocolFeeUsdt = dbRow?.protocolFeeUsdt ?? 0;
@@ -199,14 +202,12 @@ export class PositionsService {
       );
     }
 
-    const realizedPlusUnrealized =
-      earlyCloseProceedsUsdt +
-      redeemedUsdt +
-      (status === "SETTLED_CLAIMABLE" ? claimableUsdt : indicativeExitUsdt);
+    const remainingValueUsdt =
+      status === "SETTLED_CLAIMABLE" ? claimableUsdt : indicativeExitUsdt;
     const unrealizedPnlUsdt =
-      totalStakeUsdt > 0 ? realizedPlusUnrealized - totalStakeUsdt : 0;
+      remainingCost > 0 ? remainingValueUsdt - remainingCost : 0;
     const unrealizedPnlPct =
-      totalStakeUsdt > 0 ? (unrealizedPnlUsdt / totalStakeUsdt) * 100 : 0;
+      remainingCost > 0 ? (unrealizedPnlUsdt / remainingCost) * 100 : 0;
 
     const indicativeExitPct =
       remainingCost > 0
@@ -233,6 +234,7 @@ export class PositionsService {
       remainingBalanceUsdt: Number(oc.balanceUsdt.toFixed(2)),
       closedBalanceUsdt: Number(closedBalance.toFixed(2)),
       totalStakeUsdt: Number(totalStakeUsdt.toFixed(2)),
+      remainingStakeUsdt: Number(remainingCost.toFixed(2)),
       protocolFeeUsdt: Number(protocolFeeUsdt.toFixed(2)),
       earlyCloseProceedsUsdt: Number(earlyCloseProceedsUsdt.toFixed(2)),
       redeemedUsdt: Number(redeemedUsdt.toFixed(2)),
@@ -299,7 +301,7 @@ export class PositionsService {
       isUp,
       t.lowerStrike,
       t.upperStrike,
-      t.initialMaxPayout,
+      t.remainingBalance > 0 ? t.remainingBalance : t.initialMaxPayout,
       snap.spot
     );
 
@@ -334,19 +336,21 @@ export class PositionsService {
       );
     }
 
-    const realizedPlusUnrealized =
-      t.earlyCloseProceedsUsdt +
-      t.redeemedUsdt +
-      (t.status === "SETTLED_CLAIMABLE" ? claimableUsdt : indicativeExitUsdt);
-    const unrealizedPnlUsdt = realizedPlusUnrealized - t.totalStakeUsdt;
+    const remainingCost = computeRemainingStakeUsdt({
+      totalStakeUsdt: t.totalStakeUsdt,
+      initialMaxPayoutUsdt: t.initialMaxPayout,
+      remainingBalanceUsdt: t.remainingBalance,
+      closedBalanceUsdt: t.closedBalance,
+    });
+    const isOpen = t.status === "ACTIVE" || t.status === "SETTLED_CLAIMABLE";
+    const remainingValueUsdt =
+      t.status === "SETTLED_CLAIMABLE" ? claimableUsdt : indicativeExitUsdt;
+    const unrealizedPnlUsdt =
+      isOpen && remainingCost > 0 ? remainingValueUsdt - remainingCost : 0;
     const unrealizedPnlPct =
-      t.totalStakeUsdt > 0
-        ? (unrealizedPnlUsdt / t.totalStakeUsdt) * 100
+      isOpen && remainingCost > 0
+        ? (unrealizedPnlUsdt / remainingCost) * 100
         : 0;
-
-    const remainingStakeRatio =
-      t.initialMaxPayout > 0 ? t.remainingBalance / t.initialMaxPayout : 0;
-    const remainingCost = t.totalStakeUsdt * remainingStakeRatio;
     const indicativeExitPct =
       remainingCost > 0
         ? ((indicativeExitUsdt - remainingCost) / remainingCost) * 100
@@ -373,6 +377,7 @@ export class PositionsService {
       remainingBalanceUsdt: Number(t.remainingBalance.toFixed(2)),
       closedBalanceUsdt: Number(t.closedBalance.toFixed(2)),
       totalStakeUsdt: Number(t.totalStakeUsdt.toFixed(2)),
+      remainingStakeUsdt: Number(remainingCost.toFixed(2)),
       protocolFeeUsdt: Number(t.protocolFeeUsdt.toFixed(2)),
       earlyCloseProceedsUsdt: Number(t.earlyCloseProceedsUsdt.toFixed(2)),
       redeemedUsdt: Number(t.redeemedUsdt.toFixed(2)),

@@ -25,6 +25,7 @@ import {
 import {
   ASSET_SPECS,
   BSC_TESTNET,
+  computeRemainingStakeUsdt,
   type CloseRfqResponse,
   type PositionView,
   type UnderlyingSymbol,
@@ -236,14 +237,21 @@ export function WalletPage({
       new Set(claimable.map((p) => p.seriesId))
     ) as `0x${string}`[];
     const claimableSum = claimable.reduce((s, p) => s + p.claimableUsdt, 0);
-    const claimableStakeSum = claimable.reduce((s, p) => s + p.totalStakeUsdt, 0);
+    const claimableStakeSum = claimable.reduce(
+      (s, p) => s + computeRemainingStakeUsdt(p),
+      0
+    );
 
     const activeVal = active.reduce((s, p) => s + p.indicativeExitUsdt, 0);
     const activeStake =
-      active.reduce((s, p) => s + p.totalStakeUsdt, 0) + claimableStakeSum;
+      active.reduce((s, p) => s + computeRemainingStakeUsdt(p), 0) +
+      claimableStakeSum;
     const unrealizedPnl =
       active.reduce((s, p) => s + p.unrealizedPnlUsdt, 0) +
-      claimable.reduce((s, p) => s + (p.claimableUsdt - p.totalStakeUsdt), 0);
+      claimable.reduce(
+        (s, p) => s + (p.claimableUsdt - computeRemainingStakeUsdt(p)),
+        0
+      );
 
     const finished = positions
       .filter(
@@ -1051,10 +1059,11 @@ export function WalletPage({
                           pos.totalStakeUsdt > 0
                             ? pos.initialMaxPayoutUsdt / pos.totalStakeUsdt
                             : 0;
+                        const remainingStake = computeRemainingStakeUsdt(pos);
                         const isPartialOutcome =
                           pos.status === "SETTLED_CLAIMABLE" &&
                           pos.claimableUsdt > 0 &&
-                          pos.claimableUsdt < pos.totalStakeUsdt;
+                          pos.claimableUsdt < remainingStake;
 
                         const statusPill =
                           pos.status === "ACTIVE" && pos.awaitingSettlement
@@ -1084,7 +1093,7 @@ export function WalletPage({
                                       cls: "bg-[#2EC26B]/15 text-[#2EC26B]",
                                     };
 
-                        const claimPnl = pos.claimableUsdt - pos.totalStakeUsdt;
+                        const claimPnl = pos.claimableUsdt - remainingStake;
 
                         return (
                           <li
@@ -1142,10 +1151,13 @@ export function WalletPage({
                               <div className="flex flex-wrap items-center gap-1 text-xs text-[#7e8690] tabular-nums">
                                 <span>
                                   {isZh ? "投入" : "Stake"} $
-                                  {pos.totalStakeUsdt.toFixed(2)} ·{" "}
+                                  {remainingStake.toFixed(2)} ·{" "}
                                   {isZh ? "最高赢" : "Max"} $
-                                  {pos.remainingBalanceUsdt.toFixed(2)} ·{" "}
-                                  {formatExpiryDateTime(pos.expiry, locale)}
+                                  {pos.remainingBalanceUsdt.toFixed(2)}
+                                  {pos.earlyCloseProceedsUsdt > 0.005
+                                    ? ` · ${isZh ? "已落袋" : "Sold"} $${pos.earlyCloseProceedsUsdt.toFixed(2)}`
+                                    : ""}{" "}
+                                  · {formatExpiryDateTime(pos.expiry, locale)}
                                 </span>
                                 {explorerBase && pos.openTxHash && (
                                   <a

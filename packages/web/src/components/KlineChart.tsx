@@ -10,6 +10,7 @@ import {
 } from "react";
 import { X } from "lucide-react";
 import {
+  computeRemainingStakeUsdt,
   computeSpreadPayoffFraction,
   type CandlePoint,
   type PositionView,
@@ -604,7 +605,7 @@ export function KlineChart({
           activeScrubPrice
         );
         totalPayout += p.remainingBalanceUsdt * frac;
-        totalStake += p.totalStakeUsdt;
+        totalStake += computeRemainingStakeUsdt(p);
       }
       return {
         isCombined: true,

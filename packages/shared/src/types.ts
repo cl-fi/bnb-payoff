@@ -419,6 +419,7 @@ export interface PositionView {
   remainingBalanceUsdt: number;
   closedBalanceUsdt: number;
   totalStakeUsdt: number;
+  remainingStakeUsdt?: number;
   protocolFeeUsdt: number;
   earlyCloseProceedsUsdt: number;
   redeemedUsdt: number;

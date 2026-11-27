@@ -18,6 +18,7 @@ import {
 import {
   ASSET_SPECS,
   BSC_TESTNET,
+  computeRemainingStakeUsdt,
   formatSettlementLabel,
   type CloseRfqResponse,
   type PositionView,
@@ -129,7 +130,10 @@ export function PositionsPage({
       new Set(items.map((p) => p.seriesId))
     ) as `0x${string}`[];
     const totalClaimable = items.reduce((s, p) => s + p.claimableUsdt, 0);
-    const totalStake = items.reduce((s, p) => s + p.totalStakeUsdt, 0);
+    const totalStake = items.reduce(
+      (s, p) => s + computeRemainingStakeUsdt(p),
+      0
+    );
     return {
       items,
       seriesIds,
@@ -454,7 +458,7 @@ export function PositionsPage({
     (sum, p) =>
       sum +
       (p.status === "ACTIVE" || p.status === "SETTLED_CLAIMABLE"
-        ? p.totalStakeUsdt
+        ? computeRemainingStakeUsdt(p)
         : 0),
     0
   );
@@ -710,10 +714,11 @@ export function PositionsPage({
           {positions.map((pos) => {
             const key = positionKey(pos);
             const isBull = pos.isUp;
+            const remainingStake = computeRemainingStakeUsdt(pos);
             const isPartialOutcome =
               pos.status === "SETTLED_CLAIMABLE" &&
               pos.claimableUsdt > 0 &&
-              pos.claimableUsdt < pos.totalStakeUsdt;
+              pos.claimableUsdt < remainingStake;
 
             const statusPill =
               pos.status === "ACTIVE" && pos.awaitingSettlement
@@ -890,7 +895,12 @@ export function PositionsPage({
                   <div>
                     <div className="text-[#7e8690]">{t.numStake}</div>
                     <div className="mt-0.5 font-semibold text-white">
-                      ${pos.totalStakeUsdt.toFixed(2)}
+                      $
+                      {(pos.status === "ACTIVE" ||
+                      pos.status === "SETTLED_CLAIMABLE"
+                        ? remainingStake
+                        : pos.totalStakeUsdt
+                      ).toFixed(2)}
                     </div>
                   </div>
                   <div>

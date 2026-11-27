@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import {
   ASSET_SPECS,
+  computeRemainingStakeUsdt,
   type CloseRfqResponse,
   type PositionView,
 } from "@payoff/shared";
@@ -102,9 +103,10 @@ export function EarlyCloseModal({
   const isFullExit = rawRatio >= FULL_EXIT_RATIO_THRESHOLD;
   const submitRatio = isFullExit ? 1 : rawRatio;
 
+  const remainingStakeUsdt = computeRemainingStakeUsdt(position);
   const estimatedUsdt = totalExitUsdt * submitRatio;
-  const soldStakeUsdt = position.totalStakeUsdt * submitRatio;
-  const soldPnlUsdt = estimatedUsdt - soldStakeUsdt;
+  const soldStakeUsdt = remainingStakeUsdt * submitRatio;
+  const soldPnlUsdt = soldStakeUsdt > 0 ? estimatedUsdt - soldStakeUsdt : 0;
   const soldPnlPct = soldStakeUsdt > 0 ? (soldPnlUsdt / soldStakeUsdt) * 100 : 0;
   const remainingExitUsdt = Math.max(0, totalExitUsdt * (1 - submitRatio));
   const remainingMaxPayoutUsdt = Math.max(
@@ -551,14 +553,14 @@ export function EarlyCloseModal({
                   </dt>
                   <dd
                     className={`font-semibold ${
-                      submitRatio <= 0
+                      submitRatio <= 0 || soldStakeUsdt <= 0
                         ? "text-[#7e8690]"
                         : soldPnlUsdt >= 0
                           ? "text-[#2EC26B]"
                           : "text-[#E85D4A]"
                     }`}
                   >
-                    {submitRatio <= 0
+                    {submitRatio <= 0 || soldStakeUsdt <= 0
                       ? "$0.00"
                       : `${formatSignedUsd(soldPnlUsdt)} (${soldPnlPct >= 0 ? "+" : ""}${soldPnlPct.toFixed(1)}%)`}
                   </dd>
